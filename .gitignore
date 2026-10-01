@@ -1,0 +1,6 @@
+build/
+build_*/
+build-*/
+out/
+examples/output/
+.claude/scheduled_tasks.lock

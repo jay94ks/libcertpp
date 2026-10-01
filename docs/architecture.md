@@ -1,0 +1,1706 @@
+# Architecture
+
+## Overview
+
+`libcertpp` is a C++17 library, still early-stage but past its initial
+scaffolding: a `common` foundation, a `version` module, a `utils` module
+(a DJB hash utility, `CHex` hex decoding, `CBigNum` an arbitrary-precision
+integer, and `CGf2m` a binary-field (GF(2^m)) element), an `io` layer
+(spans, a growable array, a fixed-size owning byte buffer, and a stream
+abstraction), an `asn1` module (tag encode/decode, a TLV decoder/encoder,
+sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
+`INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
+
+`crypto` has: an `IHasher` interface with from-scratch MD5/SHA-1/SHA-224/
+SHA-256/SHA-384/SHA-512/SHAKE128/SHAKE256 implementations; a CSPRNG utility
+(`CRng`); an `IAsymmetric` interface with seven concrete implementations
+(RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
+decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
+P-521, secp256k1, or the 14 Brainpool curves (RFC 5639); `CEcdsa2`, ECDSA
+over the 10 NIST binary/Koblitz curves B-163/K-163 .. B-571/K-571;
+`Ed25519`/`Ed448`, EdDSA (RFC 8032); and `X25519`, Diffie-Hellman key
+agreement (RFC 7748)); and an `ISymmetric` interface with four concrete
+implementations (`AES`, `DES`, `TripleDES` -- all CBC/PKCS#7 -- and the
+`ChaCha20` stream cipher) -- all from scratch, no third-party dependency.
+
+`x509` parses (and, for `CCert`, also builds/self-signs) DER-encoded
+`Certificate` (`CCert`/`CCertBuilder`), `CertificateList`/CRL
+(`CCrlReader`/`CCrlWriter`), and OCSP request/response (RFC 6960;
+`COcspRequest`/`COcspRequestBuilder`, `COcspResponse`/
+`COcspResponseBuilder`), plus ten concrete `IExtension` types under
+`x509/exts/` (BasicConstraints, KeyUsage, ExtendedKeyUsage,
+SubjectAlternativeName, SubjectKeyIdentifier, AuthorityKeyIdentifier,
+CRLDistributionPoints, AuthorityInformationAccess, CertificatePolicies,
+NameConstraints). It has no certificate chain validation / path-building
+engine of its own (see "Where this will grow" below) -- parsing, building,
+and single-signature verification only.
+
+The public API surface is header-based under
+[`include/certpp/`](../include/certpp/), re-exported through the umbrella
+header [`include/certpp.hpp`](../include/certpp.hpp) — every public header
+is included there, so consumers can `#include <certpp.hpp>` alone.
+Implementation files live under [`src/`](../src/) and mirror the header
+they implement (e.g. `include/certpp/version.hpp` <-> `src/version.cpp`).
+
+```
+include/
+  certpp.hpp             # umbrella header, re-includes the public API
+  certpp/
+    common.hpp            # CERTPP_API export macro, fixed-width type aliases, ERetCode
+    version.hpp            # SVersion struct, GetLibraryVersion() declaration
+    time.hpp                # STimeSpan (duration); SDateTime: calendar-field time, now()/from()/toUtc()/toLocal()/toSeconds()/add()/diff()/...
+    string.hpp               # TString<T>: owning, growable string buffer (template-only, no .cpp)
+    name.hpp                  # CName: an X.509 distinguished-name (DN) component, ENameType
+    utils/
+      djb.hpp                  # CDjb: DJB hash (plain/case-folded), SDjbValue
+      hex.hpp                   # CHex: hex-string-to-bytes decoder (optional "0x"/"0X" prefix), shared by CBigNum::fromHex()/CGf2m::fromHex()
+      bignum.hpp                 # CBigNum: arbitrary-precision non-negative integer (RSA/DSA/EC/Ed25519 math)
+      gf2m.hpp                    # CGf2m: fixed-capacity GF(2^m) binary field element (polynomial basis); EGf2mKnownField + CGf2m::knownField()/knownFieldPtr() name the 5 field sizes the B-*/K-* binary curves share
+    io/
+      span.hpp              # TSpan<T> / TReadOnlySpan<T> (template-only, no .cpp); SByteSpan/SReadOnlyByteSpan aliases
+      array.hpp               # TArray<T>: owning, growable array (template-only, no .cpp); EArrayType
+      octet.hpp                 # COctet: owning, fixed-size byte buffer
+      stream.hpp                  # IStream interface, IStreamPtr, ESeekMode/EStreamCapability
+    asn1/
+      tag.hpp                # CTag (ASN.1 tag encode/decode), ETagClass, EUniversalTags
+      decoder.hpp             # CDecoder (TLV decode + per-type value decoders), EEncodingRule, EDecoderStatus
+      encoder.hpp              # CEncoder (TLV encode + per-type value encoders, definite-length form)
+      reader.hpp                # CReader: sequential CDecoder-over-an-IStream (or a span)
+      writer.hpp                  # CWriter: sequential CEncoder-over-an-IStream
+      der.hpp                      # CDer: arbitrary-precision INTEGER/SEQUENCE DER helpers (CBigNum-sized CEncoder/CDecoder extension)
+    crypto/
+      hasher.hpp               # IHasher interface: reset()/push()/finish(), byteWidth()
+      hashers/                   # concrete IHasher implementations, one file each
+        md5.hpp                    # MD5 (RFC 1321)
+        sha1.hpp                   # SHA-1 (FIPS 180-4)
+        sha224.hpp                 # SHA-224 (FIPS 180-4) -- SHA-256's compression function, own IV, truncated output
+        sha256.hpp                 # SHA-256 (FIPS 180-4)
+        sha384.hpp                 # SHA-384 (FIPS 180-4)
+        sha512.hpp                 # SHA-512 (FIPS 180-4)
+        shake128.hpp                # SHAKE128, the 128-bit-security sibling of SHAKE256 -- same shape, shares KeccakCore
+        shake256.hpp                # SHAKE256, the Keccak/SHA-3-family XOF (FIPS 202); output length fixed per instance via the constructor, not the algorithm
+      keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
+      kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- header-only design, not yet implemented/wired
+      rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
+      eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass point arithmetic (affine coordinates); EEcKnownCurves + CEcCurve::knownCurves() name the built-in P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool (RFC 5639, 14 curves) domain parameters
+      ec2curve.hpp                 # CEc2Curve/SEc2Point: binary-curve point arithmetic over CGf2m (affine coordinates); EEc2KnownCurves + CEc2Curve::knownCurves() name the 10 built-in B-163/K-163 .. B-571/K-571 domain parameters
+      asym.hpp                   # IAsymmetric (algorithm descriptor/factory) + IAsymmetricContext (bound-key sign/verify + deriveSharedSecret key agreement + encrypter/decrypter factory) + IAsymmetricTransformer (encrypt/decrypt session)
+      asyms/                      # concrete IAsymmetric implementations, one file each (mirrors hashers/)
+        rsa.hpp                     # RSA: PKCS#1 keygen, PKCS#1 v1.5 + RSASSA-PSS (RFC 8017) sign/verify, PKCS#1 v1.5 encrypt/decrypt
+        dsa.hpp                      # DSA: FIPS 186-4 keygen (incl. domain params) + sign/verify only
+        ecdsa.hpp                     # CEcdsa: ECDSA over any EEcKnownCurves value, keygen + sign/verify only
+        ecdsa2.hpp                    # CEcdsa2: ECDSA over any EEc2KnownCurves value, keygen + sign/verify only
+        ed25519.hpp                    # Ed25519: EdDSA over edwards25519 (RFC 8032), keygen + sign/verify only
+        ed448.hpp                       # Ed448: EdDSA over edwards448/"Goldilocks" (RFC 8032), keygen + sign/verify only
+        x25519.hpp                      # X25519: Diffie-Hellman key agreement over Curve25519 (RFC 7748), keygen + IAsymmetricContext::deriveSharedSecret() only
+      transform.hpp                # ITransformer: generic streaming transform interface shared by IAsymmetricTransformer and ISymmetricTransformer
+      sym.hpp                      # ISymmetric (algorithm descriptor/factory) + ISymmetricContext (bound-key encrypter/decrypter factory) + ISymmetricTransformer
+      syms/                        # concrete ISymmetric implementations, one file each (mirrors asyms/)
+        aes.hpp                        # AES: FIPS-197 keygen (128/192/256-bit) + CBC/PKCS#7 encrypt/decrypt
+        des.hpp                         # DES: FIPS 46-3 keygen (64-bit) + CBC/PKCS#7 encrypt/decrypt -- legacy/interop only
+        des3.hpp                         # TripleDES: two-/three-key EDE keygen + CBC/PKCS#7 encrypt/decrypt, built on DES's own block core
+        chacha20.hpp                      # ChaCha20: RFC 8439 stream cipher, keygen + encrypt/decrypt (the same XOR operation either way)
+    x509/
+      ext.hpp                    # IExtension: concrete base for a decoded extension (oid()/value()), IExtensionPtr, IExtension::create() OID-dispatch factory
+      generalname.hpp             # CGeneralName (GeneralName CHOICE, RFC 5280 4.2.1.6), EGeneralNameType; CGeneralSubtree (NameConstraints' GeneralSubtree)
+      policy.hpp                   # CPolicyInformation (CertificatePolicies' PolicyInformation)
+      access.hpp                    # CAccessDescription (AuthorityInformationAccess's AccessDescription); ECrlReasons, CDistributionPoint (CRLDistributionPoints' DistributionPoint)
+      exts/                          # concrete IExtension implementations, one file each, named by the extension's common short name
+        bc.hpp                         # CBasicConstraintsExtension
+        ku.hpp                          # CKeyUsagesExtension, EKeyUsages
+        eku.hpp                          # CExtendedKeyUsageExtension
+        san.hpp                           # CSubjectAlternativeNameExtension
+        ski.hpp                            # CSubjectKeyIdentifierExtension
+        aki.hpp                             # CAuthorityKeyIdentifierExtension
+        cdp.hpp                              # CCrlDistributionPointsExtension
+        aia.hpp                               # CAuthorityInformationAccessExtension
+        cp.hpp                                 # CCertificatePoliciesExtension
+        nc.hpp                                  # CNameConstraintsExtension
+      cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
+      crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
+      ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
+src/
+  common.cpp              # namespace scaffold (no out-of-line code yet)
+  version.cpp              # SVersion + GetLibraryVersion() implementation
+  time.cpp                 # SDateTime implementation (uses <ctime>'s gmtime_s/gmtime_r, localtime_s/localtime_r)
+  string.cpp                # empty stub -- TString<T> is entirely templates, so there's nothing to put in it
+  name.cpp                   # CName::reset()/compare()/equals()/toString()
+  utils/
+    djb.cpp                    # CDjb::compute()/computeAsUpper()/computeAsLower()
+    bignum.cpp                   # CBigNum: schoolbook add/sub/mul/divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
+    gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + bit-serial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
+  io/
+    octet.cpp                 # COctet::store()/clear()
+    stream.cpp               # IStream::createMemory() factories
+    memstream.hpp             # MemStream: private IStream impl, not part of the public API
+    memstream.cpp              # MemStream implementation
+  asn1/
+    tag.cpp                   # CTag::decode()/encode()
+    decoder.cpp                 # CDecoder::decodeLength()/readEncodedValue()
+    encoder.cpp                  # CEncoder::encodeLength()/writeEncodedValue()
+    reader.cpp                    # CReader implementation
+    writer.cpp                     # CWriter implementation
+    der.cpp                          # CDer implementation, built on CEncoder/CDecoder
+  crypto/
+    hasher.cpp                # empty stub -- IHasher is a pure-virtual interface, nothing out-of-line
+    hashers/
+      md5.cpp                     # MD5 transform + reset()/push()/finish()
+      sha1.cpp                    # SHA-1 transform + reset()/push()/finish()
+      sha2_32core.hpp              # Sha2_32Core::transform(): private, shared SHA-224/SHA-256 compression function
+      sha2_32core.cpp
+      sha224.cpp                    # SHA-224: own context/IV/truncation, shared transform
+      sha256.cpp                     # SHA-256: own context/IV, shared transform
+      sha2_64core.hpp              # Sha2_64Core::transform(): private, shared SHA-384/SHA-512 compression function
+      sha2_64core.cpp
+      sha384.cpp                    # SHA-384: own context/IV/truncation, shared transform
+      sha512.cpp                     # SHA-512: own context/IV, shared transform
+      keccakcore.hpp                  # KeccakCore: private, shared Keccak-f[1600] permutation + sponge absorb, used by shake128.cpp/shake256.cpp
+      keccakcore.cpp
+      shake128.cpp                     # SHAKE128: drives KeccakCore at RATE=168
+      shake256.cpp                    # SHAKE256: drives KeccakCore at RATE=136
+    keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
+    rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
+    transform.cpp               # empty stub -- ITransformer is a pure-virtual interface, nothing out-of-line
+    sym.cpp                      # ISymmetric::builtIn() factory dispatch
+    syms/
+      symkey.hpp                     # SymRawKey: private, shared raw-byte ISymmetricKey (no validation beyond length)
+      cbctransformer.hpp              # CbcTransformer: private, shared CBC-mode/PKCS#7 buffering+chaining+padding, used by aes.cpp/des.cpp/des3.cpp
+      cbctransformer.cpp
+      aes.cpp                          # AES: AesCore block cipher (own S-box/key schedule, AES-NI accelerated path behind CERTPP_DISABLE_HWACCEL_AES) + CbcTransformer
+      descore.hpp                      # DesCore: private, shared DES block cipher (key schedule + Feistel network), used by des.cpp/des3.cpp
+      descore.cpp
+      des.cpp                           # DES: DesCore + CbcTransformer
+      des3.cpp                          # TripleDES: TripleDesCore (DES-EDE3 composition over DesCore) + CbcTransformer
+      chacha20.cpp                      # ChaCha20: from-scratch quarter-round/block function + keystream XOR transformer
+    eccurve.cpp                  # CEcCurve/SEcPoint implementation, plus CEcCurve::_knownCurves' definition (the P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool domain parameters, in EEcKnownCurves order)
+    ec2curve.cpp                 # CEc2Curve/SEc2Point implementation, plus CEc2Curve::_knownCurves' definition (the 10 B-*/K-* domain parameters, in EEc2KnownCurves order -- each independently verified on-curve and order-checked before hardcoding, see this module's doc comment)
+    asym.cpp                   # IAsymmetric::builtIn(): dispatches EAsymmetrics to a concrete asyms/ implementation
+    asyms/                       # concrete IAsymmetric implementations, one file each
+      rsa.cpp                      # RSA implementation, plus the private RsaPublicKey/RsaPrivateKey/RsaContext/RsaTransformer classes
+      dsa.cpp                      # DSA implementation, plus the private DsaPublicKey/DsaPrivateKey/DsaContext classes
+      ecdsa.cpp                     # CEcdsa implementation, plus the private EcPublicKey/EcPrivateKey/EcContext classes
+      ecdsa2.cpp                    # CEcdsa2 implementation, plus the private Ec2PublicKey/Ec2PrivateKey/Ec2Context classes
+      ed25519.cpp                    # Ed25519 implementation (edwards25519 field/point arithmetic, EdDSA logic), plus the private EdPublicKey/EdPrivateKey/EdContext classes
+      ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
+      x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
+  x509/
+    ext.cpp                    # UnknownExtension (fallback IExtension) + IExtension::create()'s OID-dispatch table
+    generalname.cpp             # CGeneralName::decode()/decodeList() (GeneralName CHOICE parsing)
+    access.cpp                   # CDistributionPoint::decode()
+    exts/                          # one .cpp per exts/ header, same abbreviated filenames
+      bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
+    cert.cpp                        # CCert implementation: import(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
+    crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
+    ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
+tests/
+  time.cpp                  # SDateTime / STimeSpan test cases
+  string.cpp                 # TString<T> test cases
+  name.cpp                    # CName test cases
+  utils/
+    bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
+    gf2m.cpp                     # CGf2m field-axiom/known-answer-vector/encode-decode test cases, one known-answer vector per field size, independently cross-derived via a standalone Python implementation
+  io/
+    array.cpp                 # TArray<T> test cases
+    octet.cpp                   # COctet test cases
+    stream.cpp                    # IStream/MemStream test cases
+  asn1/
+    tag.cpp                   # CTag test cases
+    decoder.cpp                 # CDecoder test cases
+    encoder.cpp                   # CEncoder test cases
+    reader.cpp                      # CReader test cases
+    writer.cpp                       # CWriter test cases
+    roundtrip.cpp                   # encode/decode integration tests
+    der.cpp                           # CDer test cases
+  crypto/
+    asyms/
+      rsa.cpp                        # RSA keygen/DER round-trip/sign-verify/encrypt-decrypt test cases
+      dsa.cpp                        # DSA keygen/DER round-trip/sign-verify test cases (shares one generated key pair across cases -- domain parameter generation is expensive)
+      p192.cpp                       # P192 keygen/DER round-trip/sign-verify test cases (shares one generated key pair across cases)
+      p224.cpp                       # P224: same coverage as p192.cpp
+      p256.cpp                       # P256: same coverage as p192.cpp
+      p384.cpp                       # P384: same coverage as p192.cpp
+      p521.cpp                       # P521: same coverage as p192.cpp
+      secp256k1.cpp                  # SECP256K1: same coverage as p192.cpp
+      bpool160r1.cpp, bpool192r1.cpp, bpool224r1.cpp, bpool256r1.cpp,
+      bpool320r1.cpp, bpool384r1.cpp, bpool512r1.cpp, bpool160t1.cpp,
+      bpool192t1.cpp, bpool224t1.cpp, bpool256t1.cpp, bpool320t1.cpp,
+      bpool384t1.cpp, bpool512t1.cpp
+                                     # the 14 Brainpool curves (RFC 5639), each: same coverage as p192.cpp
+      ed25519.cpp                    # Ed25519 keygen/round-trip/sign-verify test cases, incl. the RFC 8032 TEST 1 known-answer vector (signing is deterministic, so an exact byte match validates the whole pipeline at once)
+      ed448.cpp                      # Ed448: same coverage as ed25519.cpp, incl. its own RFC 8032 TEST 1 known-answer vector
+      x25519.cpp                     # X25519 keygen/round-trip/deriveSharedSecret test cases, incl. RFC 7748 5.2's Diffie-Hellman and iterated-scalar-multiplication known-answer vectors (independently re-derived via a standalone Python implementation before hardcoding, not just transcribed from a single fetch)
+      b163.cpp, k163.cpp, b233.cpp, k233.cpp, b283.cpp, k283.cpp,
+      b409.cpp, k409.cpp, b571.cpp, k571.cpp
+                                     # the 10 binary/Koblitz curves, each: same coverage as p192.cpp
+    hashers/
+      md5.cpp                    # MD5 test cases (RFC 1321 vectors + FIPS-style stress/chunking tests)
+      sha1.cpp                     # SHA-1 test cases (FIPS 180-4 vectors)
+      sha224.cpp                     # SHA-224 test cases (FIPS 180-4 vectors, cross-checked against openssl)
+      sha256.cpp                     # SHA-256 test cases (FIPS 180-4 vectors)
+      sha384.cpp                       # SHA-384 test cases (FIPS 180-4 vectors)
+      sha512.cpp                         # SHA-512 test cases (FIPS 180-4 vectors)
+      shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
+      shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
+    rng.cpp                       # CRng::fill() test cases
+    eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)
+    ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, SEC1 encoding, group-order check)
+  x509/
+    cert.cpp                  # CCert::import() test cases (own self-signed RSA/EC/KeyUsage/private-key fixtures), extension<T>() lookup, CCertBuilder::build() (self-signed RSA/DSA/EC/EdDSA, every digestAlgo/rsaPss combination)
+    crl.cpp                      # CCrlWriter::add()/remove()/build() + CCrlReader::decode()/find()/check() round-trip test cases (own self-signed CA fixtures)
+    ocsp.cpp                      # COcspCertId/COcspEntry/COcspRequestBuilder/COcspResponse round-trip + signature-verification test cases
+    realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS, ML-DSA)
+third-party/
+  CMakeLists.txt           # exposes vendored deps as CMake targets; add_subdirectory'd only when CERTPP_BUILD_TESTS=ON
+  doctest/
+    doctest.h                 # vendored single-header test framework (MIT)
+CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) as shared (default) or static
+```
+
+## Module responsibilities
+
+- **`common.hpp`** is the foundation every other header includes. It defines:
+  - `CERTPP_API`, the dllexport/dllimport macro switched by
+    `__COMPILES_LIBCERTPP__` (set only while building the library itself)
+    and `__SHARED_LIBCERTPP__` (set when building/consuming certpp as a
+    shared library). Non-MSVC compilers get an empty macro since ELF/Mach-O
+    default visibility already exports symbols.
+  - Fixed-width integer aliases (`uint8_t` .. `int64_t`, `float32_t`,
+    `float64_t`, `size_t`, `ptrdiff_t`, `nullptr_t`) inside `namespace certpp`,
+    so the rest of the library uses `certpp::uint32_t` etc. instead of reaching
+    into the global namespace.
+  - `ERetCode`, the shared status/error-code enum (`ERET_OK`, `ERET_INVAL`,
+    `ERET_NOTIMPL`, ...) that fallible operations across the library return,
+    instead of each module inventing its own status enum.
+  - `using std::swap;`, brought into `namespace certpp` so a hand-written
+    move assignment operator anywhere in the library can call unqualified
+    `swap(a, b)` per member and have it resolve to `std::swap`. This is
+    deliberately a using-declaration, not a custom `certpp::swap<T>`
+    template of its own (an earlier version of this file had exactly that,
+    with a body identical to `std::swap`) -- an unconstrained template
+    named `swap` in `certpp` becomes an argument-dependent-lookup candidate
+    for *any* type built out of a `certpp::` type, including ones this
+    codebase never declares itself. Concretely, `CDistinguishedName` holds
+    a `std::map<ENameType, CName>`; merely moving, assigning, or `.swap()`-ing
+    that map makes MSVC-STL's own `<xtree>` code do an unqualified `swap()`
+    on internal types (a tree-node pointer, or the comparator
+    `std::less<ENameType>`) that are parameterized by a `certpp::` type --
+    with a competing `certpp::swap<T>` in scope, that's a hard, unfixable
+    ambiguity error (proven by testing several workarounds: relocating the
+    swap call only moved which internal STL swap collided, and a per-type
+    specific overload -- the trick that fixed `TSpan<T>`/`TReadOnlySpan<T>`
+    once for an unrelated `std::sort` collision -- doesn't apply, since the
+    colliding type is a private STL implementation detail with no
+    declaration to add an overload next to). Replacing the custom template
+    with a using-declaration makes `certpp::swap` and `std::swap` the same
+    entity, so there's nothing to be ambiguous with, for any type, anywhere.
+- **`version.hpp` / `version.cpp`** define `SVersion` (major/minor/patch) and
+  `certpp::GetLibraryVersion()`. `HEADER_VERSION` in the header and
+  `LIBRARY_VERSION` in the `.cpp` are meant to be compared by consumers to
+  detect a header/binary mismatch.
+- **`time.hpp` / `time.cpp`** define `STimeSpan` (a millisecond duration,
+  entirely inline/`constexpr`: `absolute()`, the `total*()`/unit accessors,
+  arithmetic and comparison operators) and `SDateTime`, decomposed
+  calendar-field time (year/month/day/hour/minute/second/millisecond + an
+  `isUtc` flag). `SDateTime` lives at the top level (not under `asn1/`)
+  since it's a general-purpose value type — `asn1/decoder.hpp`'s
+  `decodeUtcTime()`/`decodeGeneralizedTime()` and `asn1/encoder.hpp`'s
+  `encodeUtcTime()`/`encodeGeneralizedTime()` use it, but so will non-ASN.1
+  code (e.g. a certificate's validity period once X.509 parsing exists).
+  `now()`/`from()`/`toUtc()`/`toLocal()`/`toSeconds()` all convert through
+  `<ctime>`: `gmtime`/`localtime` (via `_s` on MSVC, `_r` elsewhere for
+  thread safety) for the tm-from-time_t direction, and `mkgmtimeSafe()`
+  (`_mkgmtime` on MSVC, `timegm` elsewhere) for the reverse — `std::mktime`
+  is deliberately never used on a UTC-valued `tm`, since it only ever
+  interprets its argument as local time. `add()`/`subtract()`/`diff()`
+  and the `+`/`-`/`+=`/`-=` operators (`STimeSpan` or millisecond-based)
+  round-trip through `toMilliseconds()`/`from()`.
+- **`string.hpp`** defines `TString<T>` (default `T = char`), an owning,
+  growable, null-terminated string buffer — `TSpan<T>`'s owning counterpart.
+  Capacity grows in `CAP_INC` (64-element) increments via `reserve()`;
+  `trimExcess()` shrinks back down (freeing entirely when the string is
+  empty). Provides `append()`/`erase()`/`find()`/`findLast()`/`subString()`/
+  `trim()`/`toLower()`/`toUpper()`/`reverse()`, and converts to/from a
+  `TSpan<T>`/`TReadOnlySpan<T>` via `toSpan()`. Entirely templates, so it
+  has no meaningful `.cpp` (the stub exists only for consistency).
+- **`utils/djb.hpp` / `src/utils/djb.cpp`** define `CDjb`, a static-method-only
+  DJB hash utility (`SDjbValue = uint32_t`): `compute()` hashes a byte span
+  as-is, `computeAsUpper()`/`computeAsLower()` case-fold ASCII letters first
+  (for case-insensitive hashing) -- each takes an optional starting `hash`
+  so a caller can hash multiple spans as one logical value (`compute(a) `
+  then `compute(that result, b)` equals `compute(a+b)` in one call). The
+  case-folding functions widen each `char` through `uint8_t` before folding
+  it into the hash, not directly to `SDjbValue` -- `char`'s signedness is
+  implementation-defined, and a high-bit-set byte (e.g. an escaped
+  non-ASCII byte from `CName`) would otherwise sign-extend on a
+  signed-`char` platform (MSVC) and hash to a different value than
+  `compute()` gives the identical byte on an unsigned-`char` one. Used by
+  `CName` to give it a cheap equality pre-check ahead of a full `memcmp`.
+- **`utils/hex.hpp` / `src/utils/hex.cpp`** define `CHex`, a single-method
+  utility (`static bool decode(const char*, TArray<uint8_t>&)`) that parses
+  a hex string (optionally `0x`/`0X`-prefixed) into raw bytes, rejecting
+  malformed input. Factored out of what were previously near-duplicate
+  hex-parsing helpers in `CBigNum`/`CGf2m` and several `crypto/asyms/`
+  implementations; `CBigNum::fromHex()`/`CGf2m::fromHex()` are now thin
+  wrappers over it.
+- **`utils/bignum.hpp` / `src/utils/bignum.cpp`** define `CBigNum`, an
+  arbitrary-precision non-negative integer (little-endian 32-bit limbs,
+  schoolbook algorithms throughout -- correctness and simplicity over
+  performance, consistent with this library's early-stage priorities). It's
+  the shared math type behind every `crypto/asyms/` implementation: `add`/
+  `sub`/`mul`/`divMod`/`mod`/`mulMod`/`modSub`/`modNeg`/`shl`/`shr` for basic
+  and modular arithmetic, `modExp`/`modInverse`/`gcd` for RSA/DSA/EC-style
+  modular arithmetic, and `isProbablePrime` (Miller-Rabin, preceded by
+  small-prime trial division)/`generatePrime` (via `crypto::CRng`) for
+  RSA/DSA key generation. `fromHex`/`fromLittleEndian`/`toLittleEndian`/
+  `fromBigEndianTruncated` round out construction/serialization (the hex
+  parsing itself lives in the standalone `CHex` utility, see below);
+  `condSwap` is a conditional swap for branch-based scalar-multiplication
+  ladders (e.g. `crypto/asyms/x25519.cpp`'s Montgomery ladder). Lives under
+  `utils/` rather than `crypto/`, since the type itself is generic math, not
+  tied to any one algorithm (or even to `crypto/` specifically) -- only its
+  callers are cryptographic.
+
+  **`add`/`sub`/`mul`/`mod`/`mulMod`/`modSub`/`modNeg`/`shl`/`shr` mutate
+  `*this` in place and return `CBigNum&` (a reference to `*this`), purely to
+  allow chaining (`a.mulMod(b, m).add(c)`) -- they are NOT a
+  functional/copy-returning API, unlike a first instinct from their names
+  might suggest. A caller that still needs the pre-call value of the
+  receiver must copy it explicitly first (`CBigNum saved(original);
+  saved.add(x);`), including when the receiver is itself passed back in as
+  the `other`/`modulus` argument to a *different* variable's call a few
+  lines later (the classic bug this shape invites: mutating a curve's own
+  domain parameter, a function's by-reference out-parameter, or a value
+  still needed on a later loop iteration, because it happened to be the
+  left-hand operand of an otherwise-innocuous-looking expression). Calling
+  one of these on a fresh temporary or an rvalue chain (`CBigNum(1).shl(8)`,
+  or `CBigNum::modExp(...).mulMod(x, m)`) is always safe, since nothing else
+  can be holding a reference to a temporary. `divMod` is the one exception:
+  it stays a `const` query reporting both results via out-parameters, since
+  it never had a "return the changed value" shape to begin with. Static
+  factories (`fromBigEndian`, `fromHex`, ...) and serializers (`toBigEndian`,
+  `toLittleEndian`) are unaffected -- they don't operate on an existing
+  instance's value, so there's nothing to alias.
+
+  `mul()` additionally has a hardware-accelerated path (x86-64 only, and
+  only when `CERTPP_DISABLE_HWACCEL_SIMD` isn't set): `mulAccelerated()`
+  reinterprets pairs of the native 32-bit limbs as 64-bit digits and uses
+  MULX (BMI2)/ADCX (ADX) instead of the portable loop's 32-bit schoolbook
+  multiply-accumulate, gated behind a runtime CPUID check (`hasAdxBmi2()`)
+  since both extensions are optional even on x86-64. Given how much of this
+  library depends on `mul()` being correct, this path is verified by a
+  dedicated fuzz-style cross-check (`tests/utils/bignum.cpp`, against an
+  independent reference multiply built only from `add()`/`shl()`/
+  `testBit()`) across many random operand pairs, in addition to running
+  this library's whole test suite under both `CERTPP_DISABLE_HWACCEL_SIMD`
+  settings. That cross-check earned its keep immediately: an early version
+  tried to fold a 64x64 multiply's high word and an addition's carry-out
+  into one running "carry" value added straight into the next column,
+  which is unsound whenever the three-way sum (the running carry, the
+  existing accumulator digit, and the new digit's low word) needs a
+  carry-out of 2 -- something a single `_addcarry_u64` chain can't
+  represent (it can only ever produce 0 or 1). The fix restructures each
+  row into the classic two-step "long multiplication" shape -- first
+  compute the whole row `ai * b[]` on its own (safe: every step there only
+  ever combines two 64-bit values plus an implicit carry-in), *then* add
+  that row into the running total via an ordinary multi-precision add
+  (equally safe, same reason) -- rather than trying to fuse both steps
+  into a single pass.
+- **`utils/gf2m.hpp` / `src/utils/gf2m.cpp`** define `CGf2m`, a binary
+  field GF(2^m) element (polynomial basis) -- the field arithmetic
+  `CEc2Curve`'s binary curves need, and which `CBigNum` cannot provide
+  (`CBigNum` is arbitrary-precision integer arithmetic mod a prime; GF(2^m)
+  addition is XOR with no carry, multiplication is carry-less and reduced
+  by a fixed irreducible polynomial, not integer division). Fixed-capacity
+  (`uint64_t[9]`, 576 bits, covering every field this library defines up to
+  GF(2^571)) rather than arbitrary-precision like `CBigNum`, since a field
+  element's width never grows past its field's fixed `m`. `add()` is XOR;
+  `mul()` is schoolbook shift-and-XOR carry-less multiply followed by
+  bit-serial reduction against the field's trinomial/pentanomial reduction
+  polynomial -- or, on x86/x86-64 with `CERTPP_DISABLE_HWACCEL_SIMD` unset and a
+  runtime CPUID check confirming PCLMULQDQ support, a fixed 9x9 grid of
+  hardware carry-less multiplies (`_mm_clmulepi64_si128`) building the same
+  pre-reduction wide product instead, with the bit-serial reduction step
+  itself unchanged either way; `square()` is implemented as `mul(self)` rather than a
+  dedicated bit-spread fast path -- correct and much simpler, the same
+  performance/simplicity trade-off `CBigNum`/`CEcCurve` already make;
+  `inverse()` is the binary extended Euclidean algorithm over `GF(2)[x]`.
+  `fromHex()` parses a hex string (via `CHex`, see below); `toInteger()`
+  reinterprets this element's polynomial-basis bits as a `CBigNum` (FIPS
+  186-4 Appendix C.2), bridging into `CBigNum` arithmetic where `CEcdsa2`
+  needs it (e.g. reducing a binary-curve point's x-coordinate mod the
+  subgroup order `n`, which is a `CBigNum` even on a binary curve).
+
+  Like `CBigNum` above, `add`/`mul`/`square`/`inverse` mutate `*this` in
+  place and return `CGf2m&` for chaining only -- the same "copy first if you
+  still need the original" rule applies (see `CBigNum`'s note on this).
+  `EGf2mKnownField` names the 5 field sizes (163/233/283/409/571) this
+  library's binary curves use -- a "B" and "K" curve of the same size share
+  the identical field, only their curve coefficients differ, so the field
+  is a `CGf2m`-owned, non-owning `const SGf2mField*` pointing at one of 5
+  program-lifetime singletons (via `knownField()`/`knownFieldPtr()`),
+  mirroring `CEcCurve`'s known-curves lookup. Those singletons live behind
+  a construct-on-first-use function-local `static` rather than a plain
+  `CGf2m::_knownFields` class-static array: `CEc2Curve::_knownCurves`
+  (`ec2curve.cpp`, a different translation unit) reads them while *it*
+  is being statically constructed, and the standard doesn't guarantee
+  which translation unit's static objects finish initializing first --
+  this bit the initial implementation immediately (every `CEc2Curve`
+  coefficient/point silently ended up as a zero-valued, null-field `CGf2m`,
+  because the shared field singletons hadn't been populated yet when they
+  were read, and `CGf2m::fromBigEndian()`'s bounds check against the
+  not-yet-real `field.m` failed every single bit, leaving its `out`
+  parameter untouched at its all-null default -- caught by a `SIGSEGV` the
+  first time arithmetic dereferenced that null field pointer). The
+  function-local `static` sidesteps the ordering question entirely: it's
+  guaranteed initialized on first use, regardless of which translation
+  unit's static initializer calls it first. The reduction polynomials
+  themselves (FIPS 186-4 Appendix D / SEC 2's standard trinomials/
+  pentanomials) were independently confirmed irreducible of the correct
+  degree via a standalone check (Python's `sympy`) before hardcoding.
+- **`name.hpp` / `src/name.cpp`** define `CName`, one component of an X.509
+  distinguished name (e.g. a single `CN=...` or `OU=...`), and `ENameType`
+  (`ENAME_CN`/`ENAME_OU`/`ENAME_O`/`ENAME_L`/`ENAME_ST`/`ENAME_C`, bounded by
+  `ENAME_MAX`). Content is expected to be ASCII; `reset()` (private --
+  called only from the `CName(ENameType, const char*, size_t limit)`
+  constructor) escapes any byte > 127 with a leading `\` when storing it,
+  tracked by a `FLAG_ESCAPED` bit packed into the same `uint16_t` as
+  `ENameType` (masked off again by `type()`); `toString(out, escaped)`
+  reverses the escaping back to the original bytes by default
+  (`escaped=false`), or returns the raw internal (still-escaped) form when
+  `escaped=true` -- overloaded for `CString`/`CWideString`, plus a
+  `toString<U>(escaped)` convenience template returning a fresh
+  `TString<U>`. `CName::keyOf()`/`labelOf()` (static) and `key()`/`label()`
+  (member) map a type to its DN attribute key (`"CN"`, `"OU"`, ...) and
+  human-readable label (`"Common Name"`, ...) via the
+  `TYPE_KEYS`/`TYPE_LABELS` tables; `attributeOid()`/`attributeTypeOf()`
+  (static) map a type to/from its X.520 attribute OID arcs (e.g. `ENAME_CN`
+  <-> `{2, 5, 4, 3}`) via the `TYPE_OIDS` table, used by the `asn1` module
+  to encode/decode a `CDistinguishedName`'s components (see below).
+  `compare()` orders by `type()` first, then by content; `equals()`/
+  `operator==` pre-checks `type()` + a precomputed `CDjb::computeAsLower()`
+  hash (exposed via `hash()`) + length before an exact `memcmp`, so most
+  inequalities short-circuit without touching the data at all. The copy
+  constructor/assignment deep-copy `_data`/`_len`/`_hash`/`_type` verbatim
+  (inlined directly rather than through `reset()`, and duplicated across the
+  two rather than factored into a shared private helper, since it's only a
+  few lines each) -- calling `reset()` with `other._data` here would be
+  wrong, since `other._data` may already contain escape markers from a
+  previous `reset()`, and `reset()`'s escaping logic can't tell that apart
+  from raw input, so it would prepend a *new* backslash ahead of every
+  already-escaped byte instead of just copying it as-is (a real bug this
+  project hit once a `CName` with non-ASCII content got copied through a
+  `CDistinguishedName`'s `std::map`, compounding with each further copy).
+  Move construction/assignment swap state with the incoming value
+  (unqualified `swap()` per member, which resolves to `std::swap` -- see
+  `common.hpp`'s note below) rather than clearing `this` and taking
+  ownership first, this project's standard move-assignment convention --
+  `COctet` and `TString<T>` follow the same pattern.
+- **`name.hpp` / `src/name.cpp`** also define `CDistinguishedName`, an
+  ordered collection of `CName` components (`std::map<ENameType, CName>`,
+  at most one component per type). `trySet()`/`tryGet()`/`has()`/`keys()`
+  manage the map; `compare()` walks component types present in *either* DN
+  in ascending `ENameType` order, comparing each pair the two have in
+  common first (via `CName::compare()`), then breaking any remaining tie by
+  which DN has an extra component the other lacks (a lower-ordinal extra
+  component sorts that DN later). `toString(out, escaped)` renders
+  `"key1=value1, key2=value2"` in the map's (ascending-type) iteration
+  order. `tryParse(out, s)` (static, overloaded for `CString`/`CWideString`)
+  parses that same `"key1=value1, key2=value2"` shape back into a fresh DN:
+  it splits on top-level `,`, then each component on its first `=`, trims
+  whitespace from both sides, resolves the key via `CName::typeOf()`
+  (case-insensitive), and `trySet()`s the result with `overwrite=true` (so a
+  repeated key keeps the last occurrence); any malformed component (no `=`,
+  an empty/unrecognized key) fails the whole parse and leaves `out` empty.
+  The wide overload converts each trimmed key/value through
+  `TString<T>::convertTo<char>()` before doing the narrow lookup/`CName`
+  construction, since `CName` only ever stores narrow (possibly-escaped)
+  bytes. `out` is always reset to empty up front, before even the
+  null/empty-input check, so every failure path -- not just the ones
+  reached after that point -- leaves it empty.
+- **`io/span.hpp`** defines `TSpan<T>` (mutable) and `TReadOnlySpan<T>`
+  (read-only, implicitly constructible from a `TSpan<T>`) — non-owning
+  views over contiguous memory, used throughout the library instead of a
+  raw pointer+length pair. `SByteSpan`/`SReadOnlyByteSpan` alias the
+  `uint8_t` instantiations (see
+  [coding-conventions.md](coding-conventions.md#types) for the `T`- vs
+  `S`-prefix rule this follows). Entirely templates, so it has no `.cpp`.
+- **`io/array.hpp`** defines `TArray<T>`, an owning, growable array --
+  `TSpan<T>`'s owning counterpart for arbitrary element types (`TString<T>`
+  fills the same role specifically for character types). `EArrayType`
+  tracks two orthogonal things in one `uint8_t`: a mutually-exclusive
+  STATIC/DYNAMIC sub-type (`EARRAY_TYPE_MASK`, whether the array owns its
+  heap allocation or -- via the static `wrap()` -- merely aliases a
+  caller-supplied buffer it must never `delete[]`) and an independent
+  `EARRAY_FIXED` flag (rejecting `reserve()`/`trimExcess()`/any
+  `resize()`/`add()`/`insert()` that would need to grow past the current
+  capacity). A non-fixed STATIC array transforms into DYNAMIC the first
+  time it actually needs to grow -- whether that growth is requested
+  directly via `reserve()` or indirectly via `resize()`/`add()`/`insert()`,
+  since they all funnel through `reserve()` to make room; at that point it
+  allocates its own buffer and stops aliasing the wrapped one, without
+  freeing it, since it was never owned. `markFixed()` ORs `EARRAY_FIXED`
+  into whichever sub-type is already set, a no-op on a still-`EARRAY_NONE` (freshly
+  default-constructed, no elements ever added) array. Every mutating method
+  (`add()`, `insert()`, `remove()`, `pop()`, `resize()`, `reserve()`,
+  `trimExcess()`, `clear()`) manages element lifetimes manually via
+  placement `new`/explicit `~T()` calls rather than assuming `T` is
+  trivially constructible/destructible, the same manual-lifetime approach
+  `COctet` and `TString<T>` take for their own element types. Entirely
+  templates, so it has no `.cpp` -- like `TSpan<T>`.
+
+  Three real bugs surfaced by writing `tests/io/array.cpp` against a
+  lifetime-tracking element type (which flags a constructor/`operator=`
+  call whose operand's lifetime had already ended, e.g. via a stale magic
+  byte a destructor writes on its way out): `reserve()` only ever
+  transitioned `EARRAY_STATIC` to `EARRAY_DYNAMIC`, and only when `_data`
+  was already non-null -- so a plain default-constructed `TArray<T>()`
+  (`EARRAY_NONE`) stayed stuck reporting `EARRAY_NONE` forever even after
+  `add()`ing real elements, which made `empty()`/`operator bool()` (both of
+  which treat `EARRAY_NONE` as empty regardless of size) permanently wrong
+  for the single most common way to use this class; `insert()` shifted
+  elements by move-constructing sources into place and destroying them,
+  then plain-assigned (not placement-constructed) the new value into the
+  vacated slot -- but that slot's object lifetime had already ended (its
+  destructor ran as part of the shift, or -- for a pure append -- it was
+  still the live default object `resize()` had just constructed there,
+  which the fix must destroy before reusing), so the assignment (or, for
+  the pure-append case, the following shift's placement-`new`) ran against
+  either dead or still-live memory; and `markFixed()` masked `_type` with
+  `~EARRAY_TYPE_MASK` before OR-ing in `EARRAY_FIXED`, wiping out the
+  STATIC/DYNAMIC sub-type bits it should have left untouched (`EARRAY_FIXED`
+  is a disjoint bit needing no such mask, unlike `reserve()`/`trimExcess()`'s
+  legitimate "replace the sub-type" pattern the code had evidently been
+  copied from). A fourth, unrelated bug -- an inverted `resize()`
+  short-circuit (`!(_type & EARRAY_FIXED) && !reserve(size)` instead of
+  `(_type & EARRAY_FIXED) || !reserve(size)`) that skipped the capacity
+  check entirely for a fixed array needing to grow, letting `add()`/
+  `resize()` placement-`new` past the end of `_cap` -- was caught by the
+  same test suite once the other three were fixed and it could run
+  cleanly.
+- **`io/octet.hpp` / `src/io/octet.cpp`** define `COctet`, an owning,
+  fixed-size byte buffer (not resizable/growable, unlike `TString<T>`) --
+  `store()` replaces its content (copying and taking ownership; a null
+  pointer or zero size is rejected and leaves prior content untouched, so a
+  failed `store()` can't corrupt an existing instance), `clear()` releases
+  it, and `toSpan()`/`toPtr()` give read-only access. Copy construction/
+  assignment deep-copy; move construction/assignment transfer ownership and
+  leave the source empty.
+- **`io/stream.hpp` / `src/io/stream.cpp`** define `IStream`, the
+  read/write/seek stream interface (capability-queried via
+  `capabilities()`/`EStreamCapability`, optional operations like
+  `trimExcess()`/`length(newLen)`/`flush()` default to `ERET_NOTIMPL` rather
+  than being pure virtual), plus the `IStream::createMemory(...)` factory
+  functions. The `.cpp` only implements the factories; the concrete
+  in-memory implementation is `MemStream`, a private class under
+  `src/io/` (`memstream.hpp`/`.cpp`) that is not exposed through
+  `include/certpp/` (`MemStream::write()` returned 0 on every successful
+  write instead of the byte count -- a real bug, since that return value is
+  the only way `IStream::write()`'s contract lets a caller detect a short or
+  failed write; fixed when `CWriter` started depending on it) — see
+  [coding-conventions.md](coding-conventions.md#internal-implementation-headers)
+  for why it lives there and how its header guard/include differ from a
+  public header.
+- **`asn1/tag.hpp` / `src/asn1/tag.cpp`** define `CTag`, an ASN.1 tag
+  (class + constructed flag + tag number), with `decode()`/`encode()`
+  to/from a `TReadOnlySpan<uint8_t>`/`TSpan<uint8_t>`, plus `ETagClass` and
+  `EUniversalTags` for the standard tag classes/universal tag numbers.
+- **`asn1/decoder.hpp` / `src/asn1/decoder.cpp`** define `CDecoder`, static
+  methods for decoding ASN.1 data (`EEncodingRule` selects BER/CER/DER;
+  `EDecoderStatus` reports why a decode failed), split into two layers:
+  - **TLV framing** (tag-agnostic): `readEncodedValue()` reads a full
+    tag-length-value, handling both definite-length values and BER/CER
+    indefinite-length values (resolved by scanning nested values for the
+    end-of-contents marker, bounded by a `MAX_NESTING_DEPTH` guard so a
+    maliciously deep indefinite-length nesting can't exhaust the stack).
+    `readNextElement()` layers a cursor on top of it to iterate a
+    SEQUENCE/SET's members.
+  - **Content decoding** (tag-independent, so these work whether the
+    caller's tag was the plain universal one or an IMPLICIT/context-specific
+    one): `decodeBoolean()`, `decodeInteger()`, `decodeEnumerated()`,
+    `decodeNull()`, `decodeOctetString()`, `decodeBitString()` +
+    `testNamedBit()` (NamedBitList, e.g. X.509 KeyUsage), `decodeOid()` +
+    `countOidArcs()`/`decodeOidString<TChar>()` (the latter formats the arcs
+    as dotted-decimal text, e.g. "1.2.840.113549.1.1.1", into a
+    `TString<TChar>` -- purely ASCII digits/`.`, so it's locale-independent
+    for both `TChar`s, unlike `decodeString<TChar>()`),
+    `decodeText()`/`decodeString<TChar>()` (validates
+    UTF8String/PrintableString/IA5String/NumericString charsets; other
+    string tags pass through -- `decodeString<TChar>()` additionally
+    transcodes into a `TString<TChar>` via `TUtf8Encoding<TChar>`), and
+    `decodeUtcTime()`/`decodeGeneralizedTime()` (into an `SDateTime`), and
+    `decodeDistinguishedName()` (into a `CDistinguishedName`, from a
+    SEQUENCE's content octets -- see below for the exact structure expected).
+    These take just the value's content octets (an outer `readEncodedValue()`
+    call's `outArea`), not the tag+length header. `decodeOctetString()` and
+    `decodeBitString()` each have a `COctet&` overload alongside their
+    `SReadOnlyByteSpan&` one, copying the content into an owning `COctet`
+    instead of aliasing the source buffer.
+
+  `decodeDistinguishedName()` parses an X.501 Name/RDNSequence: each content
+  element must be a SET (RelativeDistinguishedName) containing exactly one
+  AttributeTypeAndValue (SEQUENCE { type OBJECT IDENTIFIER, value ANY }) --
+  a multi-valued RDN is rejected outright, since `CDistinguishedName` only
+  ever holds one `CName` per `ENameType`, so keeping just the first value
+  and silently dropping the rest would be the wrong failure mode. `type`
+  must resolve via `CName::attributeTypeOf()`; `value` must be a
+  PrintableString or UTF8String (the two kinds `CEncoder::
+  encodeDistinguishedName()` ever writes -- see below), decoded via
+  `decodeString<wchar_t>()` and converted to narrow via
+  `TString<wchar_t>::convertTo<char>()` before constructing the `CName`
+  (mirroring `CDistinguishedName::tryParse(CWideString)`'s same conversion
+  path). Always applies DER's rules regardless of the enclosing document's
+  rule set, since X.501 Names are encoded with DER in practice even inside
+  a BER/CER document -- so, unlike `readEncodedValue()`, it doesn't take an
+  `EEncodingRule` parameter.
+
+  `decoder.hpp` also hosts `EEncodingRule`/`checkEncodingRule` and the
+  CER-segment-limit check (`CER_MAX_SEGMENT`/`exceedsCerSegmentLimit`),
+  since both the decoder and `CEncoder` need them.
+- **`asn1/encoder.hpp` / `src/asn1/encoder.cpp`** define `CEncoder`, the
+  write-side counterpart, mirroring `CDecoder`'s two layers:
+  - **TLV framing**: `writeEncodedValue()` writes a tag-length-value using
+    definite-length form (valid under all three rule sets; BER/CER's
+    optional indefinite-length form is never produced), and
+    `encodedValueSize()` sizes a destination buffer up front.
+    `writeSequenceOf()`/`writeSetOf()` build a SEQUENCE/SET's content by
+    concatenating already-encoded children; `writeSetOf()` additionally
+    reorders them into CER/DER's canonical ascending order first (valid
+    under BER too, so it's always applied).
+  - **Content encoding**: `encodeBoolean()`, `encodeInteger()`,
+    `encodeEnumerated()`, `encodeNull()`, `encodeOctetString()`,
+    `encodeBitString()` + `encodeNamedBitList()` (trims trailing zero bits
+    per X.690 11.2.2), `encodeOid()` + `encodedOidSize()`,
+    `encodeOidString<TChar>()` + `encodedOidStringSize<TChar>()` (the
+    inverse of `decodeOidString<TChar>()`: parses a dotted-decimal
+    `TString<TChar>` via the private `parseOidArcs<TChar>()` helper, then
+    encodes exactly like `encodeOid()`),
+    `encodeText()`/`encodeString<TChar>()` (the inverse of
+    `decodeText()`/`decodeString<TChar>()`, validating via `decodeText()`
+    after transcoding a `TString<TChar>` to UTF-8) + `encodedStringSize<TChar>()`,
+    `encodeUtcTime()`/`encodeGeneralizedTime()` (+
+    `encodedGeneralizedTimeSize()`, since its length varies with whether
+    there's a fractional-seconds part), and `encodeDistinguishedName()` (+
+    `encodedDistinguishedNameSize()`; see below). `encodeOctetString()` and
+    `encodeBitString()` each have a `const COctet&` overload too, a thin
+    wrapper over the `SReadOnlyByteSpan` one via `COctet::toSpan()`. These
+    always emit DER-canonical value encoding (minimal-length integers,
+    `0xFF`/`0x00` booleans, ...) — a free choice for a writer, and canonical
+    form is valid BER/CER too, so
+    none of them take an `EEncodingRule` parameter.
+
+  `encodeDistinguishedName()` is the inverse of `decodeDistinguishedName()`:
+  one RDN (SET) per component, in the `CDistinguishedName`'s ascending
+  `ENameType` order (`std::map`'s own iteration order), each containing
+  exactly one AttributeTypeAndValue -- `type` from `CName::attributeOid()`,
+  `value` from the component's *unescaped* text
+  (`CName::toString<wchar_t>(false)`) encoded via `encodeString<wchar_t>()`
+  (genuine, locale-independent UTF-8), tried first as a PrintableString and,
+  only if that charset check fails, as a UTF8String instead. The private
+  `buildAttributeTypeAndValue()`/`buildDistinguishedNameContent()` helpers
+  build the full nested TLV bytes into a scratch `TArray<uint8_t>`
+  bottom-up (OID TLV + value TLV -> AttributeTypeAndValue SEQUENCE TLV ->
+  RDN SET TLV -> concatenated RDNSequence content); `encodedDistinguishedNameSize()`
+  and `encodeDistinguishedName()` both call the same private helper (so they
+  can never disagree on what gets encoded) and just differ in whether the
+  result is measured or copied into the caller's destination. An empty
+  (no-component) `CDistinguishedName` encodes successfully to zero content
+  octets (an empty SEQUENCE) -- as with `encodedStringSize()`, a `0` return
+  from the size-only helper is ambiguous between "empty" and "unencodable";
+  call `encodeDistinguishedName()` directly and check its return value to
+  tell them apart. Like the decoder side, always applies DER's rules and
+  takes no `EEncodingRule` parameter.
+- **`asn1/reader.hpp` / `src/asn1/reader.cpp`** define `CReader`, which pairs
+  `CDecoder`'s content-level `decode*()` methods with stream/cursor
+  management, so a caller doesn't hand-roll `readNextElement()` +
+  `decode*()` for every field. Constructed from an `IStream`, it reads from
+  it lazily: `growBuffer()` pulls one more chunk into an owned `COctet` only
+  when a parse attempt actually runs out of buffered data, rather than
+  reading the whole stream up front, so data written to the stream after
+  construction (but before it's needed) is still visible. `CDecoder` still
+  needs a contiguous span per attempt (and BER/CER indefinite-length parsing
+  requires scanning ahead), so growth itself isn't avoidable, just its
+  timing; constructed from a span directly (e.g. a parent element's already
+  fully-buffered content), there's no stream to grow from, so it simply
+  aliases the span. Since `growBuffer()` reallocates `COctet` (which frees
+  the old allocation), a plain saved `SReadOnlyByteSpan` cursor snapshot can
+  go stale mid-call -- every method that needs to roll back the cursor on
+  failure goes through the private `withRollback()` helper, which tracks a
+  `_generation` counter bumped on each reallocation and reconstructs the
+  correct rollback target (the saved span if nothing grew, or the whole
+  current buffer if it did, since `growBuffer()` always rebuilds it from
+  exactly the saved span's unconsumed bytes plus newly-read ones) instead of
+  trusting a potentially-dangling saved pointer. Because of this owned,
+  on-demand-reallocated buffer, `CReader` is move-only (copying would leave
+  the copy's cursor pointing into the source's buffer). Every typed
+  `readBoolean()`/`readInteger()`/
+  `readEnumerated()`/`readNull()`/`readOctetString()`/`readBitString()`
+  (`SReadOnlyByteSpan` and `COctet` overloads)/`readOid()`/
+  `readOidString<TChar>()`/`readText()`/`readString<TChar>()`/
+  `readUtcTime()`/`readGeneralizedTime()` reads the next element expecting
+  a specific plain UNIVERSAL, *primitive* tag (rejecting a constructed
+  encoding too, since none of `CDecoder`'s content-level decoders
+  reassemble constructed/segmented BER/CER strings) -- on any mismatch or
+  decode failure, the cursor is left exactly where it was, so a caller can
+  try a different read or treat an OPTIONAL/DEFAULT field as absent.
+  `readDistinguishedName()` follows the same tag-mismatch-leaves-cursor-alone
+  contract, but expects a *constructed* SEQUENCE (like `readSequence()`) and
+  fully decodes it via `CDecoder::decodeDistinguishedName()` rather than
+  returning a nested `CReader`, since a `CDistinguishedName` is a complete
+  value in its own right, not something a caller iterates member-by-member.
+  `readSequence()`/`readSet()`/`readConstructed()` return a nested `CReader`
+  over a constructed value's content, for descending into SEQUENCE/SET (or,
+  for `readConstructed()`, any other constructed tag, e.g. a
+  context-specific `[n]` EXPLICIT wrapper). The low-level
+  `readNextElement()` underlies all of these and is the escape hatch for
+  IMPLICIT-tagged or CHOICE content the typed methods can't recognize by
+  their plain universal tag.
+- **`asn1/writer.hpp` / `src/asn1/writer.cpp`** define `CWriter`, the
+  write-side counterpart: each typed `writeBoolean()`/`writeInteger()`/...
+  method encodes its content into a scratch buffer via the matching
+  `CEncoder::encode*()`, then writes the full tag-length-value to the
+  stream via `writeElement()` (`CEncoder::writeEncodedValue()` under the
+  hood), verifying the stream reports writing every byte. `writeSequence()`/
+  `writeSet()` mirror `CEncoder::writeSequenceOf()`/`writeSetOf()` exactly
+  (an array of already-encoded children) rather than introducing a new
+  nested-builder API; build each child with `CEncoder` (or a nested
+  `CWriter` over its own memory stream) first, exactly as the existing
+  `CEncoder`-only tests already do. `writeDistinguishedName()` follows the
+  same scratch-buffer-then-`writeElement()` pattern as the other typed
+  writes, sizing the buffer via `CEncoder::encodedDistinguishedNameSize()`
+  and filling it via `CEncoder::encodeDistinguishedName()`, then writing it
+  under the SEQUENCE tag. Unlike `CReader`, `CWriter` only holds
+  an `IStreamPtr` + `EEncodingRule`, so it's freely copyable.
+- **`crypto/hasher.hpp`** defines `IHasher`, the interface every hash
+  algorithm implements: `reset()` (back to the algorithm's initial state),
+  `push(buf)` (feeds more input, streaming -- any chunking of the same total
+  input produces the same digest), and `finish(out)` (writes the digest into
+  a caller-supplied `SByteSpan`, failing if `out` is shorter than
+  `byteWidth()`). `byteWidth()` (the digest length in bytes: 16/20/28/32/48/
+  64 for MD5/SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 respectively) is set once
+  via the constructor and exposed read-only, rather than being virtual, since
+  it never varies per-instance for a concrete hasher. Unlike `IStream`, none
+  of `IHasher`'s methods default to `ERET_NOTIMPL` -- every concrete hasher
+  implements all three, so all three are pure virtual.
+- **`crypto/hashers/md5.hpp`/`sha1.hpp`/`sha224.hpp`/`sha256.hpp`/`sha384.hpp`/`sha512.hpp`**
+  (and their matching `src/crypto/hashers/*.cpp`) implement `MD5`, `SHA1`,
+  `SHA224`, `SHA256`, `SHA384`, and `SHA512` from scratch (no third-party
+  dependency) -- each a concrete `IHasher`, living under the `hashers/` subdirectory
+  (plural) as opposed to `crypto/hasher.hpp` (singular) which defines the
+  interface itself; `crypto/asym.hpp`/`asyms/` follow the exact same
+  singular-interface/plural-implementations split for asymmetric
+  algorithms --
+  cryptographic hash functions widely referenced by X.509 tooling (message
+  digests, certificate fingerprints, `AuthorityKeyIdentifier`/
+  `SubjectKeyIdentifier` computation, and legacy signature algorithms), so
+  named plainly after the algorithm (`MD5`, not `CMD5`) rather than
+  `C`-prefixed, matching how `asn1`'s enumerators use the standard's own
+  abbreviations instead of inventing new names. MD5 and SHA-1 are
+  cryptographically broken and only useful for interoperating with legacy
+  certificates/fingerprints that still reference them, never for anything
+  new. Each holds a private `Context` struct (running state words + an
+  unprocessed-input buffer + a total-length counter) sized for its own block
+  size (64 bytes for MD5/SHA-1/SHA-224/SHA-256, 128 for SHA-384/SHA-512);
+  `push()` tops up a partial block from any previous call, runs the
+  compression function over as many full blocks as it can consume directly
+  from the caller's span, then buffers whatever's left over (less than one
+  block). `finish()` runs the padding + compression on a *local copy* of the
+  context (by constructing a scratch instance and overwriting its
+  `Context`) rather than mutating `_ctx` in place, so it can be called more
+  than once and always returns the same digest without disturbing the live
+  object -- calling `push()` again afterward simply keeps extending the
+  original (unfinalized) state, as if `finish()` had never been called.
+  MD5 packs message words and its 64-bit length field little-endian (the
+  one place it differs from the SHA family, which is big-endian
+  throughout); SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 all pad the same way (a
+  `0x80` byte, zero bytes up to the block-size-specific boundary, then the
+  bit length) but with algorithm-specific block/word sizes and round counts.
+  SHA-224/SHA-256 are identical except for their initial hash values and
+  SHA-224's truncated (28-byte, first 7 of 8 state words) output, and
+  SHA-384/SHA-512 are the same relationship one word size up (48-byte, first
+  6 of 8 state words); each pair shares the one genuinely error-prone piece
+  -- the round-by-round compression function -- via `Sha2_32Transform()`/
+  `Sha2_64Transform()` in the private (not part of the public API)
+  `src/crypto/hashers/sha2_32core.hpp`/`.cpp` and `sha2_64core.hpp`/`.cpp`
+  respectively; everything else (`Context` layout, `reset()`/`push()`/
+  `finish()`, padding) is duplicated between `sha224.cpp`/`sha256.cpp` (and
+  separately `sha384.cpp`/`sha512.cpp`) rather than factored into a shared
+  base class, since that boilerplate is short and mechanical -- only the
+  part that's actually complex enough to risk skew between two copies (the
+  compression function) is shared. The 128-bit SHA-384/SHA-512 length
+  field's high 64 bits are always written as zero -- correct for any
+  realistic input, since the low 64 bits alone can count up to 2^61 bytes
+  before overflowing.
+
+  `SHA1::transform()`/`Sha2_32Transform()` additionally have a
+  hardware-accelerated path (x86-64 only, and only when
+  `CERTPP_DISABLE_HWACCEL_SHA` isn't set): `transformAccelerated()` runs the
+  same compression function via the x86 SHA Extensions (SHA1RNDS4/
+  SHA1NEXTE/SHA1MSG1/SHA1MSG2 for SHA-1; SHA256RNDS2/SHA256MSG1/SHA256MSG2
+  for SHA-224/SHA-256, since they share one compression function) instead of
+  the portable round-by-round loop (`transformPortable()`), gated behind a
+  runtime CPUID check (`hasSha()`, leaf 7 sub-leaf 0, EBX bit 29) since the
+  extensions are optional even on x86-64 -- the same shape as
+  `CBigNum::mul()`'s `hasAdxBmi2()`/`CGf2m::mul()`'s `hasPclmul()` gates
+  above. Both are the well-known Intel-published intrinsics sequence (see
+  "Intel SHA Extensions", also mirrored across OpenSSL/BoringSSL/the Linux
+  kernel) rather than independently derived, given how easy a
+  single-instruction transcription slip is to get subtly wrong in this kind
+  of code; verified against this library's existing FIPS 180-4/RFC 3174 test
+  vectors (including each algorithm's million-`'a'` multi-block stress
+  vector, which exercises `transform()` across thousands of blocks), which
+  on a SHA-NI-capable CPU exercise the accelerated path automatically rather
+  than needing a dedicated forced-path test. MD5/SHA-384/SHA-512/SHAKE256
+  have no equivalent -- there is no mainstream x86 hardware extension for
+  MD5 or Keccak, and no widely-deployed x86 SHA-512 extension the way there
+  is for SHA-1/SHA-224/SHA-256, so `Sha2_64Transform()`/`SHAKE256`'s
+  Keccak-f permutation stay portable-only.
+- **`crypto/hashers/shake256.hpp` / `src/crypto/hashers/shake256.cpp`**
+  implement `SHAKE256`, the 256-bit-security extendable-output function
+  from the Keccak/SHA-3 family (FIPS 202) -- from scratch, like every other
+  hasher. Structurally different from the MD5/SHA family: instead of a
+  fixed-size compression function over a running hash state, it's a sponge
+  construction (absorb input into a 1600-bit state via the Keccak-f[1600]
+  permutation in 136-byte "rate" blocks, then squeeze output the same way)
+  around a genuine XOF, whose output length isn't fixed by the algorithm at
+  all -- so unlike every fixed-digest hasher here, `byteWidth()` is set by
+  the *caller*, via the constructor argument (`SHAKE256(114)` for Ed448's
+  usage, `SHAKE256()` defaulting to 32 otherwise), rather than being an
+  intrinsic property of the algorithm. Verified against known-answer
+  vectors generated locally via Python's `hashlib` (a mature, independent
+  implementation) rather than hand-transcribed from a spec document,
+  including inputs exactly at/one-below/one-above the 136-byte rate
+  boundary specifically to catch off-by-one padding bugs -- which is
+  exactly how an initial transposition bug in the rotation-offset table
+  (rows and columns swapped from FIPS 202's own layout) was caught
+  immediately, before it ever reached `Ed448`. Needed by `Ed448` (RFC
+  8032), which uses `SHAKE256(x, 114)` everywhere `Ed25519` uses SHA-512.
+
+  The Keccak-f[1600] permutation and sponge-absorption logic (`theta`/
+  `rho`/`pi`/`chi`/`iota`, 24 rounds, plus the multi-rate `0x1F`/`0x80`
+  domain-separated padding) are rate-independent -- i.e. identical for any
+  SHAKE variant regardless of its 1600-bit-minus-2*security-level rate --
+  so they live in a shared private `KeccakCore` class
+  (`src/crypto/hashers/keccakcore.hpp`/`.cpp`, `STATE_BYTES=200`,
+  `permute()`/`absorbBlock()`), not duplicated per algorithm. `SHAKE256`
+  (RATE=136, 512-bit capacity) and `SHAKE128` (`crypto/hashers/
+  shake128.hpp`/`src/crypto/hashers/shake128.cpp`, RATE=168, 256-bit
+  capacity) both just drive `KeccakCore` at their own rate; `EHashers`
+  gained `EHASH_SHAKE128` alongside the existing `EHASH_SHAKE256`.
+  `SHAKE128` is verified the same way as `SHAKE256` -- Python `hashlib`-
+  generated vectors (including rate-boundary cases at 167/168/169-byte
+  inputs) plus one NIST-published vector (CSRC's `SHAKE128_Msg0.pdf`
+  empty-message example, cross-checked against `hashlib.shake_128` to rule
+  out a transcription error from the PDF). Not currently used by any
+  signature/cipher algorithm in this library (unlike `SHAKE256`/Ed448) --
+  added ahead of need, as the first step of the ML-KEM/ML-DSA groundwork
+  described in [`docs/pqc-review.md`](pqc-review.md), since both FIPS
+  203/204 use SHAKE128 for matrix/vector expansion.
+- **`crypto/keys.hpp` / `src/crypto/keys.cpp`** define `SKeySize`/
+  `SKeySizeSpec` (a `{minSize, maxSize, step}` range an `IAsymmetric`
+  validates its `keySizes()` against); `IKeyBase` (`keySize()`,
+  `serialize(COctet&)`, `compare()` -- common to any key, symmetric or
+  asymmetric); `IPublicKey`/`IPrivateKey` (extend `IKeyBase` for the
+  asymmetric case, `IStream`-style `Ptr` aliases, never constructed
+  directly -- only produced by `IAsymmetric`; `IPrivateKey` adds
+  `publicKey()` to derive its public half); and `SKeyPair`, a plain struct
+  pairing the two (not an interface -- a key pair has no behavior beyond
+  its halves). The same header also defines a third, parallel key family
+  for KEMs (see `crypto/kem.hpp` below): `EKems`, `IKemKeyBase`,
+  `IKemPublicKey`/`IKemPrivateKey`, and `SKemKeyPair` -- mirroring
+  `EAsymmetrics`/`IAsymmetricKeyBase`/`IPublicKey`/`IPrivateKey`/`SKeyPair`
+  exactly, kept as a separate family (the same reasoning `ESymmetrics`
+  already uses) because a KEM key isn't a signature or DH key even though
+  it's still asymmetric.
+- **`crypto/kem.hpp`** defines `IKem`/`IKemContext`, the key-encapsulation
+  counterpart of `asym.hpp`'s `IAsymmetric`/`IAsymmetricContext` --
+  declared and header-only so far (no `.cpp`, not `#include`d from the
+  umbrella `certpp.hpp`, no concrete algorithm implements it yet), added
+  as the interface-design step of the ML-KEM groundwork in
+  [`docs/pqc-review.md`](pqc-review.md) ahead of any actual lattice-crypto
+  implementation work. It deliberately isn't just `IAsymmetric` reused:
+  a KEM's core operation produces an algorithm-chosen shared secret
+  *together with* the ciphertext that encapsulates it, unlike
+  `createEncrypter()`'s "encrypt this caller-supplied plaintext" shape, so
+  forcing it onto `IAsymmetric` would mean a `transform()` call whose
+  input is ignored -- a worse fit than a small sibling interface. `IKem`
+  mirrors `IAsymmetric`'s shape as closely as that one difference allows:
+  `builtIn(EKems)`, `keySizes()`, `generateKeyPair()`, `checkPrivateKey()`,
+  `createPublicKey()`/`createPrivateKey()` (span and `COctet` overloads),
+  and `createContext()`. `IKemContext` follows `IAsymmetricContext`'s
+  "acts on whichever bound key, not a parameter passed in" convention:
+  `encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret)` operates on
+  the bound *public* key (the peer's, bound via the two-key `keyPair(pub,
+  nullptr)` overload -- the caller is encapsulating *to* that peer);
+  `decapsulate(SReadOnlyByteSpan ciphertext, SByteSpan& sharedSecret)`
+  operates on the bound *private* key. `sizeOfCiphertext()`/
+  `sizeOfSharedSecret()` follow the existing getter-public/setter-protected
+  split `sizeOfSign()`/`sizeOfDigest()` use.
+- **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
+  `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
+  system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via
+  `bcrypt.lib`) on Windows, the `getrandom(2)` syscall (Linux 3.17+,
+  looping past `EINTR`/short reads, with a `/dev/urandom` fallback for
+  ENOSYS/an outright syscall failure) on Linux, or `/dev/urandom` directly
+  on other POSIX platforms -- rather than any third-party library, falling
+  back to `std::random_device` only if the OS API fails
+  *and* the `CERTPP_RNG_FALLBACK` CMake option (`OFF` by default -- a
+  stopgap for an environment that genuinely lacks an OS-level CSPRNG, not
+  something to leave on by default, since `std::random_device` isn't
+  guaranteed cryptographically secure on every standard library) is
+  enabled; leaving it disabled compiles the fallback path out entirely and
+  `fill()` returns `ERET_NOTSUP` instead. `fillNonZero(const SByteSpan&)`
+  fills a buffer with random *nonzero* bytes via rejection sampling over
+  `fill()`, for padding schemes that forbid zero bytes (RSAES-PKCS1-v1_5).
+  Needed by key generation (`IAsymmetric::generateKeyPair()`) and
+  encryption padding once any `asyms/` implementation exists.
+- **`crypto/asym.hpp`** defines `IAsymmetric`, `IAsymmetricContext`, and
+  `IAsymmetricTransformer`. `IAsymmetric` holds no key material: `keySizes()`
+  describes what the algorithm accepts, `generateKeyPair(keySize, out)`/
+  `createPublicKey()`/`createPrivateKey()` produce/parse keys, and
+  `createContext()` (`IStream::createMemory()`'s factory pattern as an
+  instance method) returns a key-less `IAsymmetricContext`.
+
+  `generateKeyPair()` reports its result via `ERetCode` (an out-parameter
+  `SKeyPair& out`, not a return value) rather than the empty-`SKeyPair`-on-
+  failure convention an earlier version used, so a caller can distinguish
+  *why* generation failed -- in particular, `EREG_AGAIN` specifically means
+  the freshly generated key failed `checkPrivateKey()`'s validation (see
+  below) and the caller should simply call `generateKeyPair()` again, as
+  opposed to a structural failure (`ERET_KEY_SIZE` for an unsupported
+  `keySize`, `ERET_UNKNOWN` for an RNG/arithmetic failure) that retrying
+  won't fix. Every concrete implementation validates its own freshly built
+  key via `checkPrivateKey()` before returning it, rather than looping
+  internally on a validation failure -- looping is the caller's decision,
+  not something hidden inside `generateKeyPair()`. Importantly,
+  `checkPrivateKey()`'s own diagnostic code is never forwarded directly --
+  `generateKeyPair()` always translates any non-`ERET_OK` result into
+  `EREG_AGAIN`, since a fresh candidate's *specific* rejection reason isn't
+  actionable for a caller who's just going to try again, and conflating the
+  two would make `EREG_AGAIN` ambiguous for a caller validating a
+  deserialized key directly (see `checkPrivateKey()` below) where retrying
+  isn't a coherent response at all.
+
+  `checkPrivateKey(key)` validates a private key's structure -- both a
+  freshly generated one (called internally by `generateKeyPair()`, as
+  above) and one parsed from untrusted storage via `createPrivateKey()`
+  (called directly). Since retrying isn't coherent for the latter case, it
+  reports *why* validation failed instead of `EREG_AGAIN`: `ERET_KEY_FORMAT`
+  if `key` wasn't created by this algorithm instance (wrong concrete type),
+  `ERET_KEY_ERROR` if `key` is internally inconsistent (e.g. its linked
+  public key is missing or of the wrong type), or `ERET_KEY_PARAM` if a
+  structural check on its own parameters/derived values fails. The same
+  three-way distinction (missing vs. wrong type vs. bad value) is applied
+  throughout `sign()`/`verify()`/`deriveSharedSecret()` too: each first
+  checks whether the context's bound key is present at all (`ERET_KEY_EMPTY`
+  if not), then whether it's this algorithm's own concrete key type
+  (`ERET_KEY_FORMAT` if not) -- distinguishing "nothing bound" from "the
+  wrong algorithm's key pair was bound to this context"
+  (`IAsymmetricContext::keyPair()` itself doesn't type-check what it's
+  given).
+
+  For the elliptic-curve algorithms (`CEcdsa`/
+  `CEcdsa2`/`Ed25519`/`Ed448`), this means the classic four checks on the
+  key's derived public point Q (point-at-infinity, field range, curve
+  equation, correct-order subgroup: `n*Q` must reduce to the identity) plus
+  (for `CEcdsa`/`CEcdsa2` only -- see below) the private scalar's own range
+  `d in [1, n-1]` -- and a fifth check every algorithm here applies
+  regardless of curve family: that Q is *this key's own* point, not merely
+  *some* well-formed one. `CEcdsa`/`CEcdsa2` recompute `d*G`
+  (`scalarMulBase()`) and compare against Q directly; `Ed25519`/`Ed448`
+  re-derive the scalar `s` from the stored seed (the same
+  `deriveFromSeed()` signing itself uses) and compare `s*B` against Q;
+  `RSA`/`DSA` (see below) and `X25519` apply the same idea to their own
+  shape instead -- without this, a private scalar could be paired with an
+  unrelated but independently well-formed public key/point and still pass
+  every other check. `X25519` (a Montgomery curve, u-coordinate only, cofactor
+  8, twist-secure by design) uses RFC 7748-appropriate analogues instead:
+  field range, reject an all-zero derived public key (RFC 7748 6.1's own
+  rule, applied to key generation rather than the ECDH output), and reject
+  a low-order/twist-torsion public key -- detected by computing `8*u`
+  directly (reduces to the identity iff `u` has order dividing the
+  cofactor) rather than checking against a hardcoded constant list; there is
+  deliberately no curve-equation check, since X25519 accepts u-coordinates
+  from either the curve or its quadratic twist by design. `Ed25519`/`Ed448`
+  skip the scalar-range check `CEcdsa`/`CEcdsa2` have: RFC 8032 5.1.5/5.2.5's
+  clamped scalar is deliberately *not* meant to be less than the group
+  order (clamping fixes it into a fixed high bit range instead), unlike
+  ECDSA's `d`. `RSA`/`DSA` (not elliptic-curve algorithms) implement their
+  own analogous structural checks instead of the four EC-point checks: RSA
+  validates `p`/`q` are distinct probable primes, `n == p*q`, `e` is
+  coprime to `phi(n)`, `d` is `e`'s modular inverse mod `phi(n)`, and the
+  CRT parameters (`dp`/`dq`/`qInv`) are consistent with `d`/`p`/`q`; DSA
+  validates `p`/`q` are probable primes, `q` divides `p-1`, `g` has order
+  `q`, `x` is in `[1, q-1]`, and `y == g^x mod p` -- both also dynamic-cast
+  their own `IPrivateKey::publicKey()` first (`ERET_KEY_ERROR` if that
+  fails) and check its stored fields (`n`/`e` for RSA; `p`/`q`/`g`/`y` for
+  DSA) match the private key's own, the same "Q is *this key's* point, not
+  just *some* point" idea the EC/EdDSA algorithms apply via `d*G`/`s*B`
+  above. `X25519`'s `checkPrivateKey()` does the analogous thing by
+  re-deriving `u` from the stored raw scalar and comparing its little-endian
+  encoding against the linked public key's stored bytes.
+
+  `IAsymmetricContext`
+  holds a bound key pair (`keyPair()`, cleared via `reset()`; both notify
+  the `protected` `onReset()` hook so a derived class can invalidate
+  anything it derives from the key) and acts on it directly: `sign()`/
+  `verify()` return `ERetCode` (not `bool`, so "doesn't match" is
+  distinguishable from `ERET_NOTSUP`/an error) and default to `ERET_NOTSUP`,
+  `IStream`'s not-every-implementation-supports-this pattern.
+  `deriveSharedSecret(peerPublicKey, out)` follows the same optional-
+  capability idiom, for Diffie-Hellman-style key agreement (`X25519`): it
+  combines the context's own bound private key with an explicitly passed
+  peer public key, unlike every other method here, which acts only on the
+  bound key(s) -- the minimal addition needed to fit a two-party operation
+  into an interface otherwise built around a single bound key pair.
+
+  `sign()`/`deriveSharedSecret()`'s `out` parameter is a fixed, caller-
+  allocated `SByteSpan&` (not a growable `TArray<uint8_t>&`): the caller
+  queries `sizeOfSign()` first, allocates a buffer at least that large, and
+  passes it in; the implementation writes into `out.data` and narrows
+  `out` to the actual bytes produced (`out = SByteSpan(out.data,
+  actualLen)`) before returning, or returns `ERET_NOSPC` up front without
+  writing anything if the caller's buffer was too small. `sizeOfSign()`/
+  `sizeOfDigest()` (getters public, setters `protected` -- the same
+  split-access pattern `IAsymmetric::keySizes()` already uses) are computed
+  in each concrete context's `onReset()` from whichever key is bound
+  (private key first, then public, so a verify-only context still reports
+  a meaningful `sizeOfSign()`): `sizeOfSign()` is the maximum signature
+  size (exact for RSA/Ed25519/Ed448's fixed-format signatures; a safe
+  upper bound for DSA/ECDSA/ECDSA2's DER-encoded ones, which are
+  frequently 1-2 bytes shorter in practice -- see those modules' own
+  bullets for the exact DER-size formula), 0 where `sign()` isn't
+  supported at all (`X25519`). `sizeOfDigest()` is the largest digest
+  length an algorithm's math actually consumes (the field/subgroup byte
+  length for DSA/ECDSA/ECDSA2, since a longer digest is truncated to
+  exactly that many bits regardless) -- 0 for RSA (which accepts one of
+  six discrete, unrelated lengths depending on hash algorithm, not a
+  single "maximum") and for Ed25519/Ed448/X25519 (no digest concept at
+  all: EdDSA's `sign()` "digest" parameter is the raw message).
+
+  `createEncrypter()`/`createDecrypter()` are pure virtual instead, since
+  asymmetric encryption only ever handles one block at a time -- they hand
+  back an `IAsymmetricTransformer` (bound to the same key) for the caller to
+  drive via `transform()` (repeatedly, one chunk at a time) then
+  `transformFinal()`, rather than a single arbitrary-length call.
+  `transform()`/`transformFinal()` take the same fixed `SReadOnlyByteSpan`/
+  `SByteSpan&` shape as `sign()`; `IAsymmetricTransformer::blockSize()`
+  (getter public, setter `protected`) reports the natural block size for
+  the transformer's operation -- for `RsaTransformer`, the RSA modulus
+  byte length (the ciphertext block size; PKCS#1v1.5's plaintext block is
+  up to 11 bytes smaller, not tracked as a second field).
+- **`crypto/asyms/rsa.hpp` / `src/crypto/asyms/rsa.cpp`** define `RSA`
+  (RFC 8017), the first concrete `IAsymmetric`. Keys serialize as PKCS#1
+  DER (`RSAPublicKey`/`RSAPrivateKey`, two-prime form only) via `CDer`.
+  `sign()`/`verify()` implement EMSA-PKCS1-v1_5: since `IAsymmetricContext`
+  isn't told which hash produced the digest it's given, the DigestInfo's
+  hash `AlgorithmIdentifier` is inferred from the digest's byte length (16/
+  20/28/32/48/64, covering MD5/SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 --
+  every hasher this library ships except the variable-length SHAKE256, and
+  not coincidentally all distinct lengths). `signPss()`/`verifyPss()`
+  (declared on `IAsymmetricContext` itself, defaulting to `ERET_NOTSUP`
+  there since only RSA overrides them) implement RSASSA-PSS (RFC 8017 9.1)
+  instead: EMSA-PSS-ENCODE/-VERIFY plus an MGF1 mask built from a caller-
+  named `EHashers`, rather than digest-length sniffing -- PSS's own
+  `AlgorithmIdentifier` carries its hash/MGF/salt-length explicitly, so
+  there's no ambiguity to resolve the way plain `sign()`/`verify()` have to.
+  `createEncrypter()`/`createDecrypter()` implement RSAES-PKCS1-v1_5,
+  using `CRng::fillNonZero()` for its padding. The private `RsaPublicKey`/
+  `RsaPrivateKey`/`RsaContext`/`RsaTransformer` classes back the public
+  `IPublicKey`/`IPrivateKey`/`IAsymmetricContext`/`IAsymmetricTransformer`
+  interfaces respectively, same pattern as `MemStream` backing `IStream`.
+
+  Every private-key operation (`sign()`, `signPss()`, `decryptBlock()`)
+  goes through `RsaContext::privateExp()`, which uses CRT (Garner's
+  formula) instead of a single full-modulus `modExp(x, d, n)`: it computes
+  `m1 = x^dp mod p`, `m2 = x^dq mod q` (each a modular exponentiation over
+  a modulus roughly half the bit length of `n`, so each is individually
+  about 4x cheaper than the full-width version, and the two are
+  independent of each other), then combines them via `h = qInv*(m1 - m2)
+  mod p; m = m2 + h*q`. This only runs when all of `p`/`q`/`dp`/`dq`/`qInv`
+  are present on the key (true for anything this library's own
+  `generateKeyPair()` produces, but not guaranteed for a key imported via
+  `createPrivateKey()` with only `n`/`d` populated) -- `privateExp()` falls
+  back to plain `modExp(x, d, n)` whenever any CRT parameter is missing.
+  Even when CRT parameters are present, the result is never returned
+  directly: `privateExp()` always re-encrypts it (`modExp(m, e, n) ==
+  x?`) before handing it back, falling back to plain `modExp` on any
+  mismatch. This check is simultaneously the standard Lenstra/Bellcore
+  fault-attack countermeasure (a single bit-flip during the CRT
+  computation, whether from a hardware fault or a corrupted/inconsistent
+  key, produces a faulty signature that -- for RSA specifically --
+  leaks a factor of `n` via `gcd(x - m^e, n)`, so skipping the check isn't
+  an option) and a safety net making CRT correct to use even on an
+  imported key whose CRT parameters were never independently validated via
+  `checkPrivateKey()`.
+- **`crypto/asyms/dsa.hpp` / `src/crypto/asyms/dsa.cpp`** define `DSA`
+  (FIPS 186-4), sign/verify only -- DSA has no encryption operation, so its
+  `DsaContext::createEncrypter()`/`createDecrypter()` unconditionally
+  return `ERET_NOTSUP`. `keySizes()` accepts exactly the three FIPS 186-4
+  (L, N) pairs (1024/160, 2048/256, 3072/256), selected by L alone;
+  `generateKeyPair()` generates fresh domain parameters (p, q, g) itself
+  (FIPS 186-4 A.1.1.2's probable-primes construction, minus the seed/
+  counter bookkeeping needed to later re-verify a parameter set's
+  provenance) rather than requiring them supplied separately, since this
+  library has no separate domain-parameter type to share them through.
+  Private keys serialize as the traditional (OpenSSL-compatible)
+  `DSAPrivateKey` DER layout; public keys as this library's own
+  `SEQUENCE { p, q, g, y }` (there's no equally simple traditional
+  single-blob public-key format -- OpenSSL's splits the domain parameters
+  into a `SubjectPublicKeyInfo` `AlgorithmIdentifier`, which this library
+  doesn't model yet). Signatures serialize as the standard
+  `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279).
+- **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`** define `CEcCurve`/
+  `SEcPoint`, a short-Weierstrass elliptic curve (`y^2 = x^3 + a*x + b mod
+  p`) in affine coordinates. Public rather than a `src/`-only implementation
+  detail, for the same reason as `CBigNum`: the group arithmetic isn't tied
+  to any one algorithm. `add()`/`doublePoint()` implement the group law
+  directly in affine form (one modular inversion per call each) -- still
+  the simplest path for a single one-off group operation, and what
+  `isOnCurve()`/`encodePoint()`/`decodePoint()` and this library's known-
+  curve self-checks build on. `scalarMul()` (an arbitrary point times an
+  arbitrary scalar) and `scalarMulBase()` (`g` times a scalar, e.g. every
+  sign()/verify() call's `k*g`/`u1*g` term) instead work internally in
+  Jacobian coordinates (`ECPointJac`, `eccurve.cpp`'s anonymous namespace --
+  `X/Z^2, Y/Z^3`, `Z == 0` for infinity): a branch-free R0/R1 ladder
+  (`condSwapJac()` swaps which register holds which value based on the
+  scalar's bit, rather than branching on whether to add at all) that pays
+  for exactly one modular inversion at the very end
+  (`toAffineFromJac()`), not one per bit; `scalarMulBase()` additionally
+  uses a lazily-built, per-instance-cached table of small multiples of `g`
+  (`_baseTable`, a 4-bit window, 16 entries) to cut the number of additions
+  from one per bit to one per 4 bits. `doublePointJac()`/`addJac()`
+  (Bernstein/Lange `dbl-2007-bl`/`add-2007-bl`, general `a`) and the
+  Lopez-Dahab equivalents in `ec2curve.cpp` are written to mutate a
+  `CBigNum`/`CGf2m` operand in place whenever that operand's current value
+  is never read again afterward, rather than copying it into a fresh
+  variable first (each such spot has a comment naming which read is that
+  operand's last) -- same in-place-over-copy discipline `CBigNum`/`CGf2m`'s
+  own methods follow (see their own doc comments above), just carried
+  through to these free functions' local variables too. Like `CBigNum`,
+  this still has no constant-time hardening (the ladder swaps aren't
+  constant-time either) -- correctness/auditability over full side-channel
+  resistance remains this library's stance.
+  `EEcKnownCurves` (`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
+  `ECURVE_P521`/`ECURVE_SECP256K1`, plus 14 `ECURVE_BPOOLxxxR1`/
+  `ECURVE_BPOOLxxxT1` values for the Brainpool curves) names this library's
+  built-in curves; `CEcCurve::knownCurves(which, out)` looks one up from the
+  private `_knownCurves` array, defined in `eccurve.cpp` with each curve's
+  standard domain parameters (FIPS 186-4 for the NIST curves, SEC 2 for
+  secp256k1, RFC 5639 for Brainpool -- the R1 curves' `a`/`b` are random;
+  each T1 curve is R1's isomorphic "twisted" counterpart with `a = -3 mod
+  p`, sharing the same `p`/`n`) in `EEcKnownCurves` order (independently
+  verified against a second source before hardcoding, given how silently a
+  single wrong hex digit would produce an insecure, non-standard curve that
+  still passes this library's own self-consistency tests -- this actually
+  happened twice during development, both times caught immediately by
+  `verify()` failing; every curve added since is instead checked
+  programmatically -- curve-equation and bit-length self-consistency, plus
+  a second-source cross-check -- before being hardcoded, precisely to catch
+  that class of mistake before it ships).
+- **`crypto/asyms/ecdsa.hpp` / `src/crypto/asyms/ecdsa.cpp`** define
+  `CEcdsa`, ECDSA (FIPS 186-4) over any `EEcKnownCurves` value, selected via
+  its constructor (`CEcdsa(ECURVE_P256)`, etc.) -- one class rather than a
+  separate concrete class per curve, since the only difference between them
+  is which domain parameters `keySizes()`/`generateKeyPair()`/sign/verify
+  use. `CEcdsa` looks its `CEcCurve` up once (via `knownCurves()`) and keeps
+  its own copy as a plain value member: the private `EcPublicKey`/
+  `EcPrivateKey` classes likewise each keep their own `CEcCurve` copy rather
+  than a pointer/reference back to `CEcdsa`'s, since a generated key can
+  outlive the `IAsymmetric` instance it came from (e.g.
+  `IAsymmetric::builtIn(EASYM_P256)->generateKeyPair(256)` as a one-liner)
+  -- an early version stored a raw `const CEcCurve*` there instead, which
+  dangled and crashed in exactly that pattern. Private keys serialize as
+  this library's own
+  `SEQUENCE { version INTEGER (0), d INTEGER, publicKey OCTET STRING }`
+  (no `SubjectPublicKeyInfo`/curve-OID modeling yet); public keys as a bare
+  SEC1 uncompressed point. Signatures serialize as the standard
+  `Ecdsa-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279/SEC 1).
+  `keySizes()` accepts exactly one size, the chosen curve's fixed field
+  width (160/192/224/256/320/384/512/521 bits, depending on curve).
+- **`crypto/ec2curve.hpp` / `src/crypto/ec2curve.cpp`** define `CEc2Curve`/
+  `SEc2Point`, a binary curve (`y^2 + x*y = x^3 + a*x^2 + b` over GF(2^m))
+  in affine coordinates -- `CEcCurve`'s binary-field counterpart, same
+  reasoning for being public and affine/non-constant-time, but an entirely
+  different group law (no formula is shared with `CEcCurve`) built on
+  `CGf2m` instead of `CBigNum` for the field arithmetic. `add()`/
+  `doublePoint()` stay affine (one field inversion each); `scalarMul()`/
+  `scalarMulBase()` work internally in Lopez-Dahab coordinates
+  (`EC2PointLD`: `X/Z, Y/Z^2`, `Z == 0` for infinity) via the same
+  branch-free-ladder/cached-fixed-base-table/mutate-in-place-when-safe
+  approach as `CEcCurve`'s Jacobian path (see its own doc comment above) --
+  `doublePointLD()`/`addLD()`'s formulas were derived from this file's own
+  affine ones and independently cross-checked against them (2000+ random
+  trials plus edge cases, and an end-to-end ladder run) via a standalone
+  Python GF(2^163) implementation before being hardcoded here, per this
+  module's established constant-verification discipline (see `_knownCurves`
+  below). `field` is a
+  non-owning `const SGf2mField*` rather than an owned value, mirroring
+  `CGf2m`'s own field pointer, since it's always one of `CGf2m`'s 5 shared
+  static singletons (a "B" and "K" curve of the same size use the same
+  field) -- see `CGf2m`'s doc comment for why this differs from `CEcCurve`
+  owning its `CBigNum` values directly. `EEc2KnownCurves` (`ECURVE2_B163`/
+  `ECURVE2_K163` .. `ECURVE2_B571`/`ECURVE2_K571`) names the 10 built-in
+  curves; `CEc2Curve::knownCurves()` looks one up from the private
+  `_knownCurves` array, defined in `ec2curve.cpp` with each curve's
+  standard domain parameters (FIPS 186-4 Appendix D / SEC 2, cross-checked
+  against a second source) in `EEc2KnownCurves` order. Every base
+  point/order was independently verified two ways before being hardcoded --
+  confirmed on-curve (`isOnCurve()`) *and* confirmed to have exactly the
+  stated order (`scalarMul(g, n)` reduces to the point at infinity) -- the
+  same two-property check this library used for Ed448's algebraically-
+  derived base point, and much stronger than either property alone.
+  Point encoding is SEC1 uncompressed (`0x04 || X || Y`) only; compressed-
+  point decompression (which needs a GF(2^m) quadratic solve `CGf2m`
+  doesn't implement) is deferred, since ECDSA sign/verify doesn't need it.
+- **`crypto/asyms/ecdsa2.hpp` / `src/crypto/asyms/ecdsa2.cpp`** define
+  `CEcdsa2`, ECDSA over any `EEc2KnownCurves` value -- `CEcdsa`'s binary-
+  curve counterpart, same constructor-selects-curve shape and same
+  by-value curve ownership in its private `Ec2PublicKey`/`Ec2PrivateKey`
+  classes (for the identical dangling-pointer reason `CEcdsa`'s own doc
+  comment explains). The ECDSA math itself (`r`/`s` reduced mod the
+  subgroup order `n`) is unchanged from `CEcdsa`'s, since `n` stays a
+  `CBigNum` regardless of curve family; only the signed point's
+  x-coordinate needs converting from a GF(2^m) element to an integer
+  first, via the field-element-to-integer rule FIPS 186-4 Appendix C.2
+  defines for binary curves (a field element's `m`-bit polynomial-basis
+  representation, reinterpreted directly as an unsigned integer -- the
+  same bytes `CGf2m::toBigEndian()`/`CBigNum::fromBigEndian()` already
+  agree on). `keySizes()` accepts exactly one size, the chosen curve's
+  field degree `m` (163/233/283/409/571 bits). Serialization formats are
+  identical in shape to `CEcdsa`'s.
+- **`crypto/asyms/ed25519.hpp` / `src/crypto/asyms/ed25519.cpp`** define
+  `Ed25519` (EdDSA over edwards25519, RFC 8032). Its field/point arithmetic
+  is dedicated to this one curve rather than routed through `CEcCurve`
+  (which only models short-Weierstrass curves; edwards25519 is a twisted
+  Edwards curve, with a different, unconditionally-complete addition
+  law -- one formula handles both point addition and doubling, unlike
+  `CEcCurve::add()`/`doublePoint()`). Every curve constant (the field
+  prime `2^255 - 19`, the equation parameter `d = -121665/121666 mod p`,
+  the base point) is *derived* at first use from small integers rather
+  than hardcoded as a 255-bit literal, except the group order's addend
+  (`0x14DEF9DEA2F79CD65812631A5CF5D3ED`, independently confirmed against a
+  second source), which has no simpler closed form -- deriving instead of
+  transcribing sidesteps the exact class of mistake the NIST curve
+  constants above hit twice. `sign()`/`verify()`'s "digest" parameter is
+  unusually the *raw message*, not a hash: pure EdDSA hashes its input
+  internally, so there is no caller-supplied digest to accept, unlike
+  every other algorithm in this library. Keys and signatures serialize as
+  RFC 8032's own raw byte encodings (32/32/64 bytes), with no DER
+  structure, since that's what the format already is. Verified against
+  RFC 8032's TEST 1 known-answer vector -- EdDSA signing is deterministic
+  (no per-signature randomness), so an exact signature byte match
+  validates the whole pipeline (arithmetic, derived constants, clamping,
+  and the signing algorithm itself) far more strongly than a
+  self-consistency round-trip alone could.
+
+  `pointAdd()` (affine) stays the reference implementation for the
+  single-operation case; `scalarMul()` (an arbitrary point) and
+  `scalarMulBase()` (the base point `B` specifically, e.g. every sign()/
+  verify() call's `B*r`/`B*s` term) work internally in extended projective
+  coordinates (`EdPointProj`: Hisil/Wong/Carter/Dawson's `X/Z, Y/Z, T=XY/Z`,
+  "Twisted Edwards Curves Revisited") via the same branch-free-R0/R1-ladder
+  shape `CEcCurve::scalarMul()` uses (`crypto/eccurve.hpp`'s doc comment),
+  simpler here since `pointAddProj()` is unconditionally complete (handles
+  `P+P` and the identity with no special-casing, so the ladder needs no
+  separate doubling step) and pays for exactly one modular inversion at the
+  very end instead of one per bit. `scalarMulBase()` additionally uses a
+  lazily-built, process-lifetime-cached table of small multiples of `B`
+  (`baseTable()`, a 4-bit window) -- unlike `CEcCurve`'s per-`CEcCurve`-
+  instance table, this file's base point is a single, fixed, file-scope
+  constant, so one process-wide table suffices.
+- **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`** define
+  `Ed448` (EdDSA over edwards448/"Ed448-Goldilocks", RFC 8032) --
+  structurally `Ed25519`'s twin, with its own field/point arithmetic (a
+  different prime, and untwisted rather than twisted Edwards addition, so
+  not shared code) and its own private `EdPublicKey`/`EdPrivateKey`/
+  `EdContext` classes, but every hash SHAKE256 (114-byte output) rather
+  than SHA-512, each prefixed with RFC 8032 5.2's `dom4(F, C)` string
+  (fixed here at `F = 0`, empty `C`: `"SigEd448" || 0x00 || 0x00` --
+  context strings aren't supported). Its base point is the one constant
+  that resisted every attempt to transcribe it directly: repeated fetches
+  of "authoritative" sources for its x/y coordinates each produced a
+  *different*, self-inconsistent-with-the-real-curve value (one even had
+  the wrong bit length outright). It was ultimately derived instead --
+  `B = [s^-1 mod L] * A`, where `A` is RFC 8032 TEST 1's known-correct
+  public key point and `s` its arithmetically-derived clamped scalar --
+  and independently confirmed by regenerating that exact public key from
+  it and by checking it has order exactly `L` (both extremely
+  discriminating properties, especially the latter: edwards448's cofactor
+  of 4 means most curve points don't have order `L` at all).
+  Keys/signatures serialize as RFC 8032's raw byte encodings (57/57/114
+  bytes). Verified against RFC 8032's own TEST 1 vector, for the same
+  reason as `Ed25519`.
+
+  `scalarMul()`/`scalarMulBase()` use the same extended-projective-
+  coordinates/branch-free-ladder/fixed-base-table approach as `Ed25519`
+  (see its own doc comment above), but edwards448 is *untwisted* (`a = 1`,
+  vs. edwards25519's `a = -1`), so `pointAddProj()` here uses the general
+  `a`-parametrized addition law rather than `Ed25519`'s `a = -1`-specialized
+  one -- derived directly from the affine addition law (see this function's
+  own comment in `ed448.cpp`) rather than transcribed from a reference,
+  since the well-known named formula for this shape is specific to `a =
+  -1`.
+- **`crypto/asyms/x25519.hpp` / `src/crypto/asyms/x25519.cpp`** define
+  `X25519` (Diffie-Hellman key agreement over Curve25519, RFC 7748) --
+  same field prime as `Ed25519` (`2^255 - 19`), but Montgomery-form curve
+  arithmetic rather than twisted-Edwards, since X25519 only ever needs the
+  u-coordinate Montgomery ladder (RFC 7748 5), not full affine point
+  addition. `sign()`/`verify()` are left at `IAsymmetricContext`'s
+  `ERET_NOTSUP` defaults (no signing operation exists); only
+  `deriveSharedSecret()` is overridden. A private key's raw 32 bytes are
+  stored unclamped and clamped at each scalar-mult call site instead
+  (RFC 7748 5's own recommended split of responsibility), so
+  `serialize()`/`createPrivateKey()` always round-trip the caller's exact
+  original bytes. `deriveSharedSecret()` rejects an all-zero computed
+  secret (RFC 7748 6.1 -- a low-order peer point, e.g. `u = 0`) rather than
+  returning predictable output. Keys serialize as RFC 7748's raw 32-byte
+  u-coordinate/scalar encodings, no DER. Verified against RFC 7748 5.2's
+  Diffie-Hellman and iterated-scalar-multiplication known-answer vectors,
+  independently re-derived via a standalone Python implementation of the
+  same ladder before hardcoding -- not just transcribed from a single
+  fetch, consistent with this module's established constant-verification
+  discipline.
+- **`crypto/transform.hpp`** defines `ITransformer`, the generic streaming
+  transform interface (`blockSize()`, `transform()`, `transformFinal()`)
+  both `IAsymmetricTransformer` (encrypt/decrypt with RSA, one block at a
+  time) and `ISymmetricTransformer` (below) derive from.
+- **`crypto/sym.hpp`** defines `ISymmetric`, `ISymmetricContext`, and
+  `ISymmetricTransformer` -- the symmetric-cipher counterpart of
+  `asym.hpp`'s `IAsymmetric`/`IAsymmetricContext`/`IAsymmetricTransformer`,
+  with one structural difference: `ISymmetric::createContext(key)` binds
+  the key immediately (there's no keyless context to fill in later, unlike
+  `IAsymmetricContext::keyPair()`), and the IV is set separately via
+  `ISymmetricContext::key(key, iv)` (the same method, called again) since
+  `createContext()` itself takes no IV. `ISymmetric::builtIn(which)` is the
+  `ESymmetrics` (`ESYM_AES`/`ESYM_DES`/`ESYM_3DES`/`ESYM_CHACHA20`) factory,
+  mirroring `IAsymmetric::builtIn()`.
+- **`crypto/syms/aes.hpp`/`des.hpp`/`des3.hpp` / `src/crypto/syms/aes.cpp`/
+  `des.cpp`/`des3.cpp`** define `AES` (FIPS-197, 128/192/256-bit keys),
+  `DES` (FIPS 46-3, legacy/interop only), and `TripleDES` (two- or
+  three-key EDE, built directly on the same DES block core). All three
+  `ISymmetricContext`s operate in CBC mode with PKCS#7 padding (RFC 5652
+  6.3) -- the only mode this library's block ciphers implement -- via the
+  shared `src/crypto/syms/cbctransformer.hpp`/`.cpp` (`CbcTransformer`, not
+  part of the public API): buffering, CBC chaining, and padding add/strip
+  factored out once rather than duplicated per algorithm, parameterized by
+  a per-block encrypt/decrypt callback and the block size. Decrypting always
+  holds back the most recently completed block instead of emitting it
+  immediately, since it might turn out to be the final (padded) one.
+  Padding validation (`transformFinal()`'s decrypt path) is written to run
+  every byte comparison unconditionally, with no early exit on the first
+  mismatch and no branch on the pad value itself, specifically to avoid a
+  Vaudenay-style CBC padding oracle (the exact class of bug behind
+  POODLE/Lucky13) for any caller that lets an attacker observe many decrypt
+  attempts against adaptively chosen ciphertexts -- the one place in this
+  module where timing-side-channel hardening is treated as load-bearing
+  rather than out of scope (contrast `CEcCurve`'s/`CBigNum`'s own
+  correctness-over-constant-time stance elsewhere in `crypto/`). `AesCore`
+  (`aes.cpp`), `DesCore` (shared private `descore.hpp`/`.cpp`, used by both
+  `des.cpp` and `des3.cpp`), and `TripleDesCore` (`des3.cpp`) hold each
+  algorithm's own block-cipher math, kept private since nothing outside
+  that TU needs them (`SymRawKey`, a trivial raw-byte `ISymmetricKey` with
+  no validation beyond length, is shared the same way via
+  `src/crypto/syms/symkey.hpp`).
+
+  `AesCore` additionally has a hardware-accelerated path (x86-64 only, and
+  only when `CERTPP_DISABLE_HWACCEL_AES` isn't set), the same shape as
+  `SHA1`/`Sha2_32Transform`'s SHA-NI dispatch above: `encryptBlock()`/
+  `decryptBlock()` are thin dispatchers that call
+  `encryptBlockAccelerated()`/`decryptBlockAccelerated()` when a runtime
+  CPUID check (`hasAesNi()`, leaf 1, ECX bit 25) passes, falling back to
+  `encryptBlockPortable()`/`decryptBlockPortable()` (the original
+  round-by-round implementation) otherwise. The accelerated path is the
+  Intel-published `AESENC`/`AESENCLAST`/`AESDEC`/`AESDECLAST`/`AESIMC`
+  intrinsics sequence (`<wmmintrin.h>`): encryption runs the standard
+  cipher directly against `expandKey()`'s existing forward round keys
+  (byte-identical to what AES-NI's own key schedule would produce, so no
+  separate hardware key expansion is needed); decryption uses the
+  "Equivalent Inverse Cipher" construction -- the forward round keys in
+  reverse order, each put through `AESIMC` except the first and last --
+  rather than re-deriving a true inverse key schedule. `DES`/`TripleDES`/
+  `ChaCha20` have no equivalent: there is no mainstream x86 hardware
+  extension for DES/3DES's Feistel network or ChaCha20's ARX rounds.
+  Verified by the same SP 800-38A/FIPS-46/RFC 8439 known-answer vectors
+  this module already runs -- on an AES-NI-capable CPU they exercise the
+  accelerated path automatically, with `CERTPP_DISABLE_HWACCEL_AES`
+  available to force the portable path for an explicit comparison.
+- **`crypto/syms/chacha20.hpp` / `src/crypto/syms/chacha20.cpp`** defines
+  `ChaCha20` (RFC 8439): a 256-bit key, a 96-bit nonce (`iv()`), and an
+  internal 32-bit block counter (always starting at 0) are expanded into a
+  keystream XORed with the input -- encryption and decryption are the
+  identical operation, so `createDecrypter()` just returns another
+  `createEncrypter()`-shaped transformer. Being a stream cipher, it needs
+  no padding and places no block-alignment requirement on input length;
+  `sizeOfBlock()` (64, once a key is bound) only reports the cipher's
+  internal keystream-generation granularity, not an alignment requirement.
+  Verified against RFC 8439 Appendix A.1's block-function known-answer
+  vector.
+- **`x509/ext.hpp` / `src/x509/ext.cpp`** define `IExtension`, the concrete
+  (not pure-virtual, despite the `I` prefix -- it's fully usable on its own
+  for an OID this library doesn't model further) base every decoded X.509
+  extension is: `oid()` (dotted-decimal text) + `value()` (the raw,
+  still-DER-encoded `extnValue` octets) + `critical()` (`Extension.critical`,
+  RFC 5280 4.2; defaults to `false`, matching DER's own default for an
+  absent field), plus `IExtensionPtr` and the static `IExtension::create(oid,
+  value)` factory. `create()` dispatches by OID to the matching concrete
+  class under `x509/exts/` (see below), falling back to the private
+  `UnknownExtension` (defined in `ext.cpp`, not part of the public API) for
+  any OID this library doesn't model in full -- so `CCert::extensionOf()`/
+  `extension<T>()` (see `cert.hpp` below) always return *something* for a
+  present extension, never null, whether or not its specific type is
+  recognized. `critical()` has a public setter (not threaded through every
+  concrete subclass's own constructor, which only takes oid/value) so
+  `CCert::parseExtensions()` can record the value it read from a parsed
+  certificate's `Extension.critical` field as a separate step after
+  `create()` returns, and so an `IExtensionBuilder` can opt an extension it
+  builds into being critical before adding it to `CCertBuilder::extensions`
+  (`CCertBuilder::build()` DER-canonically omits the `critical` BOOLEAN when
+  false, writing it only when true). This library parses and preserves
+  `critical()`; it does not itself enforce RFC 5280's "reject a certificate
+  with an unrecognized critical extension" rule anywhere -- `CCert` has no
+  chain-validation engine at all (see this document's own scope note), so
+  that policy decision is left to whatever code consumes `CCert`'s parsed
+  extensions and does build a validator on top of it.
+- **`x509/generalname.hpp` / `src/x509/generalname.cpp`** define
+  `CGeneralName`, one `GeneralName` (RFC 5280 4.2.1.6), a 9-way CHOICE
+  (`EGeneralNameType`, context-specific tags 0-8) used by four different
+  extensions (`SubjectAltName`, `AuthorityKeyIdentifier`'s
+  `authorityCertIssuer`, `CRLDistributionPoints`' `fullName`,
+  `AuthorityInformationAccess`'s `accessLocation`, and
+  `NameConstraints`'s `GeneralSubtree.base`) -- factored out once, here,
+  rather than duplicating a 9-way CHOICE decoder in each. Only the
+  alternatives realistically seen in commercial certificates get a typed
+  accessor (`text()` for `rfc822Name`/`dNSName`/`uniformResourceIdentifier`/
+  `registeredID`, `directoryName()` for the `directoryName` alternative);
+  `otherName`/`x400Address`/`ediPartyName` keep only their raw,
+  still-DER-encoded content (`raw()`) rather than modeling those rarer
+  shapes in full. `decode()`'s `directoryName` case unwraps one extra TLV
+  layer before reaching the inner `RDNSequence`, since `directoryName [4]`
+  must be EXPLICIT (`Name` is itself a CHOICE, which ASN.1 forbids
+  implicitly tagging) -- unlike every other alternative here, which is
+  IMPLICIT. `decodeList()` decodes a whole `GeneralNames` `SEQUENCE OF
+  GeneralName`, skipping (not aborting on) any individual element `decode()`
+  can't parse, matching this module's established best-effort philosophy
+  (see `cert.hpp` below). `CGeneralSubtree` (`NameConstraints`'
+  `GeneralSubtree`: a `base` `GeneralName` plus optional `minimum`/`maximum`
+  distance bounds) lives in this same file, immediately below
+  `CGeneralName`, since it's a `GeneralName`-shaped value with no identity
+  of its own beyond that.
+- **`x509/access.hpp` / `src/x509/access.cpp`** define `CAccessDescription`
+  (`AuthorityInformationAccess`'s `AccessDescription`: an access method OID
+  + a `CGeneralName` location) and, below it, `ECrlReasons` +
+  `CDistributionPoint` (`CRLDistributionPoints`' `DistributionPoint`:
+  `fullName`/`nameRelativeToCrlIssuer` CHOICE, optional `reasons` bit flags,
+  optional `crlIssuer`). `ECrlReasons`' bit positions map directly to the
+  `ReasonFlags` BIT STRING's own RFC 5280 4.2.1.13 named-bit numbering (bit
+  1 = `keyCompromise` .. bit 8 = `aACompromise`), unlike `exts/ku.hpp`'s
+  `EKeyUsages` (see below) -- there's no pre-existing/tested bit layout to
+  preserve here, so the natural RFC numbering is used as-is rather than
+  propagating `EKeyUsages`' historical inversion to unrelated new code.
+  `CDistributionPoint::decode()`'s `distributionPoint [0]` case unwraps one
+  extra TLV layer for the same EXPLICIT-CHOICE reason `CGeneralName`'s
+  `directoryName` case does (`DistributionPointName` is a CHOICE). Both
+  classes are grouped into this one file, rather than living next to the
+  single extension class each backs, since a future caller may want to
+  construct/compare them independently of `CCrlDistributionPointsExtension`/
+  `CAuthorityInformationAccessExtension`.
+- **`x509/policy.hpp`** defines `CPolicyInformation`
+  (`CertificatePolicies`' `PolicyInformation`: a policy OID +
+  `policyQualifiersRaw()`). The `policyQualifiers` `SEQUENCE OF
+  PolicyQualifierInfo` is deliberately kept as raw, still-DER-encoded
+  content rather than modeling `PolicyQualifierInfo`'s own
+  `CPSuri`/`UserNotice` CHOICE in full -- callers overwhelmingly only need
+  `policyIdentifier()` itself (e.g. to check for a specific CA/Browser
+  Forum policy OID like `OID_ANY_POLICY`), so the added parsing complexity
+  isn't worth it yet. Entirely inline, so it has no matching `.cpp`.
+- **`x509/exts/`** holds one concrete `IExtension` subclass per RFC 5280
+  extension this library models, named by its common short-hand rather than
+  spelled out in full (`bc.hpp` = `CBasicConstraintsExtension`, `ku.hpp` =
+  `CKeyUsagesExtension` (+ `EKeyUsages`), `eku.hpp` =
+  `CExtendedKeyUsageExtension`, `san.hpp` = `CSubjectAlternativeNameExtension`,
+  `ski.hpp` = `CSubjectKeyIdentifierExtension`, `aki.hpp` =
+  `CAuthorityKeyIdentifierExtension`, `cdp.hpp` =
+  `CCrlDistributionPointsExtension`, `aia.hpp` =
+  `CAuthorityInformationAccessExtension`, `cp.hpp` =
+  `CCertificatePoliciesExtension`, `nc.hpp` = `CNameConstraintsExtension`).
+  Every one follows the same shape: a `public static constexpr const char*
+  OID` naming its own extension OID (matched by `ext.cpp`'s dispatch table),
+  a single constructor taking the raw `extnValue` octets and parsing them
+  best-effort (a malformed field is left at a safe default rather than
+  failing the whole extension, mirroring `CCert::import()`'s own philosophy
+  below), and read-only accessors over the decoded result -- no encoding
+  side exists yet, matching this library's certificate-parsing-only stage.
+  `EKeyUsages` (`ku.hpp`) is the one exception to "natural RFC bit order":
+  its bit positions are historically inverted from the `KeyUsage` BIT
+  STRING's own named-bit numbering, preserved exactly as `CCert` originally
+  defined it (and as existing tests already assert) rather than "corrected"
+  to match `ECrlReasons`' RFC-direct convention above, since changing an
+  already-tested public enum's values would be a breaking, not a fixing,
+  change. `eku.hpp` additionally defines well-known `KeyPurposeId` OID
+  constants (`OID_SERVER_AUTH`, `OID_CLIENT_AUTH`, ...) and a `has(oid)`
+  convenience query. `cdp.hpp`/`aia.hpp`/`cp.hpp`/`nc.hpp` are each a thin
+  extension-level wrapper (an OID + a `TArray` of decoded entries) around
+  the value types `x509/access.hpp`/`x509/policy.hpp`/`x509/generalname.hpp`
+  actually define, per those files' own bullets above.
+- **`x509/cert.hpp` / `src/x509/cert.cpp`** define `CCert`, parsing a DER
+  X.509 `Certificate` (`import(data)`) into subject/issuer
+  (`CDistinguishedName`), validity (`SDateTime`), serial number, key/
+  signature algorithm identifiers, the raw `SubjectPublicKeyInfo`, and every
+  extension. Only fields this class exposes a getter for are retained --
+  `issuerUniqueID`/`subjectUniqueID` and the TBSCertificate-embedded copy of
+  the signature algorithm are read past but discarded. Parsing follows one
+  consistent best-effort contract: `import()` builds every field into local
+  variables first and only commits them to `*this` at the very end (so a
+  failure partway through never leaves the object half-populated), but an
+  *algorithm* it doesn't recognize (an unlisted key/signature/curve OID) is
+  never itself a parse failure -- `keyAlgo()`/`signAlgo()` fall back to the
+  OID's own dotted-decimal text, and `publicKey()`/`createHasher()` simply
+  return null, since the rest of a certificate's data is still meaningful
+  even when this library can't act on its cryptographic algorithm. The
+  three private static tables `KEY_ALGOS`/`SIG_ALGOS`/`EC_CURVES` (each
+  `{oid, name, which}`) drive that resolution; a DSA key's split
+  `SubjectPublicKeyInfo` representation (`Dss-Parms {p, q, g}` +
+  a bare `INTEGER y`) is re-assembled into the standalone `SEQUENCE {p, q,
+  g, y}` blob `DSA::createPublicKey()` expects via `buildDsaPublicKeyBlob()`,
+  the one algorithm needing this extra step.
+
+  `publicKey()`/`privateKey()` are genuinely lazy: `_cachedPub`/`_cachedPvt`
+  (`mutable`) are cleared (not rebuilt) by `import()`, and only actually
+  constructed the first time each accessor is called -- a caller that never
+  asks for the key pays nothing for it. `privateKey(IPrivateKeyPtr&)`
+  (the setter) validates the incoming key is genuinely this certificate's
+  own by comparing its derived public key against `publicKey()`
+  (`IKeyBase::compare()`) before accepting it. `createHasher()` resolves the
+  *signature* algorithm's own digest (`_sigHashAlgo`, set from
+  `signAlgo()`'s OID during `import()`) -- unrelated to `thumbprint()`,
+  which is unconditionally the whole raw certificate's SHA-1 digest
+  regardless of the certificate's actual signature algorithm, matching the
+  conventional meaning of a certificate "fingerprint" in most tooling.
+
+  Extensions are held as `std::vector<IExtensionPtr>` (`_extensions`,
+  populated once by the private `parseExtensions()` via `IExtension::
+  create()`, which also records each extension's `critical()` flag and
+  skips a repeated OID -- keeping only the first occurrence -- rather than
+  accumulating a RFC-5280-prohibited duplicate pair `extensionOf()`'s
+  first-match lookup and a caller iterating `_extensions` directly could
+  otherwise disagree about), looked up by OID through `extensionOf(oid, out)`
+  (linear scan -- the extension count on a real certificate is always small,
+  so this needs no map) or, more commonly, through the public
+  `template<typename TExtension> extension<TExtension>()` helper, which
+  looks up `TExtension::OID` and `dynamic_pointer_cast`s the result --
+  e.g. `cert.extension<CBasicConstraintsExtension>()`. `keyUsages()`,
+  `subjectKeyIdentifier()`, and `authorityKeyIdentifier()` are all just
+  thin callers of `extension<T>()` over `exts/ku.hpp`/`ski.hpp`/`aki.hpp`
+  respectively, kept as their own named methods (rather than requiring
+  every caller to spell out `extension<CKeyUsagesExtension>()` etc.
+  themselves) since they're the three extensions virtually every consumer
+  needs.
+
+  Real, currently-valid commercial certificates (fetched via `openssl
+  s_client`/crt.sh) are checked into `tests/x509/certs/implemented/` as
+  `.der` files (read via a small `readCertFile()` test helper, located
+  through a generic `CERTPP_TEST_DIR` compile-definition every test target
+  gets -- see `CMakeLists.txt`'s test-registration loop); certificates using
+  an algorithm this library doesn't implement yet (RSA-PSS, the ML-DSA
+  post-quantum signature scheme) are kept separately under
+  `certs/unimplemented/`, documenting the gap rather than hiding it.
+- **`certpp.hpp`** is the single include point for consumers; as new public
+  headers are added under `include/certpp/`, add their `#include` here.
+- **`tests/`** holds every test case, built via `CERTPP_BUILD_TESTS`
+  (default `ON`) as one executable per source file and registered with
+  CTest. See [coding-conventions.md](coding-conventions.md#tests) for the
+  file-layout/naming convention and [build.md](build.md#tests) for how to
+  build and run them; both cover the vendored `doctest` framework these
+  files use.
+
+## Build model
+
+CMake builds one target, `certpp` (aliased `certpp::certpp`), either as a
+shared library (default) or static library via `-DCERTPP_BUILD_SHARED=OFF`.
+The `__COMPILES_LIBCERTPP__` definition is `PRIVATE` (only the library's own
+translation units get dllexport), while `__SHARED_LIBCERTPP__` is `PUBLIC`
+so consumers linking against the shared build automatically get
+dllimport-annotated declarations. See [build.md](build.md) for commands.
+
+Hardware acceleration is split into two independent build options, matching
+the two unrelated instruction-set families it draws on -- disabling one
+never affects the other:
+
+- `CERTPP_DISABLE_HWACCEL_SIMD` (`OFF` by default) forces `CGf2m::mul()`/
+  `CBigNum::mul()` to always use their portable schoolbook implementations,
+  even on a CPU that supports the hardware instructions those functions can
+  otherwise use (PCLMULQDQ, BMI2/ADX) -- see those two classes' own doc
+  comments in this file's module-responsibilities section for what each
+  accelerated path does and how it's gated. Since every asymmetric algorithm
+  (`crypto::asyms::*`) is built on `CBigNum`/`CGf2m`, this one option covers
+  RSA/DSA/ECDSA/Ed25519/Ed448/X25519/ECDH's modular exponentiation and field
+  arithmetic transitively -- none of them have their own separate
+  acceleration to gate.
+- `CERTPP_DISABLE_HWACCEL_SHA` (`OFF` by default) forces `SHA1::transform()`/
+  `SHA256::transform()` (`src/crypto/hashers/sha1.cpp`,
+  `src/crypto/hashers/sha256.cpp`) to always use their portable compression
+  loop instead of the x86 SHA Extensions (SHA1RNDS4/SHA1NEXTE/SHA1MSG1/
+  SHA1MSG2 and SHA256RNDS2/SHA256MSG1/SHA256MSG2 respectively), gated behind
+  a runtime CPUID check (`hasSha()`, CPUID leaf 7 sub-leaf 0, EBX bit 29) the
+  same way `CBigNum`'s/`CGf2m`'s paths gate on their own CPUID bits. `MD5`/
+  `SHA384`/`SHA512`/`SHAKE256` have no accelerated path and are unaffected
+  by this option -- there is no mainstream x86 hardware extension for MD5 or
+  Keccak, and no widely-deployed x86 SHA-512 extension the way there is for
+  SHA-1/SHA-256.
+
+Both settings' accelerated and portable paths are expected to produce
+byte-identical results and are verified against the full test suite before
+any change to either path is considered done; a separate build directory
+(e.g. `build_noaccel/`) is a convenient way to keep an accelerated and a
+portable-only configuration built at once without rebuilding the whole
+library on every toggle, since these options -- like `CERTPP_RNG_FALLBACK`
+above -- are `target_compile_definitions` switches that force a full
+rebuild of `certpp` itself when changed.
+
+## Where this will grow
+
+`third-party/` now vendors its first dependency: `doctest` (single header,
+under `third-party/doctest/`), used only by `tests/`. Its
+`third-party/CMakeLists.txt` exposes each vendored dependency as its own
+CMake target (`doctest` today); the root `CMakeLists.txt` only
+`add_subdirectory(third-party)`s when `CERTPP_BUILD_TESTS=ON`, since
+nothing outside `tests/` needs it. Note that `crypto`'s hash functions
+(`MD5`/`SHA1`/`SHA256`/`SHA384`/`SHA512`) are implemented from scratch and
+need no such dependency; a future non-test dependency would instead be
+something hashing alone can't provide -- asymmetric crypto (signature
+generation/verification) once certificate generation is implemented, for
+instance. That still follows the same pattern: vendor it under its own
+`third-party/<name>/` directory and add a matching target in
+`third-party/CMakeLists.txt`, linked from `certpp` itself rather than gated
+behind `CERTPP_BUILD_TESTS`.
+
+Every concrete `IAsymmetric` implementation this library set out to build --
+RSA, DSA, ECDSA over P-192/P-224/P-256/P-384/P-521/secp256k1/the 14
+Brainpool curves/the 10 binary-Koblitz curves, Ed25519, Ed448, and X25519 --
+now exists, under `include/certpp/crypto/asyms/` and `src/crypto/asyms/`,
+mirroring how the concrete `IHasher` implementations
+live under `crypto/hashers/` rather than next to `hasher.hpp` itself: the
+singular `asym.hpp`/`hasher.hpp` file defines the interface, the plural
+`asyms/`/`hashers/` directory holds one file per concrete algorithm. Tests
+for a new `asyms/` implementation follow the same mirrored path under
+`tests/crypto/asyms/`, exactly as `tests/crypto/hashers/` does today.
+`IAsymmetric::builtIn()` (`src/crypto/asym.cpp`) dispatches each
+`EAsymmetrics` value to its concrete class; a new algorithm adds one
+`case` there. RSA's key/signature DER encoding, and every future `asyms/`
+implementation's, goes through `asn1::CDer` (`asn1/der.hpp`) for the
+arbitrary-precision `INTEGER`s `CEncoder`/`CDecoder` don't handle -- see
+its own doc comment. A future genuinely non-library-providable dependency
+(there isn't one yet: RSA needed only `CBigNum`, itself built from scratch)
+would follow the vendor-and-expose-a-target pattern above, instead.
+
+`x509/` (`CCert` + `IExtension` and its ten concrete extensions) currently
+only *parses* a DER `Certificate` -- there is no certificate/CSR generation,
+signing, or chain-validation logic yet. A new extension type follows
+`x509/exts/`'s established shape (a concrete `IExtension` subclass with its
+own `OID`, added to `ext.cpp`'s dispatch table) and, if it needs to hold a
+GeneralName-shaped or list-of-value-object-shaped field, reuses
+`x509/generalname.hpp`/`access.hpp`/`policy.hpp` rather than redefining
+those shapes locally. Certificate *generation* (encoding a `CCert` back to
+DER, or building one from scratch and signing it with an attached private
+key) is the next logical gap once parsing coverage across enough real-world
+algorithms/extensions is established.

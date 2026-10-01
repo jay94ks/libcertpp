@@ -1,0 +1,195 @@
+#include "cbctransformer.hpp"
+#include <cstring>
+
+namespace certpp {
+namespace crypto {
+
+    CbcTransformer::CbcTransformer(
+        const ISymmetricContextPtr& ctx, bool encrypting, size_t blockBytes,
+        SReadOnlyByteSpan iv, BlockFn blockFn
+    )
+        : ISymmetricTransformer(ctx), _encrypting(encrypting), _blockBytes(blockBytes),
+          _blockFn(std::move(blockFn))
+    {
+        blockSize(blockBytes);
+
+        _chain.resize(blockBytes);
+        _scratch.resize(blockBytes);
+
+        // --> _chain is zeroed first so any bytes beyond a short iv (shouldn't happen given the
+        // callers' blockBytes-length checks, but kept as a safety net) stay deterministically 0
+        // rather than whatever CBuffer::resize() left behind -- TArray<uint8_t>::resize() used to
+        // guarantee this implicitly by value-initializing new elements.
+        uint8_t* chainPtr = _chain.toPtr();
+        std::memset(chainPtr, 0, blockBytes);
+
+        size_t copied = iv.size < blockBytes ? iv.size : blockBytes;
+        if (copied > 0) {
+            std::memcpy(chainPtr, iv.data, copied);
+        }
+    }
+
+    ERetCode CbcTransformer::processBuffered(bool final, SByteSpan& output) {
+        size_t outWritten = 0;
+        size_t consumed = 0;
+        ERetCode result = ERET_OK;
+
+        if (_encrypting) {
+            while (_buffer.size() - consumed >= _blockBytes) {
+                if (output.size - outWritten < _blockBytes) {
+                    if (!final) {
+                        break; // not enough room yet -- defer to a later call
+                    }
+                    result = ERET_NOSPC;
+                    break;
+                }
+
+                for (size_t i = 0; i < _blockBytes; ++i) {
+                    _scratch[i] = _buffer[consumed + i] ^ _chain[i];
+                }
+
+                uint8_t* blockOut = output.data + outWritten;
+                _blockFn(_scratch.toPtr(), blockOut);
+                std::memcpy(_chain.toPtr(), blockOut, _blockBytes);
+
+                outWritten += _blockBytes;
+                consumed += _blockBytes;
+            }
+
+            if (result == ERET_OK && final) {
+                size_t leftover = _buffer.size() - consumed;
+                size_t padByte = _blockBytes - leftover; // 1..blockBytes (always pads, per PKCS#7)
+
+                if (output.size - outWritten < _blockBytes) {
+                    result = ERET_NOSPC;
+                } else {
+                    for (size_t i = 0; i < leftover; ++i) {
+                        _scratch[i] = _buffer[consumed + i] ^ _chain[i];
+                    }
+                    for (size_t i = leftover; i < _blockBytes; ++i) {
+                        _scratch[i] = static_cast<uint8_t>(padByte) ^ _chain[i];
+                    }
+
+                    uint8_t* blockOut = output.data + outWritten;
+                    _blockFn(_scratch.toPtr(), blockOut);
+                    std::memcpy(_chain.toPtr(), blockOut, _blockBytes);
+
+                    outWritten += _blockBytes;
+                    consumed += leftover;
+                }
+            }
+        } else {
+            // --> Always holds back the most recently completed block, whether or not this call
+            // is final -- a final call still needs it held back so the code below can strip its
+            // padding instead of emitting it as an ordinary block.
+            size_t fullBlocks = (_buffer.size() - consumed) / _blockBytes;
+            size_t blocksToEmit = fullBlocks > 0 ? fullBlocks - 1 : 0;
+
+            for (size_t b = 0; b < blocksToEmit; ++b) {
+                if (output.size - outWritten < _blockBytes) {
+                    if (!final) {
+                        break;
+                    }
+                    result = ERET_NOSPC;
+                    break;
+                }
+
+                const uint8_t* ctBlock = _buffer.toPtr() + consumed;
+                uint8_t* blockOut = output.data + outWritten;
+
+                _blockFn(ctBlock, blockOut);
+                for (size_t i = 0; i < _blockBytes; ++i) {
+                    blockOut[i] ^= _chain[i];
+                }
+                std::memcpy(_chain.toPtr(), ctBlock, _blockBytes);
+
+                outWritten += _blockBytes;
+                consumed += _blockBytes;
+            }
+
+            if (result == ERET_OK && final) {
+                size_t leftover = _buffer.size() - consumed;
+
+                if (leftover != _blockBytes) {
+                    // a validly PKCS#7-padded ciphertext is never empty and always ends on a
+                    // whole block -- anything else is a truncated/corrupt ciphertext.
+                    result = ERET_BADREQ;
+                } else {
+                    const uint8_t* ctBlock = _buffer.toPtr() + consumed;
+                    _blockFn(ctBlock, _scratch.toPtr());
+                    for (size_t i = 0; i < _blockBytes; ++i) {
+                        _scratch[i] ^= _chain[i];
+                    }
+
+                    // --> Constant-time PKCS#7 validation: every byte of the block is compared
+                    // unconditionally (no early exit, no branch on the pad value or on whether a
+                    // byte matches), so the loop's running time and instruction trace don't
+                    // depend on *where* (or whether) padding is invalid. A data-dependent
+                    // early-out here would be a textbook CBC padding oracle (Vaudenay's attack,
+                    // as later exploited by POODLE/Lucky13) for any caller that lets an attacker
+                    // observe many decrypt attempts against adaptively chosen ciphertexts.
+                    uint8_t pad = _scratch[_blockBytes - 1];
+
+                    // good == 0xFF iff 1 <= pad <= _blockBytes, computed without branching on
+                    // pad's value: (pad - 1), as an unsigned quantity, wraps to a huge value
+                    // when pad == 0, which always compares >= _blockBytes.
+                    uint8_t good = uint8_t(-(uint8_t((unsigned(pad) - 1) < _blockBytes)));
+
+                    uint8_t mismatch = 0;
+                    for (size_t i = 0; i < _blockBytes; ++i) {
+                        // inRegion == 0xFF iff byte i falls within the last `pad` bytes of the
+                        // block -- an arithmetic comparison over public loop/field values
+                        // (i, _blockBytes), not over the secret plaintext bytes themselves.
+                        uint8_t inRegion = uint8_t(-(uint8_t(i + pad >= _blockBytes)));
+                        mismatch = uint8_t(mismatch | ((_scratch[i] ^ pad) & inRegion));
+                    }
+
+                    bool padOk = good != 0 && mismatch == 0;
+                    if (!padOk) {
+                        result = ERET_BADREQ;
+                    } else {
+                        size_t plainLen = _blockBytes - pad;
+                        if (output.size - outWritten < plainLen) {
+                            result = ERET_NOSPC;
+                        } else {
+                            if (plainLen > 0) {
+                                std::memcpy(output.data + outWritten, _scratch.toPtr(), plainLen);
+                            }
+                            outWritten += plainLen;
+                            consumed += _blockBytes;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (consumed > 0) {
+            size_t remainderSize = _buffer.size() - consumed;
+            CBuffer remainder(remainderSize);
+            if (remainderSize > 0) {
+                std::memcpy(remainder.toPtr(), _buffer.toPtr() + consumed, remainderSize);
+            }
+            _buffer = std::move(remainder);
+        }
+
+        output = SByteSpan(output.data, outWritten);
+        return result;
+    }
+
+    ERetCode CbcTransformer::transform(const SReadOnlyByteSpan& input, SByteSpan& output) {
+        size_t old = _buffer.size();
+        _buffer.resize(old + input.size);
+
+        if (input.size > 0) {
+            std::memcpy(_buffer.toPtr() + old, input.data, input.size);
+        }
+
+        return processBuffered(false, output);
+    }
+
+    ERetCode CbcTransformer::transformFinal(SByteSpan& output) {
+        return processBuffered(true, output);
+    }
+
+} // namespace crypto
+} // namespace certpp

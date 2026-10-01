@@ -1,0 +1,32 @@
+{
+	"C/C++ Default Header Form": {
+		"prefix": "kh",
+
+		"body": [
+			"// ${1:${RELATIVE_FILEPATH/[^a-zA-Z0-9]/_/g}}",
+			"// PRESS TAB TO GENERATE COMPLETELY.",
+			"",
+			"#ifndef __${1/(.*)/${1:/upcase}/}__",
+			"#define __${1/(.*)/${1:/upcase}/}__",
+			"",
+			"#endif"
+		],
+		"description": "C/C++ Default Header Format"
+	},
+
+	"C/C++ Header Cpp Check": {
+		"prefix": "kc",
+		"body": [
+			"#ifdef __cplusplus",
+			"extern \"C\" {",
+			"#endif",
+			"",
+			"// code here.",
+			"",
+			"#ifdef __cplusplus",
+			"}",
+			"#endif"
+		],
+		"description": "C/C++ Header Cpp Check"
+	}
+}
