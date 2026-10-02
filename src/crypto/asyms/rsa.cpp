@@ -679,11 +679,27 @@ namespace crypto {
                 }
 
                 size_t keyBytes = (priv->n().bitLength() + 7) / 8;
-                if (ciphertext.size != keyBytes) {
+
+                // --> keyBytes >= 11 is what makes an EME-PKCS1-v1_5 block well-formed at all
+                // (two lead bytes, >= 8 padding bytes, a separator); encryptBlock() already
+                // requires it. Without it here, a key small enough to give keyBytes < 2 -- which
+                // only an imported key could -- would have the lead-byte read below run off the
+                // end of em.
+                if (keyBytes < 11 || ciphertext.size != keyBytes) {
                     return ERET_BADREQ;
                 }
 
                 CBigNum c = CBigNum::fromBigEndian(ciphertext);
+
+                // --> RFC 8017 5.1.2 step 1: a ciphertext representative outside [0, n-1] is not
+                // a valid input and must be rejected rather than exponentiated. Letting it
+                // through is also a timing distinguisher: privateExp()'s re-encrypt check can
+                // never match for c >= n, so every such call would quietly take the slow
+                // full-modulus fallback path instead of the CRT one.
+                if (c >= priv->n()) {
+                    return ERET_BADREQ;
+                }
+
                 CBigNum m = privateExp(*priv, c);
 
                 CBuffer em(keyBytes);

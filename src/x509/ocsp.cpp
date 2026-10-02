@@ -592,9 +592,18 @@ namespace x509 {
             return ERET_UNKNOWN;
         }
 
-        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+        // --> Decided by the verifying key, not by _sigHashAlgo == EHASH_UNKNOWN -- see
+        // COcspResponse::verifySignature() for why that test was unsafe here.
+        crypto::IPublicKeyPtr requestorKey = requestorCert.publicKey();
+        crypto::EAsymmetrics keyAlgo = requestorKey ? requestorKey->algorithm() : crypto::EASYM_UNKNOWN;
+
+        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
             // self-hashing (EdDSA) -- the raw tbsRequest bytes are the message itself.
             return ctx->verify(_tbsRequestRaw.toSpan(), _signatureValue.toSpan());
+        }
+
+        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+            return ERET_NOTSUP; // --> signature algorithm this library can't identify
         }
 
         crypto::IHasherPtr hasher;
@@ -922,9 +931,25 @@ namespace x509 {
             return ERET_UNKNOWN;
         }
 
-        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+        // --> Whether to hash first is decided by the key that will actually do the verifying,
+        // not by _sigHashAlgo == EHASH_UNKNOWN. That value is ambiguous: resolveSigAlgo() leaves
+        // it untouched for an OID absent from SIG_ALGOS (id-RSASSA-PSS, the SHA-3 family,
+        // anything malformed), which is indistinguishable from EdDSA's legitimate "no separate
+        // hash". Reading it as EdDSA handed the raw tbsResponseData to an ECDSA/DSA verify as
+        // though it were a digest -- which truncates it to the order's bit length, so the
+        // signature covered a prefix of the plaintext instead of a collision-resistant hash of
+        // the whole message. An unrecognized algorithm must fail closed instead.
+        crypto::IPublicKeyPtr responderKey = responderCert.publicKey();
+        crypto::EAsymmetrics keyAlgo = responderKey ? responderKey->algorithm() : crypto::EASYM_UNKNOWN;
+        bool keyIsEddsa = (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448);
+
+        if (keyIsEddsa) {
             // self-hashing (EdDSA) -- the raw tbsResponseData bytes are the message itself.
             return ctx->verify(_tbsResponseDataRaw.toSpan(), _signatureValue.toSpan());
+        }
+
+        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+            return ERET_NOTSUP; // --> signature algorithm this library can't identify
         }
 
         crypto::IHasherPtr hasher;

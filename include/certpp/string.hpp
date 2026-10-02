@@ -325,7 +325,13 @@ namespace certpp {
          * Clears the TString and releases any allocated memory.
          */
         ~TString() {
+            // --> Both calls are needed, and in this order: clear() deliberately preserves the
+            // capacity (so a string can be reused without reallocating), so it is trimExcess()
+            // -- which frees outright once _size is 0 -- that actually releases the buffer.
+            // ~TArray() pairs them the same way; this destructor used to call only clear() and
+            // leaked every buffer it had ever allocated.
             clear();
+            trimExcess();
         }
 
     public:
@@ -391,7 +397,7 @@ namespace certpp {
          * Copy assignment operator.
          * @param other The TString instance to copy from.
          */
-        inline SelfType operator=(const SelfType& other) {
+        inline SelfType& operator=(const SelfType& other) {
             if (this != &other) {
                 clear();
                 append(other);
@@ -404,7 +410,7 @@ namespace certpp {
          * Move assignment operator.
          * @param other The TString instance to move from.
          */
-        inline SelfType operator=(SelfType&& other) {
+        inline SelfType& operator=(SelfType&& other) noexcept {
             if (this != &other) {
                 swap(_data, other._data);
                 swap(_size, other._size);
@@ -418,7 +424,7 @@ namespace certpp {
          * Assignment operator for C-style strings.
          * @param cStr The C-style string to assign from.
          */
-        inline SelfType operator=(const T* cStr) {
+        inline SelfType& operator=(const T* cStr) {
             clear();
             append(cStr);
             return *this;

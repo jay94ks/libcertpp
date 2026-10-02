@@ -435,7 +435,7 @@ namespace crypto {
             else if (other.publicKey) {
                 return -1;
             }
-        
+
             if (privateKey) {
                 if (!other.privateKey) {
                     return 1;
@@ -450,7 +450,7 @@ namespace crypto {
             else if (other.privateKey) {
                 return -1;
             }
-            
+
             return 0;
         }
 

@@ -48,4 +48,4 @@ namespace certpp {
     }
 
     
-}
+} // namespace certpp

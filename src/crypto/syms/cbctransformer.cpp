@@ -34,6 +34,14 @@ namespace crypto {
         size_t consumed = 0;
         ERetCode result = ERET_OK;
 
+        // --> _scratch/_chain are sized once in the constructor and never resized, so their raw
+        // pointers stay valid for this whole call; _buffer is only reassigned at the very end,
+        // past every use below. The per-byte loops that remain are XOR combines, which neither
+        // memcpy nor memset can express -- but they still go through a raw pointer rather than
+        // CBuffer::operator[], per docs/coding-conventions.md's "Buffer handling".
+        uint8_t* scratchPtr = _scratch.toPtr();
+        uint8_t* chainPtr = _chain.toPtr();
+
         if (_encrypting) {
             while (_buffer.size() - consumed >= _blockBytes) {
                 if (output.size - outWritten < _blockBytes) {
@@ -44,13 +52,14 @@ namespace crypto {
                     break;
                 }
 
+                const uint8_t* inBlock = _buffer.toPtr() + consumed;
                 for (size_t i = 0; i < _blockBytes; ++i) {
-                    _scratch[i] = _buffer[consumed + i] ^ _chain[i];
+                    scratchPtr[i] = uint8_t(inBlock[i] ^ chainPtr[i]);
                 }
 
                 uint8_t* blockOut = output.data + outWritten;
-                _blockFn(_scratch.toPtr(), blockOut);
-                std::memcpy(_chain.toPtr(), blockOut, _blockBytes);
+                _blockFn(scratchPtr, blockOut);
+                std::memcpy(chainPtr, blockOut, _blockBytes);
 
                 outWritten += _blockBytes;
                 consumed += _blockBytes;
@@ -63,16 +72,17 @@ namespace crypto {
                 if (output.size - outWritten < _blockBytes) {
                     result = ERET_NOSPC;
                 } else {
+                    const uint8_t* inBlock = _buffer.toPtr() + consumed;
                     for (size_t i = 0; i < leftover; ++i) {
-                        _scratch[i] = _buffer[consumed + i] ^ _chain[i];
+                        scratchPtr[i] = uint8_t(inBlock[i] ^ chainPtr[i]);
                     }
                     for (size_t i = leftover; i < _blockBytes; ++i) {
-                        _scratch[i] = static_cast<uint8_t>(padByte) ^ _chain[i];
+                        scratchPtr[i] = uint8_t(padByte ^ chainPtr[i]);
                     }
 
                     uint8_t* blockOut = output.data + outWritten;
-                    _blockFn(_scratch.toPtr(), blockOut);
-                    std::memcpy(_chain.toPtr(), blockOut, _blockBytes);
+                    _blockFn(scratchPtr, blockOut);
+                    std::memcpy(chainPtr, blockOut, _blockBytes);
 
                     outWritten += _blockBytes;
                     consumed += leftover;
@@ -99,9 +109,9 @@ namespace crypto {
 
                 _blockFn(ctBlock, blockOut);
                 for (size_t i = 0; i < _blockBytes; ++i) {
-                    blockOut[i] ^= _chain[i];
+                    blockOut[i] ^= chainPtr[i];
                 }
-                std::memcpy(_chain.toPtr(), ctBlock, _blockBytes);
+                std::memcpy(chainPtr, ctBlock, _blockBytes);
 
                 outWritten += _blockBytes;
                 consumed += _blockBytes;
@@ -116,9 +126,9 @@ namespace crypto {
                     result = ERET_BADREQ;
                 } else {
                     const uint8_t* ctBlock = _buffer.toPtr() + consumed;
-                    _blockFn(ctBlock, _scratch.toPtr());
+                    _blockFn(ctBlock, scratchPtr);
                     for (size_t i = 0; i < _blockBytes; ++i) {
-                        _scratch[i] ^= _chain[i];
+                        scratchPtr[i] ^= chainPtr[i];
                     }
 
                     // --> Constant-time PKCS#7 validation: every byte of the block is compared
@@ -128,7 +138,7 @@ namespace crypto {
                     // early-out here would be a textbook CBC padding oracle (Vaudenay's attack,
                     // as later exploited by POODLE/Lucky13) for any caller that lets an attacker
                     // observe many decrypt attempts against adaptively chosen ciphertexts.
-                    uint8_t pad = _scratch[_blockBytes - 1];
+                    uint8_t pad = scratchPtr[_blockBytes - 1];
 
                     // good == 0xFF iff 1 <= pad <= _blockBytes, computed without branching on
                     // pad's value: (pad - 1), as an unsigned quantity, wraps to a huge value
@@ -141,7 +151,7 @@ namespace crypto {
                         // block -- an arithmetic comparison over public loop/field values
                         // (i, _blockBytes), not over the secret plaintext bytes themselves.
                         uint8_t inRegion = uint8_t(-(uint8_t(i + pad >= _blockBytes)));
-                        mismatch = uint8_t(mismatch | ((_scratch[i] ^ pad) & inRegion));
+                        mismatch = uint8_t(mismatch | ((scratchPtr[i] ^ pad) & inRegion));
                     }
 
                     bool padOk = good != 0 && mismatch == 0;
@@ -153,7 +163,7 @@ namespace crypto {
                             result = ERET_NOSPC;
                         } else {
                             if (plainLen > 0) {
-                                std::memcpy(output.data + outWritten, _scratch.toPtr(), plainLen);
+                                std::memcpy(output.data + outWritten, scratchPtr, plainLen);
                             }
                             outWritten += plainLen;
                             consumed += _blockBytes;

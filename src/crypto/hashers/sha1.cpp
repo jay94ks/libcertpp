@@ -28,6 +28,18 @@ namespace crypto {
             static const bool supported = [] {
 #if defined(_MSC_VER)
                 int info[4] = { 0, 0, 0, 0 };
+
+                // --> For a leaf above the maximum it supports, CPUID returns the *highest
+                // supported* leaf's data instead of zeroes -- so leaf 7 has to be gated on
+                // leaf 0's reported maximum, or on a CPU whose maximum is below 7 this reads an
+                // unrelated leaf-1 field (bit 29 lands in the initial-APIC-ID byte) and can
+                // claim SHA support that isn't there. The __get_cpuid_count() path below makes
+                // the same check internally.
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+
                 __cpuidex(info, 7, 0);
                 return (info[1] & (1 << 29)) != 0;
 #else

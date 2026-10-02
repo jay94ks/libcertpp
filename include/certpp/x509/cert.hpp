@@ -112,13 +112,13 @@ namespace x509 {
         CString _keyAlgo;
         CString _signAlgo;
         crypto::EHashers _sigHashAlgo;
-        
+
         COctet _keyAlgoParams;
         COctet _publicKey;
         COctet _privateKey;
         COctet _serialNumber;
         COctet _signature;
-        
+
         SDateTime _notBefore;
         SDateTime _notAfter;
 
@@ -164,7 +164,7 @@ namespace x509 {
          * @return A reference to the assigned certificate.
          */
         CCert& operator=(CCert&& other);
-        
+
     private:
         /* Resolves an id-ecPublicKey key's namedCurve OID content (keyAlgoParams(), i.e. the
          * OBJECT IDENTIFIER's own content octets, not including its tag/length) to the specific
@@ -733,7 +733,7 @@ namespace x509 {
     public:
         CDistinguishedName issuer;          ///< The issuer's distinguished name.
         CDistinguishedName subject;         ///< The subject's distinguished name.
-        
+
         COctet serialNumber;                ///< The certificate's serial number.
         SDateTime notBefore;                ///< The start of the certificate's validity period.
         SDateTime notAfter;                 ///< The end of the certificate's validity period.

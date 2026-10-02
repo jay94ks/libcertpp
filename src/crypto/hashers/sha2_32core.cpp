@@ -29,6 +29,16 @@ namespace crypto {
             static const bool supported = [] {
 #if defined(_MSC_VER)
                 int info[4] = { 0, 0, 0, 0 };
+
+                // --> Leaf 7 must be gated on leaf 0's reported maximum: CPUID answers an
+                // out-of-range leaf with the highest supported leaf's data, not zeroes, so
+                // without this a CPU whose maximum is below 7 can appear to advertise SHA
+                // support. See SHA1::hasSha() for the same guard.
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+
                 __cpuidex(info, 7, 0);
                 return (info[1] & (1 << 29)) != 0;
 #else

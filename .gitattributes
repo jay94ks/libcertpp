@@ -1,0 +1,10 @@
+# Every text file is stored LF-normalized in the repository and checked out as
+# LF, on every platform -- so the working tree always matches the committed
+# content and a line-ending difference can never show up as a spurious diff.
+# Without this, the result depends on each contributor's own core.autocrlf
+# setting, which is how this tree ended up with a mix of CRLF and LF files.
+# MSVC, CMake and the MSYS/Git Bash tooling all read LF without complaint.
+* text=auto eol=lf
+
+# DER test fixtures are binary: never line-ending-convert or line-diff them.
+*.der binary

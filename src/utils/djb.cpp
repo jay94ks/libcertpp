@@ -1,4 +1,4 @@
-#include <certpp/utils/Djb.hpp>
+#include <certpp/utils/djb.hpp>
 
 namespace certpp {
 

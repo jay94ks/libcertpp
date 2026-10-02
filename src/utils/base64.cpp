@@ -341,4 +341,4 @@ namespace certpp {
         out.resize(written);
         return true;
     }
-}
+} // namespace certpp

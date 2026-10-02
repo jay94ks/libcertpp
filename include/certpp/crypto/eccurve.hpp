@@ -191,7 +191,7 @@ namespace crypto {
             if (curve <= ECURVE_UNKNOWN || curve >= ECURVE_MAX) {
                 return false;
             }
-            
+
             out = _knownCurves[curve - 1];
             return true;
         }

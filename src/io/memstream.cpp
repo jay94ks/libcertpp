@@ -1,4 +1,5 @@
 #include "memstream.hpp"
+#include <cstring>
 
 namespace certpp {
 
@@ -101,6 +102,13 @@ namespace certpp {
             }
         }
 
+        // --> reserve() only carries over the bytes that were already live, so everything past
+        // the old length is whatever the allocator handed back. Growing the visible length
+        // without zeroing it would publish that uninitialized heap to the next read().
+        if (newLen > _span.size && _span.data) {
+            std::memset(_span.data + _span.size, 0, newLen - _span.size);
+        }
+
         _span.size = newLen;
         if (_pos > _span.size) {
             _pos = _span.size;
@@ -169,6 +177,16 @@ namespace certpp {
         }
         }
 
+        // --> _pos <= _span.size is an invariant every other mutator maintains (reserve() and
+        // length() both clamp), and seek() has to as well. ESEEK_END already clamped; ESEEK_SET
+        // and a forward ESEEK_CUR did not, and parking _pos past the end is not merely a stale
+        // offset: read() and write() size their available room as _span.size - _pos and
+        // _cap - _pos, unsigned subtractions that underflow to a huge value from there and take
+        // the memcpy out of bounds -- a wild read, and in write()'s case a wild write.
+        if (newPos > _span.size) {
+            newPos = _span.size;
+        }
+
         _pos = newPos;
         return ERET_OK;
     }
@@ -182,10 +200,14 @@ namespace certpp {
             return 0;
         }
 
-        const SizeType avail = _span.size - _pos;
-        if (!avail) {
+        // --> Compared, not subtracted: seek() now keeps _pos within the stream, but an
+        // invariant slip here would underflow into an out-of-bounds memcpy rather than a
+        // short read, so the bound is checked the way that can't go wrong.
+        if (_pos >= _span.size) {
             return 0;
         }
+
+        const SizeType avail = _span.size - _pos;
 
         if (len > avail) {
             len = avail;
@@ -206,13 +228,18 @@ namespace certpp {
             return 0;
         }
 
-        SizeType avail = _cap - _pos;
-        if (avail < len) {
+        // --> Same reasoning as read(): compare rather than subtract, so _pos > _cap could never
+        // underflow into a huge "available" figure and skip the reserve() below, leaving the
+        // memcpy to write outside the buffer. The overflow guard covers a caller passing a
+        // length no allocation could satisfy, which would otherwise wrap _pos + len.
+        if (len > SizeType(-1) - _pos) {
+            return 0;
+        }
+
+        if (_pos > _cap || _cap - _pos < len) {
             if (reserve(_pos + len) != ERET_OK) {
                 return 0;
             }
-
-            avail = _cap - _pos;
         }
 
         memcpy(_span.data + _pos, buf, len);
@@ -251,4 +278,4 @@ namespace certpp {
 
         return ERET_OK;
     }
-}
+} // namespace certpp

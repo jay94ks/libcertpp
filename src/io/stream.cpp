@@ -17,4 +17,4 @@ namespace certpp {
         
         return s;
     }
-}
+} // namespace certpp

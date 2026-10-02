@@ -56,6 +56,18 @@ namespace x509 {
                 }
 
                 case 1: {
+                    // --> Decode the BIT STRING once, and only record that reasons were present
+                    // once it is known to be well-formed: setting _hasReasons up front meant a
+                    // malformed BIT STRING still reported hasReasons() == true with
+                    // reasons() == 0 -- a claim the DER never made, and indistinguishable from
+                    // "reasons present, none set". Testing bits off the decoded span also drops
+                    // the eight redundant re-validations testNamedBit() would do, one per bit.
+                    SReadOnlyByteSpan reasonBits;
+                    uint8_t reasonUnusedBits = 0;
+                    if (!CDecoder::decodeBitString(fieldContent, reasonBits, reasonUnusedBits)) {
+                        return false;
+                    }
+
                     out._hasReasons = true;
                     out._reasons = ECRLR_NONE;
 
@@ -67,7 +79,13 @@ namespace x509 {
                     };
 
                     for (const auto& namedBit : NAMED_BITS) {
-                        if (CDecoder::testNamedBit(fieldContent, namedBit.bit)) {
+                        size_t byteIndex = namedBit.bit / 8;
+                        if (byteIndex >= reasonBits.size) {
+                            continue;
+                        }
+
+                        uint8_t mask = uint8_t(0x80 >> (namedBit.bit % 8));
+                        if ((reasonBits[byteIndex] & mask) != 0) {
                             out._reasons |= namedBit.flag;
                         }
                     }
@@ -141,7 +159,11 @@ namespace x509 {
             }
         } else if (!_nameRelativeToCrlIssuer.empty()) {
             CBuffer dpnTlv;
-            if (!CDer::appendTlv(dpnTlv, CTag(EATAG_CONTEXT_SPECIFIC, 1, false), _nameRelativeToCrlIssuer.toSpan())
+            // --> Constructed, like the _fullName branch above: RelativeDistinguishedName is a
+            // SET OF, and IMPLICIT tagging keeps the underlying type's constructed bit (X.690
+            // 8.14), so this has to be A1 and not 81. decode() accepts either, so emitting the
+            // primitive form turned a valid parse into invalid output on re-encode.
+            if (!CDer::appendTlv(dpnTlv, CTag(EATAG_CONTEXT_SPECIFIC, 1, true), _nameRelativeToCrlIssuer.toSpan())
                 || !CDer::appendTlv(body, CTag(EATAG_CONTEXT_SPECIFIC, 0, true), dpnTlv.toSpan()))
             {
                 return false;

@@ -74,17 +74,27 @@ namespace crypto {
         size_t produced = 0;
         size_t needed = byteWidth();
 
+        // --> Squeeze from a copy, never the live state: every other hasher here finalizes a
+        // temporary so finish() can be called twice and hand back the same bytes, and any output
+        // longer than one rate block permutes the state between blocks. Squeezing in place would
+        // leave the state advanced, so a second finish() -- which skips the already-applied
+        // padding -- would return the *continuation* of the output stream rather than repeating
+        // it. At or below RATE no permutation runs, which is why the shipped output lengths
+        // (32/64, and Ed448's 114) never exposed this.
+        uint8_t state[KeccakCore::STATE_BYTES];
+        std::memcpy(state, _ctx.state, sizeof(state));
+
         while (produced < needed) {
             size_t chunk = needed - produced;
             if (chunk > RATE) {
                 chunk = RATE;
             }
 
-            std::memcpy(out.data + produced, _ctx.state, chunk);
+            std::memcpy(out.data + produced, state, chunk);
             produced += chunk;
 
             if (produced < needed) {
-                KeccakCore::permute(_ctx.state);
+                KeccakCore::permute(state);
             }
         }
 

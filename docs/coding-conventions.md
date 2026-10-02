@@ -195,11 +195,23 @@ new styles.
   call stating the same intent. Prefer building a small fixed-size array on
   the stack once and writing it in a single bulk call over repeated
   per-element container writes, for the same reason.
-- This does **not** apply to:
+- The two halves of that rule are separable, and only the *bulk-call* half
+  has exceptions. Where a loop genuinely has to stay a loop (the cases
+  below), it still reaches its data through a raw pointer hoisted out of
+  the loop rather than through `operator[]` on the container each
+  iteration — `CbcTransformer::processBuffered()` is the worked example:
+  its CBC XOR combines and its constant-time padding scan are still
+  explicit per-byte loops, but every one of them indexes a `uint8_t*` taken
+  once at the top.
+- The bulk-call half does **not** apply to:
   - Constant-time/branch-free code (`CbcTransformer`'s PKCS#7 padding
     check, the EC/EdDSA scalar-multiplication ladders) — collapsing it into
     a data-dependent-length `memcpy`/early-exit comparison would reintroduce
     a timing side channel. These stay as explicit, unconditional loops.
+  - Element-wise combines rather than fills or copies — a CBC
+    `out[i] = in[i] ^ chain[i]` is neither a `memset` nor a `memcpy`, and
+    splitting it into a copy followed by an in-place XOR pass would read
+    the block twice to express the same thing.
   - Genuine reversals (`out[i] = in[N-1-i]`) or in-place swaps
     (`CBigNum::reverseBytesInPlace`) — `memcpy`/`memmove` are order-
     preserving only and can't express either.

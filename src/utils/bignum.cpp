@@ -31,6 +31,16 @@ namespace certpp {
             static const bool supported = [] {
 #if defined(_MSC_VER)
                 int info[4] = { 0, 0, 0, 0 };
+
+                // --> Leaf 7 must be gated on leaf 0's reported maximum: CPUID answers an
+                // out-of-range leaf with the highest supported leaf's data, not zeroes, so
+                // without this a CPU whose maximum is below 7 can appear to advertise BMI2/ADX.
+                // The __get_cpuid_count() path below makes the same check internally.
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+
                 __cpuidex(info, 7, 0);
                 return ((info[1] & (1 << 8)) != 0) && ((info[1] & (1 << 19)) != 0);
 #else
@@ -292,9 +302,29 @@ namespace certpp {
     }
 
     CBigNum CBigNum::fromBigEndianTruncated(SReadOnlyByteSpan bytes, size_t bitsN) {
+        size_t outlenBits = bytes.size * 8;
+        if (outlenBits <= bitsN) {
+            // FIPS 186-4 keeps min(N, outlen) bits, so a digest no longer than N is used whole.
+            return fromBigEndian(bytes);
+        }
+
         size_t bytesN = (bitsN + 7) / 8;
         SReadOnlyByteSpan truncated = bytes.size > bytesN ? bytes.slice(0, bytesN) : bytes;
-        return fromBigEndian(truncated);
+
+        CBigNum value = fromBigEndian(truncated);
+
+        // --> A whole-byte slice keeps 8*size bits, but FIPS 186-4 4.6/6.4 asks for exactly the
+        // leftmost bitsN, so for a subgroup order that isn't byte-aligned the surplus low bits
+        // have to be shifted out. That is every binary curve except K-233 and B-571 (e.g. N=163
+        // for B-163/K-163 keeps 168 bits, 5 too many). Omitting the shift is self-consistent --
+        // this library's own sign() and verify() still agree with each other -- but agrees with
+        // no conforming implementation, so it silently breaks interoperability both ways.
+        size_t keptBits = truncated.size * 8;
+        if (keptBits > bitsN) {
+            value.shr(keptBits - bitsN);
+        }
+
+        return value;
     }
 
     bool CBigNum::fromHex(const char* hex, CBigNum& out) {

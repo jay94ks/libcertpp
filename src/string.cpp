@@ -374,4 +374,4 @@ namespace certpp {
         return instance;
     }
 
-}
+} // namespace certpp

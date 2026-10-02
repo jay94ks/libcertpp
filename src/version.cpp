@@ -36,4 +36,4 @@ namespace certpp {
     bool SVersion::operator>=(const SVersion& other) const {
         return !(*this < other);
     }
-}
+} // namespace certpp

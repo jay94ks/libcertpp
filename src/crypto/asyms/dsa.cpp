@@ -151,9 +151,12 @@ namespace crypto {
 
         class DsaPrivateKey : public IPrivateKey {
         private:
+            static constexpr size_t G_TABLE_WINDOW = 4;
+            static constexpr size_t G_TABLE_SIZE = size_t(1) << G_TABLE_WINDOW; // 16
+
             CBigNum _p, _q, _g, _y, _x;
             IPublicKeyPtr _publicKey;
-            mutable TArray<CBigNum> _gTable; // --> lazy g^0..g^15 mod p window table, see fixedBaseModExpG().
+            TArray<CBigNum> _gTable; // --> g^0..g^15 mod p window table, see fixedBaseModExpG().
 
         public:
             DsaPrivateKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y, CBigNum x, IPublicKeyPtr publicKey)
@@ -161,6 +164,20 @@ namespace crypto {
                   _x(std::move(x)), _publicKey(std::move(publicKey))
             {
                 algorithm(EASYM_DSA);
+
+                // --> Built here rather than lazily on first sign(): a `mutable` cache filled from
+                // a const method is a data race the moment two threads sign with the same key
+                // object, and the whole table is 15 modular multiplications -- far less than the
+                // DER parse that produced this key, let alone one signature.
+                if (!_p.isZero()) {
+                    _gTable.resize(G_TABLE_SIZE);
+                    _gTable[0] = CBigNum(uint64_t(1));
+
+                    for (size_t i = 1; i < G_TABLE_SIZE; ++i) {
+                        _gTable[i] = _gTable[i - 1];
+                        _gTable[i].mulMod(_g, _p);
+                    }
+                }
             }
 
             SKeySize keySize() const override {
@@ -214,30 +231,17 @@ namespace crypto {
             const CBigNum& y() const { return _y; }
             const CBigNum& x() const { return _x; }
 
-            /* Left-to-right windowed exponentiation over a lazily-built, per-instance-cached
-             * table of g^0..g^15 mod p -- the same "16-entry window" shape
-             * CEcCurve::scalarMulBase() already uses for fixed-base EC signing (see its own doc
-             * comment), adapted from point addition/doubling to modular multiplication/squaring:
-             * every sign() call's g^k mod p becomes bitLength/4 squarings plus exactly one
-             * window multiplication per 4 bits, instead of a plain square-and-multiply's
-             * ~bitLength/2 average multiplications -- and since the table is keyed only on this
-             * key's own fixed (g, p), it's built once and amortizes across every sign() call
-             * this key ever makes, not just the current one. */
+            /* Left-to-right windowed exponentiation over _gTable (g^0..g^15 mod p, built once in
+             * the constructor) -- the same "16-entry window" shape CEcCurve::scalarMulBase()
+             * already uses for fixed-base EC signing (see its own doc comment), adapted from
+             * point addition/doubling to modular multiplication/squaring. Every sign() call's
+             * g^k mod p costs one window multiplication per 4 exponent bits instead of a plain
+             * square-and-multiply's ~bitLength/2 average multiplications. The squarings are
+             * untouched and dominate at these modulus sizes, so this is a modest constant-factor
+             * win on the multiplications, not on the whole exponentiation. */
             CBigNum fixedBaseModExpG(const CBigNum& k) const {
-                constexpr size_t WINDOW = 4;
-                constexpr size_t TABLE_SIZE = size_t(1) << WINDOW; // 16
-
-                if (_gTable.size() != TABLE_SIZE) {
-                    TArray<CBigNum> table;
-                    table.resize(TABLE_SIZE);
-
-                    table[0] = CBigNum(uint64_t(1));
-                    for (size_t i = 1; i < TABLE_SIZE; ++i) {
-                        table[i] = table[i - 1];
-                        table[i].mulMod(_g, _p);
-                    }
-
-                    _gTable = std::move(table);
+                if (_gTable.size() != G_TABLE_SIZE) {
+                    return CBigNum::modExp(_g, k, _p); // --> degenerate key (p == 0); let modExp decide.
                 }
 
                 if (k.isZero()) {
@@ -245,17 +249,17 @@ namespace crypto {
                 }
 
                 size_t bits = k.bitLength();
-                size_t numWindows = (bits + WINDOW - 1) / WINDOW;
+                size_t numWindows = (bits + G_TABLE_WINDOW - 1) / G_TABLE_WINDOW;
 
                 CBigNum result(uint64_t(1));
                 for (size_t w = numWindows; w-- > 0; ) {
-                    for (size_t i = 0; i < WINDOW; ++i) {
+                    for (size_t i = 0; i < G_TABLE_WINDOW; ++i) {
                         result.mulMod(result, _p);
                     }
 
-                    size_t base = w * WINDOW;
+                    size_t base = w * G_TABLE_WINDOW;
                     size_t windowValue = 0;
-                    for (size_t b = 0; b < WINDOW; ++b) {
+                    for (size_t b = 0; b < G_TABLE_WINDOW; ++b) {
                         if (k.testBit(base + b)) {
                             windowValue |= (size_t(1) << b);
                         }
@@ -543,7 +547,9 @@ namespace crypto {
             && CDer::readBigInteger(content, g)
             && CDer::readBigInteger(content, y);
 
-        if (!ok || !content.empty() || p.isZero() || q.isZero() || g.isZero()) {
+        // --> y was the one of the four left unchecked; a zero public value is as unusable as a
+        // zero modulus, and verify() would otherwise accept the key and fail obscurely later.
+        if (!ok || !content.empty() || p.isZero() || q.isZero() || g.isZero() || y.isZero()) {
             return nullptr;
         }
 
@@ -564,7 +570,16 @@ namespace crypto {
             && CDer::readBigInteger(content, y)
             && CDer::readBigInteger(content, x);
 
+        // --> The same structural rejections createPublicKey() applies, plus the private scalar's
+        // own FIPS 186-4 range (x in [1, q-1]). This deliberately stops short of checkPrivateKey()'s
+        // full validation (primality of p/q, q | p-1, g's order, y == g^x) -- that stays a separate,
+        // explicit call -- but a zero modulus or an out-of-range x isn't a weak key, it's one that
+        // makes sign() divide by zero, so it has to be caught at the import boundary.
         if (!ok || !content.empty() || version != CBigNum(uint64_t(0))) {
+            return nullptr;
+        }
+
+        if (p.isZero() || q.isZero() || g.isZero() || x.isZero() || x >= q) {
             return nullptr;
         }
 

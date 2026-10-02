@@ -127,6 +127,15 @@ namespace asn1 {
             return false; // negative -- not a value this library's algorithms ever produce
         }
 
+        // --> Minimal encoding (X.690 8.3.2): a leading 0x00 is only allowed when it carries the
+        // sign, i.e. when the next octet's top bit is set. Without this, 02 02 00 05 and
+        // 02 03 00 00 05 both decode to 5 -- two extra encodings of every value, which is
+        // signature malleability on each DER-encoded signature and key this parses. The sibling
+        // CDecoder::decodeInteger has always applied the same rule; this path simply missed it.
+        if (content.size > 1 && content.data[0] == 0x00 && (content.data[1] & 0x80) == 0) {
+            return false;
+        }
+
         SReadOnlyByteSpan magnitude = content;
         if (content.size > 1 && content.data[0] == 0x00) {
             magnitude = content.slice(1);
@@ -146,6 +155,15 @@ namespace asn1 {
         }
 
         if (!tag.equals(CTag::SEQ)) {
+            return false;
+        }
+
+        // --> The SEQUENCE has to be the whole input, not merely its prefix. Every caller hands
+        // in one complete DER object (a signature, a serialized key), so anything past the
+        // SEQUENCE is garbage -- and accepting it would let an attacker append bytes to a valid
+        // signature and have it still verify, which breaks any scheme that identifies a signed
+        // object by its signature bytes.
+        if (bytesRead != der.size) {
             return false;
         }
 

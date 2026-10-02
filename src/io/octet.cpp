@@ -41,4 +41,4 @@ namespace certpp {
         _size = 0;
     }
 
-}
+} // namespace certpp
