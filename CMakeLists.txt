@@ -107,6 +107,27 @@ if(CERTPP_BUILD_TESTS)
         add_executable(certpp_test_${CERTPP_TEST_NAME} ${CERTPP_TEST_SOURCE})
         target_link_libraries(certpp_test_${CERTPP_TEST_NAME} PRIVATE certpp::certpp doctest)
 
+        # A test under tests/crypto/pq/ exercises implementation units that are deliberately
+        # private to the library: the lattice arithmetic has no public API yet, so those classes
+        # carry no CERTPP_API and are not exported from the shared object. Linking cannot reach
+        # them, so such a test compiles src/crypto/pq/ directly into its own executable instead.
+        # That is safe precisely *because* the symbols aren't exported -- the test's copy can
+        # never collide with certpp's own. It also gets src/ on its include path, so it can use
+        # the same "crypto/pq/..." form the library's own sources do rather than a relative climb.
+        #
+        # Everything else is tested through the public surface, as DesCore/KeccakCore/
+        # CbcTransformer are (via ISymmetric/IHasher). This is the exception for code that has no
+        # public surface to be reached through yet, not a general licence to test internals.
+        if(CERTPP_TEST_REL MATCHES "^crypto/pq/")
+            file(GLOB CERTPP_PQ_SOURCES CONFIGURE_DEPENDS
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/*.cpp
+            )
+            target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE ${CERTPP_PQ_SOURCES})
+            target_include_directories(certpp_test_${CERTPP_TEST_NAME} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+            )
+        endif()
+
         # CERTPP_TEST_DIR: absolute path to the directory containing this test's own .cpp file,
         # so a test needing on-disk fixture data (e.g. tests/x509/realcerts.cpp's certs/) can
         # find it reliably regardless of the working directory the test happens to run from

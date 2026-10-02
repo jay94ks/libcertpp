@@ -14,7 +14,9 @@ appended at the end.
 | Shared `KeccakCore` (`src/crypto/hashers/keccakcore.hpp`) | **done** -- permutation + sponge absorb, shared by SHAKE128/SHAKE256 |
 | `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared**; `IKem::builtIn()` defined in `src/crypto/kem.cpp` and returns null, since `EKems` has no concrete members yet. Deliberately not in `certpp.hpp` until an algorithm is behind it |
 | Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
-| NTT ring arithmetic (`R_q`) | not started |
+| ML-KEM ring arithmetic (`src/crypto/pq/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
+| ML-KEM samplers + ByteEncode/ByteDecode | not started (validated in a Python model; see Phase 3) |
+| ML-DSA ring arithmetic (q=8380417) | not started |
 | ML-KEM | not started |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
@@ -29,17 +31,20 @@ null for every input. Phase 4 gives it its first member.
 `libcertpp` is an X.509/ASN.1 library: its `crypto` module exists to make `x509::CCert`
 parsing/building and signature verification work, and every `IAsymmetric` algorithm it
 has today (RSA, DSA, `CEcdsa`/`CEcdsa2`, `Ed25519`/`Ed448`, `X25519`) is exactly the set a
-real certificate or CMS/PKCS#7 structure can carry a key or signature for. The CA/Browser
-Forum and IETF LAMPS working group have already begun standardizing PQ and PQ/classical
-hybrid certificate profiles (composite ML-DSA/ECDSA SubjectPublicKeyInfo and signature
-encodings, dedicated OIDs for ML-DSA/SLH-DSA/ML-KEM), and NIST's own migration timeline
-(SP 800-131A revisions) targets deprecating 112-bit-security classical algorithms
-(RSA-2048, P-256, etc.) by 2030 and disallowing them by 2035. A certificate library has a
+real certificate or CMS/PKCS#7 structure can carry a key or signature for. The IETF LAMPS
+working group has now **published** the X.509 profiles -- RFC 9881 (ML-DSA, 2025-10),
+RFC 9909 (SLH-DSA, 2025-12) and RFC 9935 (ML-KEM, 2026-03) -- so the OIDs and the
+SubjectPublicKeyInfo/signature encodings are settled rather than moving; composite
+ML-DSA+ECDSA (`draft-ietf-lamps-pq-composite-sigs`) is IESG-approved and in the RFC Editor
+queue. On the deprecation side, **NIST IR 8547** (initial public draft, 2024-11-12) proposes
+deprecating 112-bit-security classical algorithms (RSA-2048, P-256, etc.) after 2030 and
+disallowing them after 2035, with SP 800-131A Rev 3 (ipd, 2024-10-21) as its companion --
+both still drafts, so treat the dates as direction rather than law. A certificate library has a
 longer relevance horizon than most of the software that will eventually depend on it, so
 PQ support isn't speculative -- it is eventually required for `x509::CCert` to parse and
 verify every certificate it's handed.
 
-## The standardized algorithms (as of this review)
+## The standardized algorithms (status re-checked 2026-10-02)
 
 NIST finalized three PQ standards in August 2024, plus a fourth already selected and
 further candidates still in progress:
@@ -49,18 +54,22 @@ further candidates still in progress:
 | FIPS 203 | ML-KEM (Kyber) | Key encapsulation (KEM) | Module-LWE (lattice) |
 | FIPS 204 | ML-DSA (Dilithium) | Digital signature | Module-LWE / Module-SIS (lattice) |
 | FIPS 205 | SLH-DSA (SPHINCS+) | Digital signature | Hash-function security only |
-| FIPS 206 (draft, not finalized at the time of writing) | FN-DSA (Falcon) | Digital signature | NTRU lattices (shortest-vector) |
+| FIPS 206 (in development; **no public draft** as of 2026-10-02) | FN-DSA (Falcon) | Digital signature | NTRU lattices (shortest-vector) |
 
-NIST also selected **HQC** (Hamming Quasi-Cyclic, a code-based KEM) in March 2025 as a
+NIST also selected **HQC** (Hamming Quasi-Cyclic, a code-based KEM) on 2025-03-11 as a
 structurally independent backup to ML-KEM, specifically so a future break of lattice
-assumptions wouldn't leave zero standardized PQ KEMs; it's expected to reach its own FIPS
-draft after ML-KEM/ML-DSA/SLH-DSA, but the exact timeline wasn't firm as of this review --
-treat it as a candidate to revisit, not yet a target.
+assumptions wouldn't leave zero standardized PQ KEMs. It is planned as **FIPS 207**; no draft
+has been published. (NIST has been reported as targeting finalization around 2027, but that
+is secondhand -- no dated NIST page states it.) Treat it as a candidate to revisit, not a
+target.
 
-The FIPS 203/204/205 finalizations are settled history and safe to rely on. FN-DSA's and
-HQC's status are the two moving parts, and neither is on the critical path for Phases 1-6
-of the plan -- re-check both at Phase 7 rather than tracking them here, since this document
-will go stale on them faster than anything else it says.
+FIPS 203/204/205 were all finalized 2024-08-13 and are safe to rely on. FN-DSA and HQC are
+the two moving parts, and neither is on the critical path for Phases 1-6.
+**Re-checked 2026-10-02:** FIPS 206 still has no public draft, 25 months after FIPS 204, and
+HQC is still pre-draft. Neither changes the plan -- if anything the FN-DSA gap makes
+deferring it better justified than when this was first written. Also now relevant to the
+`IKem` work: **SP 800-227, "Recommendations for Key-Encapsulation Mechanisms", went final
+2025-09-18**, and is normative guidance for how a KEM should be exposed and used.
 
 **Recommended scope for libcertpp: ML-KEM and ML-DSA only.** The original priority order
 was ML-KEM first, for the reasons below; that ordering has since been revisited -- see
@@ -83,7 +92,7 @@ which is the current position.
 - **SLH-DSA and FN-DSA: deliberately deferred, not rejected.** SLH-DSA's only advantage
   over ML-DSA is a more conservative hardness assumption (plain hash security instead of a
   lattice problem), at the cost of signatures roughly 30-50x larger (7856-49856 bytes vs.
-  ML-DSA's 2420-4595 bytes) and far slower signing (a full Merkle-tree-of-Merkle-trees
+  ML-DSA's 2420/3309/4627 bytes) and far slower signing (a full Merkle-tree-of-Merkle-trees
   walk per signature) -- a reasonable algorithm-agility fallback once ML-DSA exists, not a
   first target. FN-DSA (Falcon) gives the smallest PQ signatures of the three, but its
   signing algorithm requires sampling from a discrete Gaussian distribution over a lattice
@@ -286,6 +295,55 @@ Phases 4 and 5 is the better call and costs nothing structurally -- the ring ari
 the encoding helpers and the X.509 wiring are shared regardless of which algorithm lands
 first. This is a decision to make at Phase 4, not now.
 
+## The test vectors, located and validated up front
+
+Phases 4-6 are gated on NIST's ACVP vectors, so they were found and checked before any
+algorithm work started -- the same ordering that made the Knuth-D and ECDSA-truncation work
+safe. Both sets live in `usnistgov/ACVP-Server` under
+`gen-val/json-files/<DIR>/<FILE>`, fetched as:
+
+```
+https://raw.githubusercontent.com/usnistgov/ACVP-Server/<rev>/gen-val/json-files/<DIR>/<FILE>
+```
+
+Pin `<rev>` rather than tracking `master`; `975de31eb83d87039ec88934fdc47d8c312b892d` is
+`master` HEAD as of 2026-08-12 and is what the figures below were measured against.
+
+| Algorithm | `<DIR>` | Coverage |
+|---|---|---|
+| ML-KEM | `ML-KEM-keyGen-FIPS203` | 75 cases (25 per parameter set) |
+| ML-KEM | `ML-KEM-encapDecap-FIPS203` | 75 encapsulation, 30 decapsulation, plus key-validity groups |
+| ML-DSA | `ML-DSA-keyGen-FIPS204` | 75 cases (25 per parameter set) |
+| ML-DSA | `ML-DSA-sigGen-FIPS204` | 24 groups x 15 = 360 cases |
+| ML-DSA | `ML-DSA-sigVer-FIPS204` | 12 groups x 15 = 180 cases, 144 of them negative |
+
+Use `internalProjection.json`: it is the only file carrying inputs *and* expected outputs in
+one record (`prompt.json` has inputs, `expectedResults.json` outputs, joined on `tcId`). All
+byte fields are uppercase hex, no `0x`. The parameter set lives on the *group*, never on the
+individual test.
+
+What the validation established, beyond the files merely existing:
+
+- **Every declared field length matches the standards' own parameter tables** -- FIPS 203
+  Table 3 and FIPS 204 Table 2 -- across all 180 ML-KEM and 615 ML-DSA records, with the
+  FIPS 204 sizes additionally re-derived from Table 1's parameters via the encoding formulas.
+  No disagreement anywhere.
+- **The ML-KEM implicit-rejection oracle is real, not a relabelled happy path.** All 45
+  `reason: "modified ciphertext"` decapsulation cases satisfy `k == SHAKE256(z || c, 32)`
+  (FIPS 203's `J(z || c)`), and none of the valid cases do -- a clean separation, which is
+  exactly what is needed to test the Fujisaki-Okamoto path that must return a key-derived
+  pseudorandom secret rather than an error.
+- **The ML-DSA vectors were re-run against an independent implementation** (PyPI
+  `dilithium-py`, used as an oracle only -- nothing vendored): keyGen 75/75 and sigGen 360/360
+  byte-exact, sigVer 180/180 verdicts agreeing. So they are confirmed usable by a second
+  implementation rather than only self-consistent.
+- **ML-DSA's negative coverage is the decode path**, evenly split 36 each across modified
+  message, modified commitment, modified hint and modified `z` -- which is precisely where the
+  malleability traps below live.
+- **Hedged ML-DSA signatures are byte-reproducible too**, because the prompt supplies `rnd`.
+  An earlier version of this plan assumed only the deterministic variant could be compared
+  against a vector; in fact all 24 sigGen groups can be.
+
 ## Implementation plan
 
 Each phase ends in a green `ctest` run and is independently committable. "KAT" below means
@@ -324,7 +382,7 @@ just after each rate boundary (168 for SHAKE128, 136 for SHAKE256) -- that bound
 the sponge permutes, so a cursor off-by-one would show up nowhere else. Expected streams come
 from Python's `hashlib`, three rate blocks plus seven bytes long.
 
-### Phase 3 -- the shared ring arithmetic (the real work)
+### Phase 3 -- the shared ring arithmetic (the real work) -- **ML-KEM's ring done**
 
 A new private submodule, `src/crypto/pq/`, with no public headers yet -- nothing here
 belongs in the API until an algorithm needs to expose it, and per the conventions an
@@ -336,14 +394,28 @@ implementation class under `src/` takes no type prefix:
   `q = 8380417`; decide between one template and two concrete types once both are written,
   not before -- the project's standing preference is two clear copies over a speculative
   abstraction.
-- The zeta/twiddle tables, generated by a checked-in script rather than hand-transcribed,
-  and asserted against FIPS 203 Appendix A / FIPS 204's own worked examples.
+- The zeta/twiddle tables, derived from the root of unity at runtime rather than
+  hand-transcribed, and asserted entry by entry.
+
+  A correction to an earlier version of this plan: **FIPS 203 contains no worked examples and
+  no intermediate values at all.** Its only appendices are A (the precomputed NTT zeta table),
+  B (SampleNTT loop bounds) and C (differences from CRYSTALS-KYBER), and NIST publishes no
+  example-values page for ML-KEM either. FIPS 204 is the same -- no end-to-end intermediates,
+  though its Appendix B does give the full `zetas[0..255]` table. So the oracle available is:
+  assert the tables against their defining powers of the root of unity, check the forward and
+  inverse transforms round-trip, check the NTT-domain multiply against a schoolbook negacyclic
+  multiply, and then rely on the end-to-end ACVP vectors. Those do pin the NTT convention
+  transitively -- a transposed twiddle order changes `ek` and `c` byte for byte -- so the bug is
+  still caught; it simply won't be localized to a butterfly.
 - Centered binomial sampling and the rejection sampler over the Phase 2 XOF stream.
 - `ByteEncode`/`ByteDecode` bit-packing (FIPS 203 Algorithms 5/6).
 
-Validation gate before anything is built on top: forward-then-inverse NTT round trip, NTT
-against a schoolbook reference multiplication, and -- the part that actually matters -- the
-exact intermediate NTT representation against the standard's worked example.
+Validation gate before anything is built on top: forward-then-inverse NTT round trip, the
+NTT-domain multiply against a schoolbook negacyclic reference, the ring's defining identity
+(`X^256 == -1`) asserted directly, and every twiddle re-derived from the root of unity
+independently of how the implementation builds it. **Done for ML-KEM's ring** -- see
+`tests/crypto/pq/mlkemring.cpp`, and note `CMakeLists.txt` compiles `src/crypto/pq/` straight
+into those tests, since the lattice arithmetic has no public API and so is not exported.
 
 ### Phase 4 -- ML-KEM (`IKem`'s first implementation)
 
@@ -361,6 +433,26 @@ exact intermediate NTT representation against the standard's worked example.
   wrong-ciphertext test asserting decapsulation returns a *different but well-formed*
   secret rather than an error.
 
+Three details here are easy to get wrong and expensive to discover late:
+
+- **`G(d || k)`, not `G(d)`** (Alg. 13 step 1): the parameter-set byte `k` in {2,3,4} is
+  appended as byte 33. This was added *after* FIPS 203's initial public draft, so round-3
+  Kyber code and any pre-final implementation omit it -- copying from either silently breaks
+  all three parameter sets while still being perfectly self-consistent.
+- **`SampleNTT(rho || j || i)`** (Alg. 13 step 5 / Alg. 14 step 6): the index bytes are
+  **transposed** relative to the loop order, and the spec's own margin note says so
+  explicitly. Encrypt uses the transpose of the matrix but samples with the same byte order.
+- **`ByteDecode_12` reduces mod q and is therefore not injective**: 12-bit segments in
+  3329..4095 exist but cannot come from `ByteEncode_12`. That asymmetry *is* the
+  `encapsulationKeyCheck` test -- ACVP's failing cases carry
+  `reason: "noisy linear system values too large"`. `decapsulationKeyCheck` failures instead
+  use `reason: "modified H"`, the embedded `SHA3-256(ek)` field.
+
+Also worth noting while implementing: `eta` is only an output length in `PRF_eta`, **not**
+domain separation, so `PRF_2` and `PRF_3` on identical input share a prefix. And FIPS 203
+requires the implicit-reject flag to be destroyed before `Decaps_internal` returns, and never
+exposed in any form.
+
 ### Phase 5 -- ML-DSA (a new `IAsymmetric`)
 
 - `include/certpp/crypto/asyms/mldsa.hpp` + `src/crypto/asyms/mldsa.cpp`; `EAsymmetrics`
@@ -372,18 +464,53 @@ exact intermediate NTT representation against the standard's worked example.
   already established -- and `CCert`'s `EHASH_UNKNOWN`-means-self-hashing paths must be
   taught about it rather than inferring EdDSA.
 - The signing retry loop must be constant-time with respect to the secret: no early exit
-  whose iteration count depends on key material.
-- Gate: ACVP keygen/siggen/sigver vectors for all three parameter sets, including the
-  deterministic (non-hedged) variant so signatures are byte-comparable against the vectors.
+  whose iteration count depends on key material. **FIPS 204 Appendix C is the authority**: it
+  says implementations *should not* bound the four indeterminate loops
+  (`Sign_internal`, `RejBoundedPoly`, `RejNTTPoly`, `SampleInBall`), and that if they do, the
+  limits must be at least Table 3's (814 / 481 / 298 / 121 iterations respectively). If a
+  maximum is exceeded, all intermediate results **shall** be destroyed and the return value or
+  exception **shall be identical** for every such execution -- an observable difference there
+  is the leak. All three `Rej*` samplers read the incremental XOF (§3.7), which is why Phase 2
+  was a hard prerequisite rather than a convenience.
+- **Hint encoding (Alg. 20/21) is the sharpest decode trap.** `HintBitUnpack` must return
+  failure on three distinct conditions: an out-of-range cumulative index, positions that are
+  not strictly increasing within a polynomial, and any non-zero leftover byte. Implement fewer
+  than all three and malleable signatures are accepted -- which is exactly what ACVP's 36
+  "modified signature - hint" cases hit.
+- **Verification shall reject on length alone** (§3.6.2): a signature or public key whose
+  size differs from the standard's is invalid before any arithmetic runs. Cheap, mandatory,
+  easy to leave out.
+- **No floating-point arithmetic anywhere** (§3.6.4), and sensitive intermediates must be
+  destroyed as soon as they are no longer needed (§3.6.3) -- which the spec extends to
+  *verification* intermediates, not just signing. The two carve-outs are the seed (may be kept
+  for key regeneration) and the expanded matrix (public, needs no protection).
+- ML-DSA's ring is a *different* ring: q = 8380417 and zeta = 1753, a 512th root of unity, so
+  `zetas[0..255] = zeta^BitRev8(k)`. **FIPS 204 Appendix B prints that whole table**, which
+  makes it directly assertable -- and Appendix A warns the array is usually stored in
+  Montgomery form, so a representation mismatch there is the self-consistent-but-wrong failure
+  mode again.
+- Gate: ACVP keygen/sigGen/sigVer vectors for all three parameter sets. Both the deterministic
+  and the hedged groups are byte-comparable, since the prompt supplies `rnd` -- so all 24
+  sigGen groups count, not just the twelve deterministic ones.
 
 ### Phase 6 -- X.509 integration (what makes it useful here)
 
-- Register the OIDs in `src/x509/cert.cpp`'s `SIG_ALGOS` and key-algorithm tables:
-  ML-DSA-44/65/87 and ML-KEM-512/768/1024 from NIST's CSOR arcs. Confirm every OID against
-  the CSOR registry at implementation time -- do not trust the one quoted above, which is
-  recorded here only because it was read out of the in-tree fixture.
-- `AlgorithmIdentifier` parameters are **absent** for ML-DSA (not NULL), matching the
-  ECDSA/EdDSA convention `cert.cpp` already implements rather than the RSA/DSA one.
+- Register the OIDs in `src/x509/cert.cpp`'s `SIG_ALGOS` and key-algorithm tables. These are
+  now fixed by published RFCs rather than needing to be inferred:
+  **RFC 9881** assigns ML-DSA under `sigAlgs` (2.16.840.1.101.3.4.3) as `.17` = ML-DSA-44,
+  `.18` = ML-DSA-65, `.19` = ML-DSA-87; **RFC 9935** assigns ML-KEM under `kems`
+  (2.16.840.1.101.3.4.4) as `.1`/`.2`/`.3` = 512/768/1024.
+- So the in-tree IdenTrust fixture, whose OID is `2.16.840.1.101.3.4.3.19`, is
+  **ML-DSA-87** -- flipping it to `certs/implemented/` needs that parameter set specifically,
+  not merely "some ML-DSA".
+- `AlgorithmIdentifier.parameters` **MUST be absent** for both (RFC 9881 §2, RFC 9935), not
+  NULL -- matching the ECDSA/EdDSA convention `cert.cpp` already implements rather than the
+  RSA/DSA one. The fixture confirms it: each of its three algorithm identifiers is an 11-byte
+  SEQUENCE containing only the OID.
+- `subjectPublicKey` carries the **raw** FIPS 204 public key bytes with no OCTET STRING
+  wrapper, and `signatureValue` the raw signature.
+- Do **not** register the HashML-DSA OIDs (`sigAlgs .32`-`.34`): RFC 9881 §8.3 says they MUST
+  NOT appear in X.509 certificates.
 - Acceptance test: `tests/x509/realcerts.cpp`'s IdenTrust ML-DSA root moves from
   `certs/unimplemented/` to `certs/implemented/`, with its algorithm resolved and -- once
   the signature-verification API noted as missing in
@@ -396,9 +523,15 @@ exact intermediate NTT representation against the standard's worked example.
 ### Phase 7 -- re-evaluate the rest
 
 Revisit SLH-DSA, FN-DSA and HQC once Phases 3-6 are solid and this review's "genuinely
-hard" risks have a track record here. Hybrid/composite certificate profiles (LAMPS
-composite ML-DSA + ECDSA) are a separate question again, and worth deciding only once
-single-algorithm PQ support is real.
+hard" risks have a track record here. As of the 2026-10-02 re-check, FN-DSA has no public
+draft and HQC is pre-draft, so there is nothing to implement against for either.
+
+Hybrid/composite certificates are a different situation: `draft-ietf-lamps-pq-composite-sigs`
+is IESG-approved and in the RFC Editor queue, so the **encoding is effectively frozen** and
+the open question is demand rather than specification. Worth noting for scoping: the
+CA/Browser Forum permits PQ for S/MIME (ballot SMC013, effective 2025-08-22) but **not yet
+for public TLS**, so PQ TLS roots remain pilots -- which is exactly the status of the
+IdenTrust fixture in this repository.
 
 Every phase gets its own doctest suite under `tests/crypto/` (or `tests/x509/`), mirroring
 every other algorithm's KAT-based tests. Phases 4 and 5 additionally get a dedicated review
