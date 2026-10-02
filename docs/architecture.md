@@ -1132,6 +1132,19 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   an option) and a safety net making CRT correct to use even on an
   imported key whose CRT parameters were never independently validated via
   `checkPrivateKey()`.
+
+  `decryptBlock()`'s EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2) scans the
+  decrypted block for its `0x00`/`0x02` lead bytes and `0x00` separator in
+  constant time: the separator search always runs the full `keyBytes - 2`
+  iterations (never stopping at the first `0x00`), and every check -- lead
+  bytes, separator found, minimum 8-byte padding length -- is folded into
+  one bitmask via bitwise AND/OR rather than a chain of early-return
+  branches, the same discipline `CbcTransformer`'s PKCS#7 check already
+  applies (see its own doc comment below). The original version's
+  data-dependent-length scan plus early-return branches on the lead
+  bytes/separator position had the textbook Bleichenbacher-oracle shape:
+  every failure path already returned the same `ERET_BADREQ`, but the
+  *time taken* to reach it still leaked which check failed and where.
 - **`crypto/asyms/dsa.hpp` / `src/crypto/asyms/dsa.cpp`** define `DSA`
   (FIPS 186-4), sign/verify only -- DSA has no encryption operation, so its
   `DsaContext::createEncrypter()`/`createDecrypter()` unconditionally
@@ -1149,6 +1162,19 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   into a `SubjectPublicKeyInfo` `AlgorithmIdentifier`, which this library
   doesn't model yet). Signatures serialize as the standard
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279).
+
+  `sign()`'s `g^k mod p` term is computed via `DsaPrivateKey::
+  fixedBaseModExpG()`, a left-to-right windowed exponentiation over a
+  lazily-built, per-instance-cached table of `g^0..g^15 mod p` -- the same
+  "16-entry window" shape `CEcCurve::scalarMulBase()` already uses for
+  fixed-base EC signing (see that module's own doc comment), adapted from
+  point addition/doubling to modular multiplication/squaring. This turns
+  the exponentiation into `bitLength/4` squarings plus exactly one window
+  multiplication per 4 bits, instead of a plain `modExp()`'s
+  square-and-multiply averaging `bitLength/2` multiplications; since the
+  table is keyed only on this key's fixed `(g, p)`, not on the per-signature
+  nonce `k`, it's built once and amortizes across every `sign()` call (and
+  retry attempt) this key ever makes.
 - **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`** define `CEcCurve`/
   `SEcPoint`, a short-Weierstrass elliptic curve (`y^2 = x^3 + a*x + b mod
   p`) in affine coordinates. Public rather than a `src/`-only implementation

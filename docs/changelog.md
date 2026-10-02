@@ -101,17 +101,40 @@ or early-exiting on the first mismatch, which is the textbook structure a
 Vaudenay-style CBC padding oracle exploits. See the "Constant-time PKCS#7
 validation" comment in `src/crypto/syms/cbctransformer.cpp`.
 
-### Flagged, not fixed: RSA PKCS#1 v1.5 decrypt timing
+### Fixed: RSA PKCS#1 v1.5 decrypt timing (Bleichenbacher-class)
 
-`src/crypto/asyms/rsa.cpp::decryptBlock()`'s padding-removal scan has the
-textbook Bleichenbacher-oracle shape (a data-dependent loop plus
-early-return branches), though every failure path already returns a
-uniform `ERET_BADREQ` with no distinguishable error code. A complete fix
-would require `CBigNum::modExp` itself to be constant-time, which
-conflicts with this project's own stated correctness-over-timing-hardening
-stance for its big-number/curve math (see `CEcCurve`'s doc comments) and
-is a much larger undertaking than the padding scan alone. Left as an open
-decision rather than fixed silently.
+`src/crypto/asyms/rsa.cpp::decryptBlock()`'s padding-removal scan had the
+textbook Bleichenbacher-oracle shape: a data-dependent-length loop
+(stopping at the first `0x00` separator byte) plus early-return branches
+on the lead bytes and the separator's position/minimum offset. Every
+failure path already returned a uniform `ERET_BADREQ`, but the *time
+taken* to reach it still leaked which check failed and where. Rewritten to
+scan the entire block unconditionally (always `keyBytes - 2` iterations)
+and fold every check -- lead bytes, separator found, minimum 8-byte
+padding length -- into a single bitmask via bitwise AND/OR instead of a
+chain of branches, the same discipline `CbcTransformer`'s PKCS#7 check
+already applies. This does not make the surrounding `modExp`/CRT path
+itself constant-time -- that remains this project's accepted
+correctness-over-timing-hardening stance for big-number math (see
+`CEcCurve`'s doc comments) and was never in scope here -- only the
+padding-removal scan's own data-dependent branching, which was the part
+actually exploitable as a decryption-timing oracle. Verified against
+`tests/crypto/asyms/rsa.cpp`'s existing encrypt/decrypt round-trip and
+malformed-padding tests.
+
+### Fixed: DSA fixed-base signing speedup
+
+`DsaContext::sign()`'s `g^k mod p` term now goes through
+`DsaPrivateKey::fixedBaseModExpG()`, a left-to-right windowed
+exponentiation over a lazily-built, per-key-cached table of `g^0..g^15 mod
+p` -- the same 16-entry-window technique `CEcCurve::scalarMulBase()`
+already uses for fixed-base EC signing, adapted from point
+addition/doubling to modular multiplication/squaring. Purely an internal
+performance change (no interface/ABI impact, no security-requirement
+change): the per-signature nonce `k` still varies every call, but `g`/`p`
+are fixed for a given key, so the table is built once and reused across
+every `sign()` call (and retry attempt) that key ever makes. Verified
+against `tests/crypto/asyms/dsa.cpp`'s existing sign/verify suite.
 
 ### Other hardening from the same pass
 

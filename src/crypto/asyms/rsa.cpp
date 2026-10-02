@@ -691,21 +691,42 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
+                // --> Constant-time EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2): the separator
+                // search below scans every byte of EM unconditionally (always keyBytes-2
+                // iterations, never stopping at the first 0x00) and never branches on the
+                // decrypted content itself, combining every check into a single mask instead --
+                // the same discipline CbcTransformer's PKCS#7 check already applies (see its own
+                // doc comment). The original version's data-dependent-length scan plus
+                // early-return branches on the lead bytes/separator position was the textbook
+                // Bleichenbacher-oracle shape; every failure still reports the same ERET_BADREQ,
+                // but previously the *time taken to reach it* leaked which check failed and
+                // where.
                 const uint8_t* emPtr = em.toPtr();
-                if (emPtr[0] != 0x00 || emPtr[1] != 0x02) {
+
+                uint8_t leadMismatch = uint8_t((emPtr[0] ^ 0x00) | (emPtr[1] ^ 0x02));
+                uint8_t leadOk = uint8_t(-(uint8_t(leadMismatch == 0)));
+
+                size_t sepIndex = 0;
+                uint8_t sepFound = 0; // --> 0xFF once the first 0x00 past the lead bytes is seen.
+
+                for (size_t idx = 2; idx < keyBytes; ++idx) {
+                    uint8_t isZero = uint8_t(-(uint8_t(emPtr[idx] == 0)));
+                    uint8_t takeIt = uint8_t(isZero & uint8_t(~sepFound)); // --> only the first.
+                    size_t mask = size_t(0) - size_t(takeIt >> 7);
+                    sepIndex = (sepIndex & ~mask) | (idx & mask);
+                    sepFound = uint8_t(sepFound | isZero);
+                }
+
+                // RFC 8017 7.2.2 step 3 requires at least 8 padding (PS) bytes between the lead
+                // bytes and the separator, i.e. the separator index must be >= 2 + 8.
+                uint8_t lenOk = uint8_t(-(uint8_t(sepIndex >= 2 + 8)));
+                uint8_t allOk = uint8_t(leadOk & sepFound & lenOk);
+
+                if (allOk == 0) {
                     return ERET_BADREQ;
                 }
 
-                size_t i = 2;
-                while (i < keyBytes && emPtr[i] != 0x00) {
-                    ++i;
-                }
-
-                if (i >= keyBytes || i < 2 + 8) {
-                    return ERET_BADREQ;
-                }
-
-                size_t msgStart = i + 1;
+                size_t msgStart = sepIndex + 1;
                 size_t msgLen = keyBytes - msgStart;
 
                 if (output.size < msgLen) {

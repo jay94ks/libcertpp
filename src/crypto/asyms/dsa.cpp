@@ -153,6 +153,7 @@ namespace crypto {
         private:
             CBigNum _p, _q, _g, _y, _x;
             IPublicKeyPtr _publicKey;
+            mutable TArray<CBigNum> _gTable; // --> lazy g^0..g^15 mod p window table, see fixedBaseModExpG().
 
         public:
             DsaPrivateKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y, CBigNum x, IPublicKeyPtr publicKey)
@@ -212,6 +213,59 @@ namespace crypto {
             const CBigNum& g() const { return _g; }
             const CBigNum& y() const { return _y; }
             const CBigNum& x() const { return _x; }
+
+            /* Left-to-right windowed exponentiation over a lazily-built, per-instance-cached
+             * table of g^0..g^15 mod p -- the same "16-entry window" shape
+             * CEcCurve::scalarMulBase() already uses for fixed-base EC signing (see its own doc
+             * comment), adapted from point addition/doubling to modular multiplication/squaring:
+             * every sign() call's g^k mod p becomes bitLength/4 squarings plus exactly one
+             * window multiplication per 4 bits, instead of a plain square-and-multiply's
+             * ~bitLength/2 average multiplications -- and since the table is keyed only on this
+             * key's own fixed (g, p), it's built once and amortizes across every sign() call
+             * this key ever makes, not just the current one. */
+            CBigNum fixedBaseModExpG(const CBigNum& k) const {
+                constexpr size_t WINDOW = 4;
+                constexpr size_t TABLE_SIZE = size_t(1) << WINDOW; // 16
+
+                if (_gTable.size() != TABLE_SIZE) {
+                    TArray<CBigNum> table;
+                    table.resize(TABLE_SIZE);
+
+                    table[0] = CBigNum(uint64_t(1));
+                    for (size_t i = 1; i < TABLE_SIZE; ++i) {
+                        table[i] = table[i - 1];
+                        table[i].mulMod(_g, _p);
+                    }
+
+                    _gTable = std::move(table);
+                }
+
+                if (k.isZero()) {
+                    return CBigNum(uint64_t(1));
+                }
+
+                size_t bits = k.bitLength();
+                size_t numWindows = (bits + WINDOW - 1) / WINDOW;
+
+                CBigNum result(uint64_t(1));
+                for (size_t w = numWindows; w-- > 0; ) {
+                    for (size_t i = 0; i < WINDOW; ++i) {
+                        result.mulMod(result, _p);
+                    }
+
+                    size_t base = w * WINDOW;
+                    size_t windowValue = 0;
+                    for (size_t b = 0; b < WINDOW; ++b) {
+                        if (k.testBit(base + b)) {
+                            windowValue |= (size_t(1) << b);
+                        }
+                    }
+
+                    result.mulMod(_gTable[windowValue], _p);
+                }
+
+                return result;
+            }
         };
 
         class DsaContext : public IAsymmetricContext {
@@ -244,9 +298,7 @@ namespace crypto {
                     return ERET_KEY_FORMAT;
                 }
 
-                const CBigNum& p = priv->p();
                 const CBigNum& q = priv->q();
-                const CBigNum& g = priv->g();
                 const CBigNum& x = priv->x();
 
                 CBigNum z = CBigNum::fromBigEndianTruncated(digest, q.bitLength());
@@ -262,7 +314,7 @@ namespace crypto {
                     }
                     k.add(CBigNum(uint64_t(1))); // k in [1, q-1]
 
-                    r = CBigNum::modExp(g, k, p);
+                    r = priv->fixedBaseModExpG(k);
                     r.mod(q);
                     if (r.isZero()) {
                         continue;
