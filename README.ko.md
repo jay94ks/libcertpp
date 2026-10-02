@@ -14,8 +14,9 @@
 
 - **`utils`** -- `CBigNum`(임의 정밀도 정수), `CGf2m`(이진체 GF(2^m) 원소),
   `CHex`, DJB 해시 유틸리티.
-- **`io`** -- span 타입들, 가변 길이 배열(`TArray`), 고정 크기 소유 바이트
-  버퍼(`CBuffer`), 스트림 추상화(`IStream`).
+- **`io`** -- span 타입들, 가변 길이 배열(`TArray`), 크기 조정이 가능한
+  작업용 바이트 버퍼(`CBuffer`), 완성된 결과물을 담는 고정 크기 소유
+  버퍼(`COctet`), base64(`CBase64`), 스트림 추상화(`IStream`).
 - **`asn1`** -- 태그 인코딩/디코딩, TLV 디코더/인코더, 순차 리더/라이터
   래퍼, 그리고 임의 정밀도 `INTEGER`/`SEQUENCE` DER 헬퍼인 `CDer`.
 - **`crypto`**:
@@ -87,8 +88,9 @@ ctest --test-dir build -C Debug --output-on-failure
   헤더 가드, 포맷팅, 문서 주석 컨벤션 (영문).
 - [`docs/build.md`](docs/build.md) -- 전체 CMake 빌드/설치 레퍼런스
   (영문).
-- [`docs/changelog.md`](docs/changelog.md) -- git 히스토리가 아직 없는
-  관계로, 무엇이 만들어지고 고쳐졌는지 시간순으로 기록한 문서 (영문).
+- [`docs/changelog.md`](docs/changelog.md) -- 이 저장소의 git 히스토리보다
+  앞선 작업까지 포함해, 무엇이 만들어지고 고쳐졌는지 시간순으로 기록한
+  문서 (영문).
 - [`docs/pqc-review.md`](docs/pqc-review.md) -- 양자내성 암호화 검토 및
   로드맵 (영문).
 

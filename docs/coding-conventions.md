@@ -55,17 +55,20 @@ new styles.
   Unlike a single-level `namespace certpp { ... }`, nested namespace closes
   are bare `}` with no trailing `// namespace ...` comment (see
   "Formatting" below).
-- Not every submodule needs a nested namespace: `io` (`include/certpp/io/`,
-  `src/io/`) puts its types directly in `namespace certpp { ... }` like the
-  top-level headers do — a nested namespace is reserved for a module with
-  its own identity/naming scheme distinct from the rest of the library
-  (`asn1`'s tag/enum names are ASN.1-specific), not just "lives in a
-  subdirectory."
+- Not every submodule needs a nested namespace. As it stands: **`asn1`,
+  `crypto` and `x509` nest** (`certpp::asn1`, `certpp::crypto`,
+  `certpp::x509`), while **`io` and `utils` do not** — they put their types
+  directly in `namespace certpp { ... }` like the top-level headers do. A
+  nested namespace is reserved for a module with its own identity and
+  naming scheme distinct from the rest of the library (`asn1`'s tag/enum
+  names are ASN.1-specific; `crypto`'s and `x509`'s likewise), not just
+  "lives in a subdirectory" — which is exactly what `io` and `utils` are,
+  general-purpose plumbing the whole library reaches for unqualified.
 - A directory holding one concrete implementation per file, all of the same
   kind, may name each file by its subject's well-known short-hand instead of
   spelling the type name out in full — e.g. `x509/exts/bc.hpp` for
   `CBasicConstraintsExtension`, `ski.hpp` for
-  `CSubjectKeyIdentifierExtension` — when that abbreviation is the
+  `CSkiExtension` — when that abbreviation is the
   community-standard one (the same short names certificate-inspection
   tooling and RFCs' own running text use for these extensions), not an
   invented one. This is the exception, not the default: prefer a filename
@@ -351,16 +354,29 @@ new styles.
   A blank ` *` line between the summary and the first `@param`/`@return`
   tag is common in newer headers (`span.hpp`) though not required — earlier
   ones (`version.hpp`) run the summary straight into the tags.
+- An explicit `@brief` tag on the summary line is an accepted variant, not a
+  deviation. All of `x509/` plus `utils/base64.hpp` (16 headers) use it
+  consistently, and the older modules consistently don't; either is fine, but
+  stay consistent *within a module* rather than mixing the two in one header.
 - Inside `.cpp` implementation files, a short `/* ... */` restating the
   declaration's summary is placed directly above each definition (see
   `src/version.cpp`), rather than repeating the full Javadoc block.
 
 ## Versioning
 
-- `HEADER_VERSION` (in `version.hpp`) and `LIBRARY_VERSION` (in
-  `version.cpp`, returned by `GetLibraryVersion()`) must be bumped together
-  when the ABI/API changes, so consumers can detect a header/binary
-  mismatch by comparing the two.
+- `HEADER_VERSION` (in `version.hpp`) is the single number to bump when the
+  ABI/API changes. `LIBRARY_VERSION` (in `version.cpp`, returned by
+  `GetLibraryVersion()`) is defined *as* `HEADER_VERSION`, so it needs no
+  separate edit — the point is that the value gets baked into the binary at
+  the version of the header the binary was compiled against, while a
+  consumer's `HEADER_VERSION` is whatever header *they* compiled against.
+  Comparing the two at runtime is therefore how a consumer detects a
+  header/binary mismatch, and it works precisely because only one of them
+  is ever written by hand.
+- `CMakeLists.txt`'s `project(certpp VERSION ...)` (which drives the shared
+  library's `VERSION`/`SOVERSION`) is a second, independent copy of the same
+  number, with nothing keeping it in step. Bump it alongside
+  `HEADER_VERSION`.
 
 ## Tests
 

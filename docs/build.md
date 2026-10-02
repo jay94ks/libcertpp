@@ -32,9 +32,10 @@ cmake --build build
 |------------------------|---------|----------------------------------------------------------------|
 | `CERTPP_BUILD_SHARED`  | `ON`    | Builds `certpp` as a shared library (`.dll`/`.so`) instead of a static one (`.lib`/`.a`). |
 | `CERTPP_BUILD_TESTS`   | `ON`    | Builds the test executables under `tests/` and registers them with CTest. |
+| `CERTPP_BUILD_EXAMPLES` | `ON`   | Builds the programs under `examples/` as `certpp_example_<name>` executables. They are not registered with CTest (they write certificates to `examples/output/` and are meant to be run by hand, in order); see [`examples/README.md`](../examples/README.md). |
 | `CERTPP_RNG_FALLBACK`  | `OFF`   | Lets `crypto::CRng::fill()` fall back to `std::random_device` if the OS CSPRNG (`BCryptGenRandom` on Windows; `getrandom(2)` falling back to `/dev/urandom` on Linux; `/dev/urandom` on other POSIX platforms) is unavailable; default `OFF` compiles the fallback out and `fill()` returns `ERET_NOTSUP` in that case instead -- turn it on only as a stopgap for an environment that genuinely lacks an OS-level CSPRNG, since `std::random_device` is not guaranteed to be cryptographically secure on every standard library. |
 | `CERTPP_DISABLE_HWACCEL_SIMD` | `OFF` | Disables `CBigNum`'s ADX/BMI2 and `CGf2m`'s PCLMULQDQ acceleration (and, transitively, every asymmetric algorithm built on them), always using the portable loop instead. x86-64-only either way -- has no effect on other architectures, where the portable loop is the only one that ever exists. |
-| `CERTPP_DISABLE_HWACCEL_SHA` | `OFF` | Disables `SHA1`/`SHA256`'s SHA-NI acceleration, always using the portable compression loop instead. x86-64-only either way; `MD5`/`SHA384`/`SHA512`/`SHAKE256` have no hardware-accelerated path regardless of this option (no mainstream x86 extension covers them), so it has no effect on those. |
+| `CERTPP_DISABLE_HWACCEL_SHA` | `OFF` | Disables `SHA1`/`SHA256`'s SHA-NI acceleration, always using the portable compression loop instead. x86-64-only either way; `MD5`/`SHA384`/`SHA512`/`SHAKE128`/`SHAKE256` have no hardware-accelerated path regardless of this option (no mainstream x86 extension covers them), so it has no effect on those. |
 | `CERTPP_DISABLE_HWACCEL_AES` | `OFF` | Disables `AES`'s AES-NI acceleration, always using the portable round functions instead. x86-64-only either way; `DES`/`TripleDES`/`ChaCha20` have no hardware-accelerated path regardless of this option (no mainstream x86 extension covers them), so it has no effect on those. |
 
 ## Install
@@ -107,3 +108,44 @@ lets a test find its fixtures reliably regardless of the working directory
 it happens to run from — `ctest`'s default working directory differs from
 running the `.exe` directly, and both differ depending on the caller's own
 current directory.
+
+## Examples
+
+[`examples/`](../examples/) holds a small, runnable CA-hierarchy walkthrough
+(issue a root, an intermediate and a leaf, then sign and verify data with
+the leaf's key). It is built by default; set
+`-DCERTPP_BUILD_EXAMPLES=OFF` to skip it.
+
+```sh
+cmake --build build --config Debug
+./build/Debug/certpp_example_01_issue_ca_root
+```
+
+`CMakeLists.txt` globs `examples/*.cpp` (non-recursively — `common.hpp` is
+shared support code, not an example), one executable per file, named
+`certpp_example_<stem>`. Unlike tests, they are deliberately **not**
+registered with CTest: each one writes a `.pem` the next one reads, so they
+are ordered rather than independent. Every example target gets a
+`CERTPP_EXAMPLE_OUTPUT_DIR` compile definition pointing at
+`examples/output/` (created at configure time and gitignored), so the
+programs find each other's output regardless of the working directory they
+are run from. Delete that directory, or rerun from step 1, to regenerate
+everything with fresh keys. See [`examples/README.md`](../examples/README.md)
+for what each one does.
+
+## AddressSanitizer build
+
+MSVC supports ASan directly, in a separate build directory so the
+instrumented objects never mix with the ordinary ones:
+
+```sh
+cmake -S . -B build-asan -DCMAKE_CXX_FLAGS="/fsanitize=address /EHsc"
+cmake --build build-asan --config Debug
+ctest --test-dir build-asan -C Debug --output-on-failure
+```
+
+`build-asan/` (like `build/` and any `build-*`/`build_*` directory) is
+gitignored. Note that MSVC's ASan does **not** include a leak detector, so
+this catches out-of-bounds and use-after-free but not leaks — a leak in
+`TString`'s destructor survived exactly such a run (see
+[`changelog.md`](changelog.md)).

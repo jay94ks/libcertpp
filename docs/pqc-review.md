@@ -1,8 +1,28 @@
-# Post-Quantum Cryptography: Preliminary Review
+# Post-Quantum Cryptography: Review and Implementation Plan
 
-This is a preliminary design review, not an implementation plan -- it exists to answer
-"what would it take, and what should go first" before any post-quantum (PQ) code is
-written. No code changes accompany this document.
+This started as a preliminary design review -- "what would it take, and what should go
+first" -- written before any post-quantum (PQ) code existed. Part of what it proposed has
+since been built, so the review sections below have been corrected to describe what is
+actually in the tree, and a concrete [implementation plan](#implementation-plan) is
+appended at the end.
+
+## Current status
+
+| Item | State |
+|---|---|
+| `SHAKE128` (`crypto/hashers/shake128.hpp`) | **done** -- `EHASH_SHAKE128`, umbrella header, KAT tests |
+| Shared `KeccakCore` (`src/crypto/hashers/keccakcore.hpp`) | **done** -- permutation + sponge absorb, shared by SHAKE128/SHAKE256 |
+| `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared only** -- header-only, no implementation, not in `certpp.hpp` |
+| NTT ring arithmetic (`R_q`) | not started |
+| ML-KEM | not started |
+| ML-DSA | not started |
+| X.509 OID/algorithm wiring for PQ | not started |
+
+Two loose ends the declared-only state leaves behind, both to be closed by Phase 1 of the
+plan: `IKem::builtIn(EKems)` is declared but has no definition anywhere (there is no
+`src/crypto/kem.cpp`), so calling it fails at link time rather than returning null; and
+`EKems` has no concrete enumerators yet (`EKEM_MAX = 0`), so there is nothing for it to
+dispatch to in any case.
 
 ## Why this matters for libcertpp specifically
 
@@ -29,7 +49,7 @@ further candidates still in progress:
 | FIPS 203 | ML-KEM (Kyber) | Key encapsulation (KEM) | Module-LWE (lattice) |
 | FIPS 204 | ML-DSA (Dilithium) | Digital signature | Module-LWE / Module-SIS (lattice) |
 | FIPS 205 | SLH-DSA (SPHINCS+) | Digital signature | Hash-function security only |
-| (selected, not yet a finalized FIPS as of this review) | FN-DSA (Falcon) | Digital signature | NTRU lattices (shortest-vector) |
+| FIPS 206 (draft, not finalized at the time of writing) | FN-DSA (Falcon) | Digital signature | NTRU lattices (shortest-vector) |
 
 NIST also selected **HQC** (Hamming Quasi-Cyclic, a code-based KEM) in March 2025 as a
 structurally independent backup to ML-KEM, specifically so a future break of lattice
@@ -37,16 +57,24 @@ assumptions wouldn't leave zero standardized PQ KEMs; it's expected to reach its
 draft after ML-KEM/ML-DSA/SLH-DSA, but the exact timeline wasn't firm as of this review --
 treat it as a candidate to revisit, not yet a target.
 
-**Recommended scope for libcertpp: ML-KEM and ML-DSA only, in that priority order.**
-Reasoning:
+The FIPS 203/204/205 finalizations are settled history and safe to rely on. FN-DSA's and
+HQC's status are the two moving parts, and neither is on the critical path for Phases 1-6
+of the plan -- re-check both at Phase 7 rather than tracking them here, since this document
+will go stale on them faster than anything else it says.
+
+**Recommended scope for libcertpp: ML-KEM and ML-DSA only.** The original priority order
+was ML-KEM first, for the reasons below; that ordering has since been revisited -- see
+"[Re-evaluating the ML-KEM-first ordering](#re-evaluating-the-ml-kem-first-ordering)",
+which is the current position.
 
 - **ML-KEM first.** A KEM is needed before a signature scheme is, because TLS 1.3's PQ/
   hybrid key exchange (`X25519MLKEM768`, already shipping in major browsers and OpenSSL
-  3.x) is the single most widely deployed PQ use case today, and because `libcertpp` has
-  no KEM-shaped interface at all yet (see "Interface-level fit" below) -- building the new
-  interface shape against the simpler primitive first (no RNG-dependent domain parameters,
-  no hash-then-sign construction, a single encapsulate/decapsulate round trip) is lower
-  risk than building it against ML-DSA.
+  3.x) is the single most widely deployed PQ use case today, and because `libcertpp` had
+  no KEM-shaped interface at all when this was written (see "Interface-level fit" below --
+  one has since been declared) -- building the new interface shape against the simpler
+  primitive first (no RNG-dependent domain parameters, no hash-then-sign construction, a
+  single encapsulate/decapsulate round trip) is lower risk than building it against
+  ML-DSA.
 - **ML-DSA second**, as the signature algorithm `x509::CCert`/`CCertBuilder` actually need
   to parse/produce PQ-signed certificates. It reuses the same module-lattice machinery
   (NTT, `R_q = Z_q[X]/(X^256+1)`, centered binomial sampling) ML-KEM needs, so the two
@@ -81,14 +109,29 @@ RSA's single-block PKCS#1 encrypt/decrypt). Checking each PQ algorithm against t
   the way `createEncrypter()` is shaped, and `Decaps(sk, ciphertext) -> sharedSecret`
   returns a secret, not a decrypted message. Forcing ML-KEM through
   `createEncrypter()`/`createDecrypter()` (e.g. by treating the shared secret as "the
-  plaintext") would be a leaky, confusing abstraction. **This needs a new sibling
-  interface** -- `IKem`/`IKemContext` under a new `crypto/kem.hpp`, mirroring
+  plaintext") would be a leaky, confusing abstraction. It therefore got **a new sibling
+  interface**, which now exists: `IKem`/`IKemContext` in `crypto/kem.hpp`, mirroring
   `IAsymmetric`/`IAsymmetricContext`'s shape (key-size specs, `generateKeyPair()`,
-  `checkPrivateKey()`, `createPublicKey()`/`createPrivateKey()`, `createContext()`) but
-  with `encapsulate(IPublicKeyPtr, ciphertext&, sharedSecret&)` /
-  `decapsulate(ciphertext, sharedSecret&)` in place of sign/verify/encrypt/decrypt. This
-  is a bounded, additive change -- no existing interface needs to change shape, and
-  `X25519` (this library's one existing pure-KEX algorithm) is left as-is rather than
+  `checkPrivateKey()`, `createPublicKey()`/`createPrivateKey()`, `createContext()`) with
+  `encapsulate()`/`decapsulate()` in place of sign/verify/encrypt/decrypt.
+
+  Two details of the built interface differ from this review's original sketch, both
+  deliberately:
+
+  - `encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret)` takes **no** public-key
+    parameter. It acts on whichever key the context has bound, the same "operate on the
+    bound key, not on an argument" convention `IAsymmetricContext::sign()`/`verify()`
+    already follow -- the caller binds the peer's public key with the two-key
+    `keyPair(peerPublicKey, nullptr)` overload. `decapsulate(const SReadOnlyByteSpan&
+    ciphertext, SByteSpan& sharedSecret)` likewise acts on the bound private key.
+  - KEM keys are **their own key family** (`EKems`, `IKemKeyBase`, `IKemPublicKey`,
+    `IKemPrivateKey`, `SKemKeyPair` in `crypto/keys.hpp`), not reuses of
+    `IPublicKey`/`IPrivateKey`. A KEM key is not a signature or Diffie-Hellman key even
+    though it is asymmetric, which is the same reasoning `ESymmetrics` already applies to
+    symmetric keys.
+
+  Either way this was a bounded, additive change -- no existing interface changed shape,
+  and `X25519` (this library's one existing pure-KEX algorithm) is left as-is rather than
   retrofitted onto `IKem`, since forcing a working Diffie-Hellman interface to match a
   KEM's encapsulate/decapsulate shape for symmetry's sake isn't worth the churn.
 
@@ -98,15 +141,19 @@ Both algorithms work over the same polynomial ring `R_q = Z_q[X]/(X^256+1)` (ML-
 `q = 3329`; ML-DSA: `q = 8380417`) and both need:
 
 1. **A SHAKE-based XOF/hash layer** for domain-separated expansion (matrix generation,
-   sampling, the Fiat-Shamir challenge in ML-DSA). `SHAKE256` already exists
-   (`crypto/hashers/shake256.hpp`) and covers this directly -- **ML-KEM/ML-DSA also need
-   SHAKE128**, which this library doesn't have yet (only SHAKE256); FIPS 203/204 use
-   SHAKE128 for matrix/vector expansion and SHAKE256 for everything else (G, H, the
-   signing XOF). `src/crypto/hashers/shake256.cpp`'s `SHAKE256::keccakF1600`/
-   `permuteState` (the Keccak-f[1600] permutation itself, rate-independent) should be
-   promotable to a small shared `Keccak` core so a new `SHAKE128` doesn't duplicate the
-   permutation -- the same "shared private header+cpp" pattern this codebase already uses
-   for `DesCore`/`Sha2_32Core`/`Sha2_64Core`.
+   sampling, the Fiat-Shamir challenge in ML-DSA). **Done.** FIPS 203/204 use SHAKE128 for
+   matrix/vector expansion and SHAKE256 for everything else (G, H, the signing XOF), and
+   both now exist: `SHAKE256` was already there, and `SHAKE128`
+   (`crypto/hashers/shake128.hpp`, `EHASH_SHAKE128`) was added for this. The
+   Keccak-f[1600] permutation and sponge absorption -- rate-independent, so identical for
+   both -- were promoted out of `SHAKE256` into a shared `KeccakCore`
+   (`src/crypto/hashers/keccakcore.hpp`), the same "shared private header+cpp" pattern
+   this codebase already uses for `DesCore`/`Sha2_32Core`/`Sha2_64Core`. One caveat for
+   the PQ work specifically: both XOFs expose a single fixed output length per instance
+   (`IHasher::byteWidth()`, set at construction), so squeezing an *arbitrary-length*
+   stream -- which is exactly how FIPS 203/204 use SHAKE128 for matrix expansion -- needs
+   either a long enough instance up front or an incremental-squeeze entry point added to
+   the two classes. See Phase 2 of the plan.
 2. **Modular polynomial arithmetic mod q**: addition/subtraction (trivial), and
    multiplication, which needs the **Number-Theoretic Transform (NTT)** to be practical
    (naive schoolbook polynomial multiplication is used only for comparison/testing in
@@ -128,9 +175,8 @@ Both algorithms work over the same polynomial ring `R_q = Z_q[X]/(X^256+1)` (ML-
    "ByteDecode") -- new but mechanical, closer in spirit to this library's existing DER
    TLV encode/decode discipline (`asn1/der.hpp`) than to anything cryptographic.
 
-So roughly: item 4 is already done, item 1 is a small, well-understood extension of
-already-shipped code, and items 2/3/5 are the real new work -- concentrated almost
-entirely in the NTT-based ring arithmetic, which both algorithms share.
+So roughly: items 1 and 4 are done, and items 2/3/5 are the real new work -- concentrated
+almost entirely in the NTT-based ring arithmetic, which both algorithms share.
 
 ## What's genuinely hard (where the risk actually is)
 
@@ -171,6 +217,17 @@ constant-time guarantee. ML-KEM/ML-DSA don't have that luxury:
   lesson (the P-521 order transcription errors, the SHAKE256 rotation-table
   transposition, the `CBigNum::mul()` ADX carry-propagation bug -- each one "looked
   reasonable" and passed a self-consistency check before a KAT vector caught it).
+
+  The audit recorded in [`changelog.md`](changelog.md) added a sharper version of the same
+  lesson, and it is worth stating plainly here because it is the exact failure mode PQ work
+  invites: ECDSA's FIPS 186-4 digest truncation was *byte*-granular instead of
+  *bit*-granular, so over the eight binary curves whose subgroup order is not byte-aligned
+  this library produced signatures that verified perfectly against itself and against
+  nothing else. It passed every test for as long as it existed, because the per-curve tests
+  only ever signed and then verified their own output. An NTT with a wrong twiddle table
+  fails in precisely that shape. **A self-consistent round trip is not evidence of
+  correctness for anything whose wire format is specified**; external ACVP vectors are not
+  optional polish on this work, they are the only thing that can detect this class of bug.
 - **Side-channel surface is larger than this library has dealt with before.** Table
   lookups indexed by secret data (common in rejection sampling and encoding) are a
   cache-timing risk even when the *algorithm* is otherwise constant-time -- something
@@ -196,20 +253,145 @@ described above. The NIST reference implementations and well-audited open-source
 appropriate correctness oracle -- but no code should be vendored in, matching
 `third-party/`'s current scope (doctest only, test-only).
 
-## Suggested order of work (for a future, separate implementation plan)
+## Re-evaluating the ML-KEM-first ordering
 
-1. `SHAKE128` (promote the Keccak-f[1600] core out of `SHAKE256` first).
-2. The shared NTT-based ring-arithmetic primitive, validated against FIPS 203/204's own
-   worked NTT examples before anything is built on top of it.
-3. `ML-KEM` end to end (keygen/encaps/decaps) against the ACVP KAT vectors, plus the new
-   `IKem`/`IKemContext` interface it's the first (and, initially, only) implementation of.
-4. `ML-DSA` end to end (keygen/sign/verify) against the ACVP KAT vectors, as a new
-   `IAsymmetric` implementation -- no interface changes needed, per "Interface-level fit"
-   above.
-5. Re-evaluate SLH-DSA/FN-DSA/HQC once (1)-(4) are solid and this review's "genuinely
-   hard" risks have a proven track record in this codebase.
+This review originally put ML-KEM ahead of ML-DSA. Two of the three reasons it gave have
+since weakened, so the ordering is worth restating rather than inherited:
 
-Each phase should get its own doctest suite under `tests/crypto/` (mirroring every other
-algorithm's KAT-vector-based tests) and, specifically for (3)/(4), a dedicated review pass
-for data-dependent timing/table-index patterns before being considered done -- not just
-the usual functional test pass.
+- *"`libcertpp` has no KEM-shaped interface at all yet, and building it against the simpler
+  primitive is lower risk."* Mostly spent: `IKem`/`IKemContext` has since been designed and
+  declared. What remains is implementing against it, which is no longer the interface-design
+  risk the argument was about.
+- *"TLS 1.3 hybrid key exchange is the most widely deployed PQ use case."* True of the
+  industry, but not an argument about **this** library: `libcertpp` is an X.509/ASN.1
+  library with no TLS stack, so nothing inside it consumes a KEM. ML-KEM would ship with no
+  in-tree caller; ML-DSA directly unblocks `CCert`/`CCertBuilder`.
+- *"ML-KEM is the simpler primitive."* Still true, and still a real argument -- ML-DSA adds
+  rejection sampling with aborts, hint encoding, and a constant-time retry loop on top of
+  the same ring arithmetic.
+
+There is also now a concrete, in-tree thing ML-DSA would fix.
+`tests/x509/certs/unimplemented/identrust-mldsa-root.der` is a real, currently-valid
+self-signed ML-DSA pilot root ("IdenTrust Pilot Root TLS ML-DSA CA 1", signature/key OID
+`2.16.840.1.101.3.4.3.19` from NIST's CSOR ML-DSA arc), and
+`tests/x509/realcerts.cpp` already asserts that `CCert` parses all of it -- subject,
+issuer, validity, BasicConstraints, KeyUsage, ExtendedKeyUsage, SKI, AKI -- and resolves
+the algorithm to nothing. Every part of that certificate except its algorithm is already
+supported.
+
+**Recommendation: keep ML-KEM first for the shared substrate's sake, but treat the order as
+genuinely open.** Phases 2-3 below are a prerequisite either way; if the goal is to make
+this library parse and verify the PQ certificates that already exist in the wild, swapping
+Phases 4 and 5 is the better call and costs nothing structurally -- the ring arithmetic,
+the encoding helpers and the X.509 wiring are shared regardless of which algorithm lands
+first. This is a decision to make at Phase 4, not now.
+
+## Implementation plan
+
+Each phase ends in a green `ctest` run and is independently committable. "KAT" below means
+NIST's ACVP vectors for the algorithm in question, fetched and transcribed the same way
+`tests/crypto/hashers/shake128.cpp`'s NIST vector already was -- and cross-checked against
+a second independent implementation, per the lesson restated under "What's genuinely hard".
+
+### Phase 1 -- close out the KEM interface (small)
+
+- Add `src/crypto/kem.cpp` defining `IKem::builtIn(EKems)`, mirroring
+  `src/crypto/asym.cpp`'s `IAsymmetric::builtIn()` dispatch. Until Phase 4 it returns
+  `nullptr` for every input, which is the honest behaviour and, unlike today's missing
+  definition, links.
+- Add `#include <certpp/crypto/kem.hpp>` to `include/certpp.hpp`.
+- Document `crypto/kem.hpp` and the KEM key family in
+  [`architecture.md`](architecture.md) (already present) and note in
+  [`changelog.md`](changelog.md) that the interface is live but unimplemented.
+
+### Phase 2 -- incremental SHAKE squeezing (small, blocking)
+
+FIPS 203's `SampleNTT` rejection-samples from an unbounded SHAKE128 stream, and FIPS 204
+does the same for its challenge/mask expansion, but `SHAKE128`/`SHAKE256` today expose only
+a single fixed-length `finish()` from offset 0. Add an incremental squeeze -- a
+`squeeze(SByteSpan&)` that can be called repeatedly, advancing the sponge, alongside the
+existing `finish()`. The state copy `finish()` now makes (so it stays repeatable) is the
+natural place for this to diverge: `squeeze()` advances the live state by design.
+Test with a long multi-block output compared against one-shot `hashlib.shake_128` output of
+the same total length.
+
+### Phase 3 -- the shared ring arithmetic (the real work)
+
+A new private submodule, `src/crypto/pq/`, with no public headers yet -- nothing here
+belongs in the API until an algorithm needs to expose it, and per the conventions an
+implementation class under `src/` takes no type prefix:
+
+- `MlKemRing`/`MlDsaRing` or one parameterized `PolyRing` over
+  `R_q = Z_q[X]/(X^256+1)`: coefficient add/sub, Montgomery and Barrett reduction,
+  forward/inverse NTT, and pointwise multiplication. ML-KEM uses `q = 3329`, ML-DSA
+  `q = 8380417`; decide between one template and two concrete types once both are written,
+  not before -- the project's standing preference is two clear copies over a speculative
+  abstraction.
+- The zeta/twiddle tables, generated by a checked-in script rather than hand-transcribed,
+  and asserted against FIPS 203 Appendix A / FIPS 204's own worked examples.
+- Centered binomial sampling and the rejection sampler over the Phase 2 XOF stream.
+- `ByteEncode`/`ByteDecode` bit-packing (FIPS 203 Algorithms 5/6).
+
+Validation gate before anything is built on top: forward-then-inverse NTT round trip, NTT
+against a schoolbook reference multiplication, and -- the part that actually matters -- the
+exact intermediate NTT representation against the standard's worked example.
+
+### Phase 4 -- ML-KEM (`IKem`'s first implementation)
+
+- `include/certpp/crypto/kems/mlkem.hpp` + `src/crypto/kems/mlkem.cpp`, mirroring how
+  `crypto/asyms/` holds one file per `IAsymmetric`. `EKems` gains `EKEM_MLKEM512`,
+  `EKEM_MLKEM768`, `EKEM_MLKEM1024`; `IKem::builtIn()` dispatches them.
+- K-PKE (the underlying public-key encryption) first, then the FO transform on top:
+  keygen, encapsulate, decapsulate with **implicit rejection** -- a malformed ciphertext
+  must yield a key-derived pseudorandom shared secret, indistinguishable in both value and
+  timing from success. Private `MlKemPublicKey`/`MlKemPrivateKey` implement
+  `IKemPublicKey`/`IKemPrivateKey`.
+- Keys serialize as FIPS 203's own byte encodings. The SubjectPublicKeyInfo wrapping for
+  certificates is Phase 6, not here.
+- Gate: ACVP keygen/encapDecap vectors for all three parameter sets, plus a
+  wrong-ciphertext test asserting decapsulation returns a *different but well-formed*
+  secret rather than an error.
+
+### Phase 5 -- ML-DSA (a new `IAsymmetric`)
+
+- `include/certpp/crypto/asyms/mldsa.hpp` + `src/crypto/asyms/mldsa.cpp`; `EAsymmetrics`
+  gains `EASYM_MLDSA44`, `EASYM_MLDSA65`, `EASYM_MLDSA87`, dispatched from
+  `IAsymmetric::builtIn()`. No interface change -- it fits `sign()`/`verify()` as-is.
+- Note one shape mismatch to settle explicitly: ML-DSA signs a *message*, not a digest
+  (it does its own hashing internally), so like `Ed25519`/`Ed448` it belongs in the
+  `sizeOfDigest() == 0`, "the digest parameter is the raw message" convention those two
+  already established -- and `CCert`'s `EHASH_UNKNOWN`-means-self-hashing paths must be
+  taught about it rather than inferring EdDSA.
+- The signing retry loop must be constant-time with respect to the secret: no early exit
+  whose iteration count depends on key material.
+- Gate: ACVP keygen/siggen/sigver vectors for all three parameter sets, including the
+  deterministic (non-hedged) variant so signatures are byte-comparable against the vectors.
+
+### Phase 6 -- X.509 integration (what makes it useful here)
+
+- Register the OIDs in `src/x509/cert.cpp`'s `SIG_ALGOS` and key-algorithm tables:
+  ML-DSA-44/65/87 and ML-KEM-512/768/1024 from NIST's CSOR arcs. Confirm every OID against
+  the CSOR registry at implementation time -- do not trust the one quoted above, which is
+  recorded here only because it was read out of the in-tree fixture.
+- `AlgorithmIdentifier` parameters are **absent** for ML-DSA (not NULL), matching the
+  ECDSA/EdDSA convention `cert.cpp` already implements rather than the RSA/DSA one.
+- Acceptance test: `tests/x509/realcerts.cpp`'s IdenTrust ML-DSA root moves from
+  `certs/unimplemented/` to `certs/implemented/`, with its algorithm resolved and -- once
+  the signature-verification API noted as missing in
+  [`architecture.md`](architecture.md)'s "Where this will grow" exists -- its self-signature
+  actually verified. That single fixture flipping is the clearest possible definition of
+  done for this work.
+- `CCertBuilder` gains the ability to issue ML-DSA-signed certificates, which follows from
+  the `IAsymmetric` implementation with no builder changes beyond the algorithm tables.
+
+### Phase 7 -- re-evaluate the rest
+
+Revisit SLH-DSA, FN-DSA and HQC once Phases 3-6 are solid and this review's "genuinely
+hard" risks have a track record here. Hybrid/composite certificate profiles (LAMPS
+composite ML-DSA + ECDSA) are a separate question again, and worth deciding only once
+single-algorithm PQ support is real.
+
+Every phase gets its own doctest suite under `tests/crypto/` (or `tests/x509/`), mirroring
+every other algorithm's KAT-based tests. Phases 4 and 5 additionally get a dedicated review
+pass for data-dependent branches and secret-indexed table lookups, separate from the
+functional test pass -- that review is part of the phase, not a follow-up to it.

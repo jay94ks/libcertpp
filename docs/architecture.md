@@ -4,9 +4,10 @@
 
 `libcertpp` is a C++17 library, still early-stage but past its initial
 scaffolding: a `common` foundation, a `version` module, a `utils` module
-(a DJB hash utility, `CHex` hex decoding, `CBigNum` an arbitrary-precision
-integer, and `CGf2m` a binary-field (GF(2^m)) element), an `io` layer
-(spans, a growable array, a fixed-size owning byte buffer, and a stream
+(a DJB hash utility, `CHex` hex decoding, `CBase64` base64, `CBigNum` an
+arbitrary-precision integer, and `CGf2m` a binary-field (GF(2^m)) element),
+an `io` layer (spans, a growable array, a resizable working byte buffer
+(`CBuffer`), a fixed-size owning one (`COctet`), and a stream
 abstraction), an `asn1` module (tag encode/decode, a TLV decoder/encoder,
 sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
@@ -32,8 +33,10 @@ implementations (`AES`, `DES`, `TripleDES` -- all CBC/PKCS#7 -- and the
 SubjectAlternativeName, SubjectKeyIdentifier, AuthorityKeyIdentifier,
 CRLDistributionPoints, AuthorityInformationAccess, CertificatePolicies,
 NameConstraints). It has no certificate chain validation / path-building
-engine of its own (see "Where this will grow" below) -- parsing, building,
-and single-signature verification only.
+engine of its own, and no API for verifying a certificate's or CRL's own
+signature either -- OCSP is the one place signature verification exists
+(`COcspRequest`/`COcspResponse::verifySignature()`). See "Where this will
+grow" below for both gaps.
 
 The public API surface is header-based under
 [`include/certpp/`](../include/certpp/), re-exported through the umbrella
@@ -54,11 +57,13 @@ include/
     utils/
       djb.hpp                  # CDjb: DJB hash (plain/case-folded), SDjbValue
       hex.hpp                   # CHex: hex-string-to-bytes decoder (optional "0x"/"0X" prefix), shared by CBigNum::fromHex()/CGf2m::fromHex()
+      base64.hpp                 # CBase64: base64 codec, both a streaming push()/finish() transform and static one-shot encode()/decode(); EBase64Mode
       bignum.hpp                 # CBigNum: arbitrary-precision non-negative integer (RSA/DSA/EC/Ed25519 math)
       gf2m.hpp                    # CGf2m: fixed-capacity GF(2^m) binary field element (polynomial basis); EGf2mKnownField + CGf2m::knownField()/knownFieldPtr() name the 5 field sizes the B-*/K-* binary curves share
     io/
       span.hpp              # TSpan<T> / TReadOnlySpan<T> (template-only, no .cpp); SByteSpan/SReadOnlyByteSpan aliases
       array.hpp               # TArray<T>: owning, growable array (template-only, no .cpp); EArrayType
+      buffer.hpp                # CBuffer: owning, resizable raw byte buffer -- the working buffer COctet results are built in
       octet.hpp                 # COctet: owning, fixed-size byte buffer
       stream.hpp                  # IStream interface, IStreamPtr, ESeekMode/EStreamCapability
     asn1/
@@ -108,13 +113,13 @@ include/
       exts/                          # concrete IExtension implementations, one file each, named by the extension's common short name
         bc.hpp                         # CBasicConstraintsExtension
         ku.hpp                          # CKeyUsagesExtension, EKeyUsages
-        eku.hpp                          # CExtendedKeyUsageExtension
-        san.hpp                           # CSubjectAlternativeNameExtension
-        ski.hpp                            # CSubjectKeyIdentifierExtension
-        aki.hpp                             # CAuthorityKeyIdentifierExtension
-        cdp.hpp                              # CCrlDistributionPointsExtension
-        aia.hpp                               # CAuthorityInformationAccessExtension
-        cp.hpp                                 # CCertificatePoliciesExtension
+        eku.hpp                          # CEkuExtension
+        san.hpp                           # CSanExtension
+        ski.hpp                            # CSkiExtension
+        aki.hpp                             # CAkiExtension
+        cdp.hpp                              # CCdpExtension
+        aia.hpp                               # CAiaExtension
+        cp.hpp                                 # CPoliciesExtension
         nc.hpp                                  # CNameConstraintsExtension
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
@@ -127,9 +132,12 @@ src/
   name.cpp                   # CName::reset()/compare()/equals()/toString()
   utils/
     djb.cpp                    # CDjb::compute()/computeAsUpper()/computeAsLower()
+    hex.cpp                     # CHex::decode()
+    base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul/divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + bit-serial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
+    buffer.cpp                # CBuffer::store()/resize()
     octet.cpp                 # COctet::store()/clear()
     stream.cpp               # IStream::createMemory() factories
     memstream.hpp             # MemStream: private IStream impl, not part of the public API
@@ -159,6 +167,7 @@ src/
       shake128.cpp                     # SHAKE128: drives KeccakCore at RATE=168
       shake256.cpp                    # SHAKE256: drives KeccakCore at RATE=136
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
+    kem.cpp                    # IKem::builtIn(): returns null for every EKems value, since no KEM is implemented yet
     rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
     transform.cpp               # empty stub -- ITransformer is a pure-virtual interface, nothing out-of-line
     sym.cpp                      # ISymmetric::builtIn() factory dispatch
@@ -186,10 +195,15 @@ src/
   x509/
     ext.cpp                    # UnknownExtension (fallback IExtension) + IExtension::create()'s OID-dispatch table
     generalname.cpp             # CGeneralName::decode()/decodeList() (GeneralName CHOICE parsing)
-    access.cpp                   # CDistributionPoint::decode()
+    access.cpp                   # CDistributionPoint::decode()/encode()
+    policy.cpp                    # CPolicyInformation::encode() -- the one out-of-line member policy.hpp declares
+    crlreason.hpp                  # CrlReasonCodec: private, maps RFC 5280 5.3.1's CRLReason ENUMERATED values to/from ECrlReasons flag bits (deliberately not a 1:1 mapping)
+    crlreason.cpp
+    ocspcodec.hpp                   # OcspCodec: private, OCSP wire helpers shared by the request/response and their builders (nonce + basic-response OIDs, single-extension lists, GeneralizedTime)
+    ocspcodec.cpp
     exts/                          # one .cpp per exts/ header, same abbreviated filenames
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
-    cert.cpp                        # CCert implementation: import(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
+    cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
 tests/
@@ -197,6 +211,8 @@ tests/
   string.cpp                 # TString<T> test cases
   name.cpp                    # CName test cases
   utils/
+    djb.cpp                    # CDjb hash test cases
+    base64.cpp                  # CBase64 streaming/one-shot encode/decode test cases, incl. PEM line breaking
     bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
     gf2m.cpp                     # CGf2m field-axiom/known-answer-vector/encode-decode test cases, one known-answer vector per field size, independently cross-derived via a standalone Python implementation
   io/
@@ -242,12 +258,19 @@ tests/
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
     rng.cpp                       # CRng::fill() test cases
+    syms/
+      aes.cpp                      # AES test cases (NIST SP 800-38A CBC known-answer vectors, round-trip, tamper, error paths)
+      des.cpp                       # DES test cases (the classic FIPS-46 vector)
+      des3.cpp                       # TripleDES test cases (DES-composition cross-check)
+      chacha20.cpp                    # ChaCha20 test cases (RFC 8439 Appendix A.1 block function, chunked keystream)
     eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)
     ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, SEC1 encoding, group-order check)
   x509/
-    cert.cpp                  # CCert::import() test cases (own self-signed RSA/EC/KeyUsage/private-key fixtures), extension<T>() lookup, CCertBuilder::build() (self-signed RSA/DSA/EC/EdDSA, every digestAlgo/rsaPss combination)
+    cert.cpp                  # CCert::importDer() test cases (own self-signed RSA/EC/KeyUsage/private-key fixtures), extension<T>() lookup, CCertBuilder::build() (self-signed RSA/DSA/EC/EdDSA, every digestAlgo/rsaPss combination)
     crl.cpp                      # CCrlWriter::add()/remove()/build() + CCrlReader::decode()/find()/check() round-trip test cases (own self-signed CA fixtures)
     ocsp.cpp                      # COcspCertId/COcspEntry/COcspRequestBuilder/COcspResponse round-trip + signature-verification test cases
+    exts/                         # one .cpp per extension type, each building -> encoding -> reparsing its own extension
+      bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS, ML-DSA)
 third-party/
   CMakeLists.txt           # exposes vendored deps as CMake targets; add_subdirectory'd only when CERTPP_BUILD_TESTS=ON
@@ -577,14 +600,44 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `resize()` placement-`new` past the end of `_cap` -- was caught by the
   same test suite once the other three were fixed and it could run
   cleanly.
+- **`io/buffer.hpp` / `src/io/buffer.cpp`** define `CBuffer`, an owning,
+  resizable raw byte buffer: `resize()`, `store()`, `toPtr()` for the raw
+  pointer, and `toSpan()` to hand it on. It is the *working* buffer of the
+  three byte containers here, and the distinction between them is
+  load-bearing enough that
+  [`coding-conventions.md`](coding-conventions.md)'s "Buffer handling"
+  section legislates it: `CBuffer` is what a result is assembled in
+  (resize once, `memcpy`/`memset` into it, read it back), `COctet` is what a
+  finished fixed-length result is kept in, and `TArray<T>` is for sequences
+  of genuinely distinct elements rather than bytes. Nearly every `encode()`/
+  `build()` in the library accumulates into a `CBuffer` and converts to a
+  `COctet` at the end. Two sharp edges worth knowing: `resize()` preserves
+  existing content but does **not** zero the bytes it adds (unlike
+  `TArray<uint8_t>`), and it returns `bool` -- a caller that ignores it and
+  then writes through `toPtr()` is writing out of bounds on an allocation
+  failure.
+- **`utils/base64.hpp` / `src/utils/base64.cpp`** define `CBase64`, which is
+  both halves of a base64 codec in one class: an incremental transform
+  (`push()`/`finish()`, with an `EBase64Mode` fixing the direction --
+  `EB64M_ENCODE`, `EB64M_ENCODE_BR` for PEM-style line breaking at
+  `LINE_LENGTH`, `EB64M_DECODE` -- and internal `MAX_BUFFER` chunking), and
+  static one-shot `encode()`/`decode()` for a whole buffer at once. The
+  decoder is deliberately lenient about `=` padding and whitespace, which is
+  what makes it usable on PEM blocks as they actually appear in the wild;
+  `CCert::importPem()`/`exportPem()` are its main consumers. Note
+  `io/base64.hpp` is **not** this: it is an empty placeholder header that
+  declares nothing and that `certpp.hpp` deliberately does not include.
 - **`io/octet.hpp` / `src/io/octet.cpp`** define `COctet`, an owning,
   fixed-size byte buffer (not resizable/growable, unlike `TString<T>`) --
   `store()` replaces its content (copying and taking ownership; a null
   pointer or zero size is rejected and leaves prior content untouched, so a
   failed `store()` can't corrupt an existing instance), `clear()` releases
   it, and `toSpan()`/`toPtr()` give read-only access. Copy construction/
-  assignment deep-copy; move construction/assignment transfer ownership and
-  leave the source empty.
+  assignment deep-copy. Move *construction* transfers ownership and leaves
+  the source empty; move *assignment* swaps instead, so the source ends up
+  holding whatever the target had -- the project-wide convention described
+  under `io/array.hpp` below, which keeps a self-move safe and leaves the
+  old buffer to be freed by the source's own destructor.
 - **`io/stream.hpp` / `src/io/stream.cpp`** define `IStream`, the
   read/write/seek stream interface (capability-queried via
   `capabilities()`/`EStreamCapability`, optional operations like
@@ -818,8 +871,8 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   SHA-224's truncated (28-byte, first 7 of 8 state words) output, and
   SHA-384/SHA-512 are the same relationship one word size up (48-byte, first
   6 of 8 state words); each pair shares the one genuinely error-prone piece
-  -- the round-by-round compression function -- via `Sha2_32Transform()`/
-  `Sha2_64Transform()` in the private (not part of the public API)
+  -- the round-by-round compression function -- via `Sha2_32Core::transform()`/
+  `Sha2_64Core::transform()` in the private (not part of the public API)
   `src/crypto/hashers/sha2_32core.hpp`/`.cpp` and `sha2_64core.hpp`/`.cpp`
   respectively; everything else (`Context` layout, `reset()`/`push()`/
   `finish()`, padding) is duplicated between `sha224.cpp`/`sha256.cpp` (and
@@ -831,7 +884,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   realistic input, since the low 64 bits alone can count up to 2^61 bytes
   before overflowing.
 
-  `SHA1::transform()`/`Sha2_32Transform()` additionally have a
+  `SHA1::transform()`/`Sha2_32Core::transform()` additionally have a
   hardware-accelerated path (x86-64 only, and only when
   `CERTPP_DISABLE_HWACCEL_SHA` isn't set): `transformAccelerated()` runs the
   same compression function via the x86 SHA Extensions (SHA1RNDS4/
@@ -849,10 +902,10 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   vectors (including each algorithm's million-`'a'` multi-block stress
   vector, which exercises `transform()` across thousands of blocks), which
   on a SHA-NI-capable CPU exercise the accelerated path automatically rather
-  than needing a dedicated forced-path test. MD5/SHA-384/SHA-512/SHAKE256
+  than needing a dedicated forced-path test. MD5/SHA-384/SHA-512/SHAKE128/SHAKE256
   have no equivalent -- there is no mainstream x86 hardware extension for
   MD5 or Keccak, and no widely-deployed x86 SHA-512 extension the way there
-  is for SHA-1/SHA-224/SHA-256, so `Sha2_64Transform()`/`SHAKE256`'s
+  is for SHA-1/SHA-224/SHA-256, so `Sha2_64Core::transform()`/`SHAKE256`'s
   Keccak-f permutation stay portable-only.
 - **`crypto/hashers/shake256.hpp` / `src/crypto/hashers/shake256.cpp`**
   implement `SHAKE256`, the 256-bit-security extendable-output function
@@ -911,13 +964,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   exactly, kept as a separate family (the same reasoning `ESymmetrics`
   already uses) because a KEM key isn't a signature or DH key even though
   it's still asymmetric.
-- **`crypto/kem.hpp`** defines `IKem`/`IKemContext`, the key-encapsulation
-  counterpart of `asym.hpp`'s `IAsymmetric`/`IAsymmetricContext` --
-  declared and header-only so far (no `.cpp`, not `#include`d from the
-  umbrella `certpp.hpp`, no concrete algorithm implements it yet), added
-  as the interface-design step of the ML-KEM groundwork in
-  [`docs/pqc-review.md`](pqc-review.md) ahead of any actual lattice-crypto
-  implementation work. It deliberately isn't just `IAsymmetric` reused:
+- **`crypto/kem.hpp` / `src/crypto/kem.cpp`** define `IKem`/`IKemContext`,
+  the key-encapsulation counterpart of `asym.hpp`'s
+  `IAsymmetric`/`IAsymmetricContext` -- declared but not yet implemented by
+  anything: `EKems` has no concrete enumerators (`EKEM_MAX == 0`) and
+  `IKem::builtIn()` therefore returns null for every input, and the header
+  is deliberately left out of the umbrella `certpp.hpp` until there is an
+  algorithm behind it. It was added as the interface-design step of the
+  ML-KEM groundwork in [`docs/pqc-review.md`](pqc-review.md) ahead of any
+  actual lattice-crypto implementation work -- see that document's
+  implementation plan for what fills this in. It deliberately isn't just `IAsymmetric` reused:
   a KEM's core operation produces an algorithm-chosen shared secret
   *together with* the ciphertext that encapsulates it, unlike
   `createEncrypter()`'s "encrypt this caller-supplied plaintext" shape, so
@@ -963,7 +1019,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `generateKeyPair()` reports its result via `ERetCode` (an out-parameter
   `SKeyPair& out`, not a return value) rather than the empty-`SKeyPair`-on-
   failure convention an earlier version used, so a caller can distinguish
-  *why* generation failed -- in particular, `EREG_AGAIN` specifically means
+  *why* generation failed -- in particular, `ERET_AGAIN` specifically means
   the freshly generated key failed `checkPrivateKey()`'s validation (see
   below) and the caller should simply call `generateKeyPair()` again, as
   opposed to a structural failure (`ERET_KEY_SIZE` for an unsupported
@@ -974,9 +1030,9 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   not something hidden inside `generateKeyPair()`. Importantly,
   `checkPrivateKey()`'s own diagnostic code is never forwarded directly --
   `generateKeyPair()` always translates any non-`ERET_OK` result into
-  `EREG_AGAIN`, since a fresh candidate's *specific* rejection reason isn't
+  `ERET_AGAIN`, since a fresh candidate's *specific* rejection reason isn't
   actionable for a caller who's just going to try again, and conflating the
-  two would make `EREG_AGAIN` ambiguous for a caller validating a
+  two would make `ERET_AGAIN` ambiguous for a caller validating a
   deserialized key directly (see `checkPrivateKey()` below) where retrying
   isn't a coherent response at all.
 
@@ -984,7 +1040,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   freshly generated one (called internally by `generateKeyPair()`, as
   above) and one parsed from untrusted storage via `createPrivateKey()`
   (called directly). Since retrying isn't coherent for the latter case, it
-  reports *why* validation failed instead of `EREG_AGAIN`: `ERET_KEY_FORMAT`
+  reports *why* validation failed instead of `ERET_AGAIN`: `ERET_KEY_FORMAT`
   if `key` wasn't created by this algorithm instance (wrong concrete type),
   `ERET_KEY_ERROR` if `key` is internally inconsistent (e.g. its linked
   public key is missing or of the wrong type), or `ERET_KEY_PARAM` if a
@@ -1430,7 +1486,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
 
   `AesCore` additionally has a hardware-accelerated path (x86-64 only, and
   only when `CERTPP_DISABLE_HWACCEL_AES` isn't set), the same shape as
-  `SHA1`/`Sha2_32Transform`'s SHA-NI dispatch above: `encryptBlock()`/
+  `SHA1`/`Sha2_32Core::transform`'s SHA-NI dispatch above: `encryptBlock()`/
   `decryptBlock()` are thin dispatchers that call
   `encryptBlockAccelerated()`/`decryptBlockAccelerated()` when a runtime
   CPUID check (`hasAesNi()`, leaf 1, ECX bit 25) passes, falling back to
@@ -1528,8 +1584,8 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `directoryName` case does (`DistributionPointName` is a CHOICE). Both
   classes are grouped into this one file, rather than living next to the
   single extension class each backs, since a future caller may want to
-  construct/compare them independently of `CCrlDistributionPointsExtension`/
-  `CAuthorityInformationAccessExtension`.
+  construct/compare them independently of `CCdpExtension`/
+  `CAiaExtension`.
 - **`x509/policy.hpp`** defines `CPolicyInformation`
   (`CertificatePolicies`' `PolicyInformation`: a policy OID +
   `policyQualifiersRaw()`). The `policyQualifiers` `SEQUENCE OF
@@ -1543,19 +1599,22 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   extension this library models, named by its common short-hand rather than
   spelled out in full (`bc.hpp` = `CBasicConstraintsExtension`, `ku.hpp` =
   `CKeyUsagesExtension` (+ `EKeyUsages`), `eku.hpp` =
-  `CExtendedKeyUsageExtension`, `san.hpp` = `CSubjectAlternativeNameExtension`,
-  `ski.hpp` = `CSubjectKeyIdentifierExtension`, `aki.hpp` =
-  `CAuthorityKeyIdentifierExtension`, `cdp.hpp` =
-  `CCrlDistributionPointsExtension`, `aia.hpp` =
-  `CAuthorityInformationAccessExtension`, `cp.hpp` =
-  `CCertificatePoliciesExtension`, `nc.hpp` = `CNameConstraintsExtension`).
+  `CEkuExtension`, `san.hpp` = `CSanExtension`,
+  `ski.hpp` = `CSkiExtension`, `aki.hpp` =
+  `CAkiExtension`, `cdp.hpp` =
+  `CCdpExtension`, `aia.hpp` =
+  `CAiaExtension`, `cp.hpp` =
+  `CPoliciesExtension`, `nc.hpp` = `CNameConstraintsExtension`).
   Every one follows the same shape: a `public static constexpr const char*
   OID` naming its own extension OID (matched by `ext.cpp`'s dispatch table),
   a single constructor taking the raw `extnValue` octets and parsing them
   best-effort (a malformed field is left at a safe default rather than
-  failing the whole extension, mirroring `CCert::import()`'s own philosophy
-  below), and read-only accessors over the decoded result -- no encoding
-  side exists yet, matching this library's certificate-parsing-only stage.
+  failing the whole extension, mirroring `CCert::importDer()`'s own philosophy
+  below), and read-only accessors over the decoded result. Each also has a
+  matching `C<Name>ExtensionBuilder` over `IExtension::encodeValue(CBuffer&)`
+  and the pure-virtual `IExtensionBuilder::build()` (`x509/ext.hpp`) for the
+  encoding direction -- all ten parse/build pairs exist, so an extension can
+  be round-tripped, and `CCertBuilder::extensions` takes the builders.
   `EKeyUsages` (`ku.hpp`) is the one exception to "natural RFC bit order":
   its bit positions are historically inverted from the `KeyUsage` BIT
   STRING's own named-bit numbering, preserved exactly as `CCert` originally
@@ -1569,13 +1628,13 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   the value types `x509/access.hpp`/`x509/policy.hpp`/`x509/generalname.hpp`
   actually define, per those files' own bullets above.
 - **`x509/cert.hpp` / `src/x509/cert.cpp`** define `CCert`, parsing a DER
-  X.509 `Certificate` (`import(data)`) into subject/issuer
+  X.509 `Certificate` (`importDer(data)`) into subject/issuer
   (`CDistinguishedName`), validity (`SDateTime`), serial number, key/
   signature algorithm identifiers, the raw `SubjectPublicKeyInfo`, and every
   extension. Only fields this class exposes a getter for are retained --
   `issuerUniqueID`/`subjectUniqueID` and the TBSCertificate-embedded copy of
   the signature algorithm are read past but discarded. Parsing follows one
-  consistent best-effort contract: `import()` builds every field into local
+  consistent best-effort contract: `importDer()` builds every field into local
   variables first and only commits them to `*this` at the very end (so a
   failure partway through never leaves the object half-populated), but an
   *algorithm* it doesn't recognize (an unlisted key/signature/curve OID) is
@@ -1591,14 +1650,14 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   the one algorithm needing this extra step.
 
   `publicKey()`/`privateKey()` are genuinely lazy: `_cachedPub`/`_cachedPvt`
-  (`mutable`) are cleared (not rebuilt) by `import()`, and only actually
+  (`mutable`) are cleared (not rebuilt) by `importDer()`, and only actually
   constructed the first time each accessor is called -- a caller that never
   asks for the key pays nothing for it. `privateKey(IPrivateKeyPtr&)`
   (the setter) validates the incoming key is genuinely this certificate's
   own by comparing its derived public key against `publicKey()`
   (`IKeyBase::compare()`) before accepting it. `createHasher()` resolves the
   *signature* algorithm's own digest (`_sigHashAlgo`, set from
-  `signAlgo()`'s OID during `import()`) -- unrelated to `thumbprint()`,
+  `signAlgo()`'s OID during `importDer()`) -- unrelated to `thumbprint()`,
   which is unconditionally the whole raw certificate's SHA-1 digest
   regardless of the certificate's actual signature algorithm, matching the
   conventional meaning of a certificate "fingerprint" in most tooling.
@@ -1630,8 +1689,57 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   an algorithm this library doesn't implement yet (RSA-PSS, the ML-DSA
   post-quantum signature scheme) are kept separately under
   `certs/unimplemented/`, documenting the gap rather than hiding it.
+- **`x509/crl.hpp` / `src/x509/crl.cpp`** define the CRL (RFC 5280 5)
+  side, split across three types rather than one read/write class:
+  `CCrlRevokationInfo` is a single `revokedCertificates` entry
+  (`serialNumber()`, `timestamp()`, `reason()`, plus `isFor(cert)` to test
+  it against a certificate and `encode()`/`decode()` for its own TLV);
+  `CCrlReader` parses a `CertificateList` (`decode()`, then `version()`/
+  `issuer()`/`thisUpdate()`/`nextUpdate()`/`revokations()`) and answers the
+  two questions a caller actually has -- `find(cert, out)` for the matching
+  entry and `check(cert)` for a plain revoked/not-revoked verdict; and
+  `CCrlWriter` builds one (`add(cert, when, reason)`/`remove(cert)`, then
+  `build(issuer, out)` to sign it with the issuer's key). The reader/writer
+  split mirrors `asn1`'s own `CReader`/`CWriter` rather than `CCert`'s
+  single import/export class, because a CRL is naturally produced and
+  consumed by different parties.
+  `ECrlReasons` (`x509/access.hpp`) is shared with the CRLDistributionPoints
+  extension; the ENUMERATED-to-flag mapping between RFC 5280 5.3.1's
+  `CRLReason` wire values and those flag bits is deliberately not
+  one-to-one (`ReasonFlags` bits 7/8 vs. ENUMERATED 9/10, and ENUMERATED 8
+  `removeFromCRL` has no flag at all), so it lives in its own private
+  `CrlReasonCodec` (`src/x509/crlreason.hpp`) instead of being open-coded
+  at each call site.
+  Two scope notes: `check()` reports only whether the certificate appears
+  in the list -- it verifies no signature and does not confirm the CRL was
+  issued by the certificate's own issuer -- and `CCrlWriter` emits no
+  `crlExtensions`, so the `CRLNumber`/`AuthorityKeyIdentifier` RFC 5280
+  5.1.2 expects are absent from CRLs it produces.
+- **`x509/ocsp.hpp` / `src/x509/ocsp.cpp`** define the OCSP (RFC 6960)
+  request/response pair, the one place in `x509/` where signature
+  *verification* exists. `COcspCertId` is the `CertID` that identifies a
+  certificate by issuer-name hash, issuer-key hash and serial, under a
+  caller-chosen `hashAlgo()` (SHA-1 by default, as deployed responders
+  expect); `COcspEntry` is one `SingleResponse` (`certId()`, `status()`,
+  `reason()`, `thisUpdate()`/`nextUpdate()`/`revocationTime()`).
+  `COcspRequest`/`COcspRequestBuilder` and
+  `COcspResponse`/`COcspResponseBuilder` then follow the same parse-side/
+  build-side split as the CRL types: the builders take certificates
+  (`add(cert, issuer, hashAlgo)`), generate a nonce (`generateNonce()`) and
+  `build()` the DER; the parse side exposes `decode()`, the decoded
+  entries, and -- unlike `CCert`/`CCrlReader` -- a real
+  `verifySignature(responderCert)`. `EOcspStatus` carries the top-level
+  `responseStatus`, and only `EOCSP_OK` carries anything further by the
+  grammar, which is why `COcspResponse::status()` has to be checked before
+  any other accessor means anything. `find()`/`check()` mirror
+  `CCrlReader`'s. The shared wire helpers both sides need (the nonce and
+  basic-response OIDs, single-extension list encoding, `GeneralizedTime`
+  formatting) live in a private `OcspCodec` (`src/x509/ocspcodec.hpp`).
 - **`certpp.hpp`** is the single include point for consumers; as new public
-  headers are added under `include/certpp/`, add their `#include` here.
+  headers are added under `include/certpp/`, add their `#include` here. Two
+  public headers are deliberately *not* included: `crypto/kem.hpp` (no
+  implementation behind it yet -- see its own bullet) and `io/base64.hpp`,
+  which is an empty placeholder (`CBase64` lives in `utils/base64.hpp`).
 - **`tests/`** holds every test case, built via `CERTPP_BUILD_TESTS`
   (default `ON`) as one executable per source file and registered with
   CTest. See [coding-conventions.md](coding-conventions.md#tests) for the
@@ -1648,9 +1756,9 @@ translation units get dllexport), while `__SHARED_LIBCERTPP__` is `PUBLIC`
 so consumers linking against the shared build automatically get
 dllimport-annotated declarations. See [build.md](build.md) for commands.
 
-Hardware acceleration is split into two independent build options, matching
-the two unrelated instruction-set families it draws on -- disabling one
-never affects the other:
+Hardware acceleration is split into three independent build options, matching
+the unrelated instruction-set families it draws on -- disabling one never
+affects the others:
 
 - `CERTPP_DISABLE_HWACCEL_SIMD` (`OFF` by default) forces `CGf2m::mul()`/
   `CBigNum::mul()` to always use their portable schoolbook implementations,
@@ -1669,12 +1777,19 @@ never affects the other:
   SHA1MSG2 and SHA256RNDS2/SHA256MSG1/SHA256MSG2 respectively), gated behind
   a runtime CPUID check (`hasSha()`, CPUID leaf 7 sub-leaf 0, EBX bit 29) the
   same way `CBigNum`'s/`CGf2m`'s paths gate on their own CPUID bits. `MD5`/
-  `SHA384`/`SHA512`/`SHAKE256` have no accelerated path and are unaffected
-  by this option -- there is no mainstream x86 hardware extension for MD5 or
-  Keccak, and no widely-deployed x86 SHA-512 extension the way there is for
-  SHA-1/SHA-256.
+  `SHA384`/`SHA512`/`SHAKE128`/`SHAKE256` have no accelerated path and are
+  unaffected by this option -- there is no mainstream x86 hardware extension
+  for MD5 or Keccak, and no widely-deployed x86 SHA-512 extension the way
+  there is for SHA-1/SHA-256.
+- `CERTPP_DISABLE_HWACCEL_AES` (`OFF` by default) forces `AesCore`'s block
+  functions (`src/crypto/syms/aes.cpp`) to always use the portable round
+  loop instead of the AES-NI instructions (AESENC/AESENCLAST/AESDEC/
+  AESDECLAST/AESIMC), gated on its own runtime CPUID check (`hasAesNi()`,
+  leaf 1, ECX bit 25). `DES`/`TripleDES`/`ChaCha20` have no accelerated path
+  and are unaffected -- see the `crypto/syms/aes.hpp` bullet above for the
+  Equivalent Inverse Cipher construction the decrypt side uses.
 
-Both settings' accelerated and portable paths are expected to produce
+All three settings' accelerated and portable paths are expected to produce
 byte-identical results and are verified against the full test suite before
 any change to either path is considered done; a separate build directory
 (e.g. `build_noaccel/`) is a convenient way to keep an accelerated and a
@@ -1690,13 +1805,14 @@ under `third-party/doctest/`), used only by `tests/`. Its
 `third-party/CMakeLists.txt` exposes each vendored dependency as its own
 CMake target (`doctest` today); the root `CMakeLists.txt` only
 `add_subdirectory(third-party)`s when `CERTPP_BUILD_TESTS=ON`, since
-nothing outside `tests/` needs it. Note that `crypto`'s hash functions
-(`MD5`/`SHA1`/`SHA256`/`SHA384`/`SHA512`) are implemented from scratch and
-need no such dependency; a future non-test dependency would instead be
-something hashing alone can't provide -- asymmetric crypto (signature
-generation/verification) once certificate generation is implemented, for
-instance. That still follows the same pattern: vendor it under its own
-`third-party/<name>/` directory and add a matching target in
+nothing outside `tests/` needs it. Everything the library itself does is
+implemented from scratch and needs no dependency at all: the hashes
+(`MD5`/`SHA1`/`SHA224`/`SHA256`/`SHA384`/`SHA512`/`SHAKE128`/`SHAKE256`),
+the symmetric ciphers, the asymmetric algorithms, and the big-number and
+binary-field arithmetic under them. There is consequently no non-test
+dependency yet and no concrete candidate for one; if a future piece of work
+ever genuinely needs one, it follows the same pattern -- vendor it under its
+own `third-party/<name>/` directory and add a matching target in
 `third-party/CMakeLists.txt`, linked from `certpp` itself rather than gated
 behind `CERTPP_BUILD_TESTS`.
 
@@ -1719,14 +1835,31 @@ its own doc comment. A future genuinely non-library-providable dependency
 (there isn't one yet: RSA needed only `CBigNum`, itself built from scratch)
 would follow the vendor-and-expose-a-target pattern above, instead.
 
-`x509/` (`CCert` + `IExtension` and its ten concrete extensions) currently
-only *parses* a DER `Certificate` -- there is no certificate/CSR generation,
-signing, or chain-validation logic yet. A new extension type follows
+`x509/` both parses and generates: `CCert`/`CCertBuilder` read and build
+(and sign) a `Certificate`, `CCrlReader`/`CCrlWriter` a `CertificateList`,
+and `COcspRequest`/`COcspResponse` plus their builders an OCSP exchange, all
+ten extensions have a parse/build pair, and PEM as well as DER is handled
+(`ECertFormat`, `importPem()`/`exportPem()`). A new extension type follows
 `x509/exts/`'s established shape (a concrete `IExtension` subclass with its
-own `OID`, added to `ext.cpp`'s dispatch table) and, if it needs to hold a
-GeneralName-shaped or list-of-value-object-shaped field, reuses
+own `OID`, added to `ext.cpp`'s dispatch table, plus the matching
+`IExtensionBuilder`) and, if it needs to hold a GeneralName-shaped or
+list-of-value-object-shaped field, reuses
 `x509/generalname.hpp`/`access.hpp`/`policy.hpp` rather than redefining
-those shapes locally. Certificate *generation* (encoding a `CCert` back to
-DER, or building one from scratch and signing it with an attached private
-key) is the next logical gap once parsing coverage across enough real-world
-algorithms/extensions is established.
+those shapes locally.
+
+What is genuinely still missing here is the *relational* half of X.509, and
+it is deliberately scoped out for now rather than half-built:
+
+- **Certificate/CRL signature verification.** `CCert` parses the signature
+  but exposes neither it nor the TBS byte range, so nothing can check a
+  certificate against its issuer; `CCrlReader` discards both. (OCSP is the
+  exception -- `COcspRequest`/`COcspResponse::verifySignature()` exist.)
+  `tests/x509/cert.cpp` has to re-walk the DER by hand to recover those
+  bytes, which is the clearest sign the API is missing an accessor.
+- **Chain building and path validation** -- name chaining, validity
+  windows, `BasicConstraints`/`KeyUsage`/`NameConstraints` enforcement, and
+  RFC 5280's "reject an unrecognized critical extension" rule. This library
+  parses and preserves everything a validator needs and enforces none of it;
+  see this document's own scope note at the top.
+- **CSR (PKCS#10) generation and parsing**, which nothing in the tree
+  models yet.

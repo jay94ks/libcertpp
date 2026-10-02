@@ -7,19 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `libcertpp` is an early-stage C++17 certificate-handling library. Beyond the
 foundational scaffolding (type aliases, the `CERTPP_API` export macro, a
 version struct), it now has: top-level `STimeSpan`/`SDateTime` calendar-time
-types (`time.hpp`); an `io` layer (`TSpan`/`TReadOnlySpan`, the `IStream`
-interface with a memory-backed implementation); an `asn1` module
+types (`time.hpp`); an `io` layer (`TSpan`/`TReadOnlySpan`, `TArray`,
+`CBuffer`, `COctet`, `CBase64`, the `IStream` interface with a
+memory-backed implementation); an `asn1` module
 (`CTag` tag encode/decode, `CDecoder`/`CEncoder` for reading/writing
 BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
-(hashing, a CSPRNG, and asymmetric algorithms -- RSA, DSA, ECDSA over prime
-and binary curves, Ed25519, Ed448, X25519 -- all from scratch); and an
-`x509` module that parses (not yet generates) a DER X.509 `Certificate`
-(`CCert`), including ten concrete extension types (BasicConstraints,
-KeyUsage, ExtendedKeyUsage, SubjectAlternativeName, SubjectKeyIdentifier,
-AuthorityKeyIdentifier, CRLDistributionPoints, AuthorityInformationAccess,
-CertificatePolicies, NameConstraints) under `x509/exts/`. See
+(hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
+and binary curves, Ed25519, Ed448, X25519 -- and symmetric ones -- AES,
+DES, TripleDES, ChaCha20 -- all from scratch); and an `x509` module that
+both parses and builds DER/PEM X.509 `Certificate`s
+(`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
+request/response (RFC 6960), including ten concrete extension types
+(BasicConstraints, KeyUsage, ExtendedKeyUsage, SubjectAlternativeName,
+SubjectKeyIdentifier, AuthorityKeyIdentifier, CRLDistributionPoints,
+AuthorityInformationAccess, CertificatePolicies, NameConstraints) under
+`x509/exts/`, each with a parse/build pair. What it deliberately does
+*not* have is certificate/CRL signature verification, chain building or
+path validation, and CSR (PKCS#10) support. See
 [`docs/architecture.md`](docs/architecture.md) for the full module
 breakdown.
 
@@ -29,8 +35,10 @@ Detailed, longer-lived documentation lives under [`docs/`](docs/), not in
 this file:
 
 - [`docs/architecture.md`](docs/architecture.md) — module responsibilities and how the pieces fit together.
-- [`docs/coding-conventions.md`](docs/coding-conventions.md) — naming, header-guard, formatting, and doc-comment conventions derived from the existing code.
-- [`docs/build.md`](docs/build.md) — full CMake build/install reference.
+- [`docs/coding-conventions.md`](docs/coding-conventions.md) — naming, header-guard, formatting, buffer-handling, and doc-comment conventions derived from the existing code.
+- [`docs/build.md`](docs/build.md) — full CMake build/install reference, plus the examples and AddressSanitizer builds.
+- [`docs/changelog.md`](docs/changelog.md) — why things are the way they are: the work, and the bugs found and fixed, that predate this repository's git history.
+- [`docs/pqc-review.md`](docs/pqc-review.md) — post-quantum cryptography review and the roadmap the `IKem` interface came from.
 
 When you add a new subsystem or change a convention, update the relevant
 file under `docs/` (or add a new one) rather than expanding this file.
@@ -71,11 +79,12 @@ to build/run them. There are no lint commands configured yet.
   `.cpp` under `src/` (e.g. `version.hpp` <-> `src/version.cpp`), created as
   an empty stub up front even before there's out-of-line code to put in it.
   A header that's entirely templates (e.g. `io/span.hpp`) has no `.cpp`.
-- `io` (`include/certpp/io/`, `src/io/`) and `asn1` (`include/certpp/asn1/`,
-  `src/asn1/`) are submodules under the single-level `certpp` namespace
-  (`io` types live directly in `certpp::`; `asn1` types live in the nested
-  `certpp::asn1`) — see [`docs/coding-conventions.md`](docs/coding-conventions.md)
-  for the nested-namespace convention this implies.
+- Each submodule has its own `include/certpp/<name>/` and `src/<name>/`
+  directory, but only some get a nested namespace: `asn1`, `crypto` and
+  `x509` nest (`certpp::asn1`, `certpp::crypto`, `certpp::x509`), while
+  `io` and `utils` put their types directly in `certpp::`. See
+  [`docs/coding-conventions.md`](docs/coding-conventions.md) for the rule
+  behind that split and the closing-brace style each form uses.
 - An implementation detail that has no place in the public API (e.g. the
   `MemStream` backing `IStream::createMemory`) gets a private header+source
   pair under `src/` instead of `include/certpp/` — see

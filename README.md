@@ -14,8 +14,9 @@ is used by the test suite only).
 
 - **`utils`** -- `CBigNum` (arbitrary-precision integer), `CGf2m`
   (binary-field GF(2^m) element), `CHex`, a DJB hash utility.
-- **`io`** -- spans, a growable array (`TArray`), a fixed-size owning byte
-  buffer (`CBuffer`), and a stream abstraction (`IStream`).
+- **`io`** -- spans, a growable array (`TArray`), a resizable working byte
+  buffer (`CBuffer`), a fixed-size owning one for finished results
+  (`COctet`), base64 (`CBase64`), and a stream abstraction (`IStream`).
 - **`asn1`** -- tag encode/decode, a TLV decoder/encoder, sequential
   reader/writer wrappers, and `CDer`'s arbitrary-precision `INTEGER`/
   `SEQUENCE` DER helpers.
@@ -87,7 +88,8 @@ root, an intermediate, a leaf, then sign/verify data with the leaf's key)
   header-guard, formatting, and doc-comment conventions.
 - [`docs/build.md`](docs/build.md) -- full CMake build/install reference.
 - [`docs/changelog.md`](docs/changelog.md) -- chronological record of what
-  was built and fixed, in lieu of git history.
+  was built and fixed, covering the work that predates this repository's
+  git history.
 - [`docs/pqc-review.md`](docs/pqc-review.md) -- post-quantum cryptography
   review and roadmap.
 
