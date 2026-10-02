@@ -120,6 +120,27 @@ namespace certpp {
 
     public:
         /**
+         * Overwrites this value's limbs with zeroes (via CSecure::zero, so the compiler may not
+         * drop it) and resets the value to zero, for a secret that should not be left in the
+         * heap block after it is freed.
+         *
+         * This is opt-in rather than something the destructor does, and that was settled by
+         * measurement rather than taste: making ~CBigNum() clear unconditionally cost 22% across
+         * the asymmetric test suites and 32% on X25519 alone, because a scalar multiplication
+         * creates a great many short-lived temporaries and the overwhelming majority of them
+         * hold public intermediates.
+         *
+         * Which leaves a real limitation worth stating plainly: this reaches only the values a
+         * caller names and clears. A temporary produced inside an expression, or inside
+         * modExp()/modInverse(), is freed without being cleared, so this reduces the window a
+         * secret stays in freed memory rather than eliminating it. The values worth naming are
+         * the ones whose exposure is catastrophic -- an ECDSA/DSA nonce or an EdDSA nonce,
+         * either of which yields the private key outright given a signature over it.
+         */
+        void secureClear();
+
+    public:
+        /**
          * Parses a big-endian byte sequence (an unsigned magnitude) into a CBigNum.
          * @param bytes The big-endian bytes to parse.
          * @return The parsed value.

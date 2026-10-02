@@ -993,3 +993,65 @@ consolidation would be a poor trade.
 
 Still outstanding: no RSA, DSA or EC private-key operation scrubs its
 intermediates. The primitive is now there for it.
+
+## Scrubbing private-key intermediates
+
+`CSecure` existed but was only used by ML-KEM. This applies it across the
+pre-quantum algorithms, and adds the big-number counterpart it needed to be
+able to.
+
+### `CBigNum::secureClear()`, and why the destructor doesn't do it
+
+Private keys and signing nonces are `CBigNum` values, so clearing stack
+buffers alone would have missed everything that matters. `secureClear()` wipes
+the limb allocation — its whole capacity, so limbs above a trimmed length go
+too — and resets the value to zero.
+
+Making `~CBigNum()` do it unconditionally would be far more robust, so the
+question was what it costs. Measured rather than guessed, and the guess was
+wrong: I estimated 1–3% and it was **+22% across the asymmetric test suites,
++32% on X25519 alone**. A scalar multiplication creates a great many
+short-lived temporaries, nearly all of them holding public intermediates, and
+each clear is a non-inlinable indirect call. So it stayed opt-in. Applying it
+only to named secrets is unmeasurable by comparison — the build without the
+clears actually timed *faster* on one run than the build with them, which is
+how far below the noise floor it sits.
+
+That buys a real limitation, stated in the header rather than left implicit:
+`secureClear()` reaches only the values a caller names. A temporary created
+inside an expression, or inside `modExp()`/`modInverse()`, is freed uncleaned.
+This narrows the window a secret sits in freed memory; it does not close it.
+
+### What got cleared, and why those
+
+The criterion was "exposure is catastrophic", not "is secret":
+
+- **ECDSA/ECDSA2/DSA signing**: the nonce `k`, and the `d*r`/`x*r` product
+  beside it. Either one yields the private key outright from a published
+  signature — `d = (s*k - z)/r mod n`, or `d = dr/r mod n`. Cleared on every
+  path out of the retry loop, including the retry paths themselves, which need
+  a zero `r` or a non-invertible `k` and so are unreachable short of a broken
+  CSPRNG. Three lines each; worth it for not having to reason about it again.
+- **Ed25519/Ed448 signing**: the nonce, and the expanded seed behind it. EdDSA
+  publishes `S = r + k*s mod L` with `k` public, so learning `r` for one
+  signature recovers `s` — the nonce is exactly as sensitive as the key, which
+  makes `prefix` and `rHash` the same secret since they determine it. Also the
+  `k*s` product, which hands over `s` because `k` is public. Each is cleared
+  where it stops being needed, which leaves exactly one exit with anything
+  live.
+- **X25519**: the clamped scalar (the private key in all but encoding,
+  recomputed on every scalar multiplication) and the shared secret.
+- **RSA**: the CRT intermediates. These are *more* sensitive than the value
+  being computed, not less: `m1` is `m mod p`, so `m - m1` is a multiple of `p`
+  and `gcd(m - m1, n)` is `p` exactly — and when signing, `m` is the published
+  signature. Also the padded plaintext buffer in `decryptBlock`, on all three
+  of its exits, which keeps the paths doing the same work rather than adding a
+  distinguisher to the constant-time unpadding above it.
+
+### Evidence it didn't break anything
+
+The deterministic known-answer tests are the check that matters here: an
+over-eager clear would corrupt a value still in use, and RFC 8032's EdDSA
+vectors, CAVP's ECDSA/DSA vectors and the RSA KAT all reproduce exact expected
+bytes. All of them still pass, along with the rest of the 95-test suite in
+both Debug and Release.

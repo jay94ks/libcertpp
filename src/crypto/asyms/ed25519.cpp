@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/ed25519.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/hashers/sha512.hpp>
@@ -553,6 +554,12 @@ namespace crypto {
                 outScalar = CBigNum::fromLittleEndian(SReadOnlyByteSpan(aBytes, 32));
 
                 std::memcpy(outPrefix, h + 32, 32);
+
+                // h is the whole expanded private key -- the scalar in its first half and the
+                // signing prefix in its second -- and aBytes is the scalar itself. Both have been
+                // copied where they are needed; neither belongs in this frame afterwards.
+                CSecure::zero(SByteSpan(h, sizeof(h)));
+                CSecure::zero(SByteSpan(aBytes, sizeof(aBytes)));
             }
         };
 
@@ -690,13 +697,23 @@ namespace crypto {
                 uint8_t prefix[32];
                 Edwards25519::deriveFromSeed(priv->seed(), s, prefix);
 
+                // --> EdDSA's per-signature nonce r is as sensitive as the key: the signature
+                // publishes S = r + k*s mod L with k public, so anyone who learns r for one
+                // signature recovers s. prefix and rHash are what determine r, so they count as
+                // the same secret. Each of these is cleared at the point it stops being needed,
+                // which leaves only one exit below where any of them is still live.
                 uint8_t rHash[64];
                 Edwards25519::sha512({ SReadOnlyByteSpan(prefix, 32), message }, rHash);
                 CBigNum r = CBigNum::fromLittleEndian(SReadOnlyByteSpan(rHash, 64)).mod(L);
 
+                CSecure::zero(SByteSpan(rHash, sizeof(rHash)));
+                CSecure::zero(SByteSpan(prefix, sizeof(prefix)));
+
                 EdPoint rPoint = Edwards25519::scalarMulBase(r);
                 uint8_t rEncoded[32];
                 if (!Edwards25519::encodePoint(rPoint, rEncoded)) {
+                    s.secureClear();
+                    r.secureClear();
                     return ERET_UNKNOWN;
                 }
 
@@ -704,9 +721,17 @@ namespace crypto {
                 Edwards25519::sha512({ SReadOnlyByteSpan(rEncoded, 32), SReadOnlyByteSpan(pub->encoded(), 32), message }, kHash);
                 CBigNum k = CBigNum::fromLittleEndian(SReadOnlyByteSpan(kHash, 64)).mod(L);
 
+                // k itself is a hash of public values, but k*s is not -- k is public, so k*s
+                // hands over s. It holds that product from here until it is consumed just below.
                 k.mulMod(s, L);
+                s.secureClear();
+
                 r.add(k);
                 r.mod(L);
+                k.secureClear();
+
+                // r now holds the signature's own S, which is published -- so what moves into
+                // sBig is public, and the nonce it used to hold was overwritten in place above.
                 CBigNum sBig = std::move(r);
 
                 uint8_t sEncoded[32];

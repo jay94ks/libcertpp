@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/x25519.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <cstring>
@@ -52,7 +53,13 @@ namespace crypto {
                 clamped[31] &= 127;
                 clamped[31] |= 64;
 
-                return CBigNum::fromLittleEndian(SReadOnlyByteSpan(clamped, 32));
+                CBigNum scalar = CBigNum::fromLittleEndian(SReadOnlyByteSpan(clamped, 32));
+
+                // The clamped scalar is the private key in all but encoding, and this runs on
+                // every scalar multiplication -- so the copy made here does not outlive the call.
+                CSecure::zero(SByteSpan(clamped, sizeof(clamped)));
+
+                return scalar;
             }
 
             /* Decodes a 32-byte little-endian u-coordinate per RFC 7748 5: the top bit is masked
@@ -282,10 +289,16 @@ namespace crypto {
                 CBigNum peerU = Curve25519::decodeUCoordinate(peer->encoded());
                 CBigNum secretU = Curve25519::x25519(scalar, peerU);
 
+                // scalar is the private key; secretU and the bytes below are the shared secret
+                // itself, which is what this whole exchange exists to keep.
+                scalar.secureClear();
+
                 uint8_t secretBytes[32];
                 if (!secretU.toLittleEndian(SByteSpan(secretBytes, 32))) {
+                    secretU.secureClear();
                     return ERET_UNKNOWN;
                 }
+                secretU.secureClear();
 
                 // RFC 7748 6.1: reject an all-zero shared secret (the peer supplied a low-order
                 // point, e.g. u = 0) rather than silently returning predictable output.
@@ -299,6 +312,8 @@ namespace crypto {
 
                 std::memcpy(out.data, secretBytes, 32);
                 out = SByteSpan(out.data, 32);
+
+                CSecure::zero(SByteSpan(secretBytes, sizeof(secretBytes)));
 
                 return ERET_OK;
             }

@@ -174,6 +174,12 @@ namespace crypto {
                 CBigNum nMinus1(n);
                 nMinus1.sub(CBigNum(uint64_t(1)));
 
+                // --> k, and dr alongside it, are the two values here whose exposure is
+                // catastrophic rather than merely unwanted: k yields d outright from a published
+                // signature (d = (s*k - z) / r mod n), and dr yields it directly (d = dr / r mod
+                // n). So both are cleared on every path out of the loop, including the retry
+                // paths -- which take a zero r or a non-invertible k and so are unreachable short
+                // of a broken CSPRNG, but cost three lines to cover properly.
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
@@ -184,17 +190,20 @@ namespace crypto {
 
                     SEcPoint kg = curve.scalarMulBase(k);
                     if (kg.infinity) {
+                        k.secureClear();
                         continue;
                     }
 
                     kg.x.mod(n);
                     r = std::move(kg.x);
                     if (r.isZero()) {
+                        k.secureClear();
                         continue;
                     }
 
                     CBigNum kInv;
                     if (!CBigNum::modInverse(k, n, kInv)) {
+                        k.secureClear();
                         continue;
                     }
 
@@ -207,6 +216,10 @@ namespace crypto {
 
                     kInv.mulMod(sum, n);
                     s = std::move(kInv);
+
+                    k.secureClear();
+                    dr.secureClear();
+                    sum.secureClear();
 
                     if (!s.isZero()) {
                         break;

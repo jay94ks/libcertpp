@@ -401,9 +401,26 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   **not** subsume the inline mask arithmetic in RSA's EME-PKCS1-v1_5
   unpadding or `CbcTransformer`'s PKCS#7 check -- neither is "compare two
   buffers" or "choose between two buffers"; both interleave masking with a
-  scan over the padding, so there is nothing here for them to call. Still
-  unapplied: no RSA, DSA or EC private-key operation scrubs its
-  intermediates yet.
+  scan over the padding, so there is nothing here for them to call.
+
+  `CBigNum::secureClear()` is the big-number counterpart, wiping the limb
+  allocation (its whole capacity, so limbs above a trimmed length go too)
+  and resetting the value to zero. It is opt-in rather than something
+  `~CBigNum()` does, which was settled by measurement: clearing on every
+  destruction cost 22% across the asymmetric suites and 32% on X25519
+  alone, since a scalar multiplication creates a great many temporaries and
+  nearly all of them hold public intermediates. Applying it only to named
+  secrets costs nothing above the measurement noise. The limitation that
+  buys is real and worth stating: temporaries created inside an expression,
+  or inside `modExp()`/`modInverse()`, are freed uncleaned, so this narrows
+  the window a secret sits in freed memory rather than closing it.
+
+  The values it is applied to are the ones whose exposure is catastrophic
+  rather than merely unwanted -- an ECDSA/DSA nonce `k` and the `d*r`/`x*r`
+  product beside it (either yields the private key outright from a
+  published signature), EdDSA's nonce and the expanded seed behind it,
+  X25519's clamped scalar and shared secret, and RSA's CRT intermediates
+  (`m1` is `m mod p`, so `gcd(m - m1, n)` is `p` exactly).
 - **`utils/bignum.hpp` / `src/utils/bignum.cpp`** define `CBigNum`, an
   arbitrary-precision non-negative integer (little-endian 32-bit limbs,
   schoolbook algorithms throughout -- correctness and simplicity over

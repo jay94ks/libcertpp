@@ -243,3 +243,43 @@ TEST_CASE("CBigNum: mul() cross-checked against an independent reference multipl
         }
     }
 }
+
+// secureClear()'s observable contract. That the freed limbs were actually overwritten is not
+// assertable from here -- there is no way to read a heap block after it is released, and a test
+// that allocated a fresh value and looked for the old pattern would depend on the allocator
+// reusing the same block, which it is under no obligation to do. The wipe rests on
+// CSecure::zero, which tests/utils/secure.cpp covers directly.
+TEST_CASE("CBigNum: secureClear() zeroes the value and leaves it usable") {
+    CBigNum value = CBigNum::fromBigEndian(SReadOnlyByteSpan(
+        reinterpret_cast<const uint8_t*>("\xDE\xAD\xBE\xEF\xCA\xFE\xBA\xBE\x01\x02\x03\x04"), 12));
+    REQUIRE_FALSE(value.isZero());
+
+    value.secureClear();
+
+    CHECK(value.isZero());
+    CHECK(value.bitLength() == 0);
+    CHECK(value == CBigNum(uint64_t(0)));
+
+    // Still a usable object afterwards, not a husk: clearing resets the value rather than
+    // invalidating it, so the same variable can be reused.
+    value = CBigNum(uint64_t(42));
+    CHECK(value == CBigNum(uint64_t(42)));
+
+    value.add(CBigNum(uint64_t(8)));
+    CHECK(value == CBigNum(uint64_t(50)));
+
+    // Clearing an already-zero value, and clearing twice, are both fine.
+    CBigNum zero;
+    zero.secureClear();
+    CHECK(zero.isZero());
+    zero.secureClear();
+    CHECK(zero.isZero());
+
+    // A value large enough to span several limbs, and one that was reduced to fewer limbs than it
+    // once held -- secureClear() wipes the whole allocation rather than just the live limbs.
+    CBigNum wide;
+    REQUIRE(CBigNum::random(2048, wide));
+    wide.mod(CBigNum(uint64_t(7)));
+    wide.secureClear();
+    CHECK(wide.isZero());
+}

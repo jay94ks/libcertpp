@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/ed448.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
@@ -518,6 +519,12 @@ namespace crypto {
                 outScalar = CBigNum::fromLittleEndian(SReadOnlyByteSpan(sBytes, 57));
 
                 std::memcpy(outPrefix, h + 57, 57);
+
+                // h is the whole expanded private key -- the scalar in its first half and the
+                // signing prefix in its second -- and sBytes is the scalar itself. Both have been
+                // copied where they are needed; neither belongs in this frame afterwards.
+                CSecure::zero(SByteSpan(h, sizeof(h)));
+                CSecure::zero(SByteSpan(sBytes, sizeof(sBytes)));
             }
         };
 
@@ -655,13 +662,22 @@ namespace crypto {
                 uint8_t prefix[57];
                 Edwards448::deriveFromSeed(priv->seed(), s, prefix);
 
+                // --> Same reasoning as Ed25519's sign(): the nonce r is as sensitive as the
+                // key, because the signature publishes S = r + k*s mod L with k public. prefix
+                // and rHash determine r, so they are the same secret. Each is cleared where it
+                // stops being needed.
                 uint8_t rHash[114];
                 Edwards448::hashWithDom4({ SReadOnlyByteSpan(prefix, 57), message }, rHash);
                 CBigNum r = CBigNum::fromLittleEndian(SReadOnlyByteSpan(rHash, 114)).mod(L);
 
+                CSecure::zero(SByteSpan(rHash, sizeof(rHash)));
+                CSecure::zero(SByteSpan(prefix, sizeof(prefix)));
+
                 EdPoint rPoint = Edwards448::scalarMulBase(r);
                 uint8_t rEncoded[57];
                 if (!Edwards448::encodePoint(rPoint, rEncoded)) {
+                    s.secureClear();
+                    r.secureClear();
                     return ERET_UNKNOWN;
                 }
 
@@ -669,9 +685,16 @@ namespace crypto {
                 Edwards448::hashWithDom4({ SReadOnlyByteSpan(rEncoded, 57), SReadOnlyByteSpan(pub->encoded(), 57), message }, kHash);
                 CBigNum k = CBigNum::fromLittleEndian(SReadOnlyByteSpan(kHash, 114)).mod(L);
 
+                // k is a hash of public values, but k*s is not -- k being public, k*s hands over
+                // s. It holds that product until it is consumed just below.
                 k.mulMod(s, L);
+                s.secureClear();
+
                 r.add(k);
                 r.mod(L);
+                k.secureClear();
+
+                // r now holds the signature's own S, which is published.
                 CBigNum sBig = std::move(r);
 
                 uint8_t sEncoded[57];

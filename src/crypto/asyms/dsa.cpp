@@ -310,6 +310,10 @@ namespace crypto {
                 CBigNum qMinus1(q);
                 qMinus1.sub(CBigNum(uint64_t(1)));
 
+                // --> k and xr each yield the private exponent x outright given the published
+                // signature (x = (s*k - z) / r mod q, or x = xr / r mod q), so both are cleared
+                // on every path out of the loop -- the retry paths included, unreachable though
+                // they are short of a broken CSPRNG.
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
@@ -321,11 +325,13 @@ namespace crypto {
                     r = priv->fixedBaseModExpG(k);
                     r.mod(q);
                     if (r.isZero()) {
+                        k.secureClear();
                         continue;
                     }
 
                     CBigNum kInv;
                     if (!CBigNum::modInverse(k, q, kInv)) {
+                        k.secureClear();
                         continue;
                     }
 
@@ -338,6 +344,10 @@ namespace crypto {
 
                     kInv.mulMod(sum, q);
                     s = std::move(kInv);
+
+                    k.secureClear();
+                    xr.secureClear();
+                    sum.secureClear();
 
                     if (!s.isZero()) {
                         break;

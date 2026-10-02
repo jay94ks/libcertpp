@@ -189,6 +189,9 @@ namespace crypto {
                 CBigNum nMinus1(n);
                 nMinus1.sub(CBigNum(uint64_t(1)));
 
+                // --> k and dr both yield the private scalar outright given the published
+                // signature, so both are cleared on every path out of the loop; see the same
+                // loop in ecdsa.cpp for the arithmetic that makes them that dangerous.
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
@@ -199,17 +202,20 @@ namespace crypto {
 
                     SEc2Point kg = curve.scalarMulBase(k);
                     if (kg.infinity) {
+                        k.secureClear();
                         continue;
                     }
 
                     r = kg.x.toInteger();
                     r.mod(n);
                     if (r.isZero()) {
+                        k.secureClear();
                         continue;
                     }
 
                     CBigNum kInv;
                     if (!CBigNum::modInverse(k, n, kInv)) {
+                        k.secureClear();
                         continue;
                     }
 
@@ -222,6 +228,10 @@ namespace crypto {
 
                     kInv.mulMod(sum, n);
                     s = std::move(kInv);
+
+                    k.secureClear();
+                    dr.secureClear();
+                    sum.secureClear();
 
                     if (!s.isZero()) {
                         break;

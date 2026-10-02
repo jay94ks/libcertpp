@@ -1,5 +1,6 @@
 #include <certpp/utils/bignum.hpp>
 #include <certpp/utils/hex.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
 #include <cstring>
@@ -392,6 +393,18 @@ namespace certpp {
 
         reverseBytesInPlace(out);
         return true;
+    }
+
+    /* Overwrites this value's limbs with zeroes and resets the value to zero. */
+    void CBigNum::secureClear() {
+        // capacity() rather than size(): a value that was trimmed still owns the limbs above its
+        // logical length, and those held part of the magnitude a moment ago.
+        if (_limbs.capacity() != 0 && _limbs.begin()) {
+            CSecure::zero(SByteSpan(
+                reinterpret_cast<uint8_t*>(_limbs.begin()), _limbs.capacity() * sizeof(uint32_t)));
+        }
+
+        _limbs.clear();
     }
 
     bool CBigNum::isZero() const {

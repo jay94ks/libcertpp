@@ -514,9 +514,9 @@ matching prefix's length through its running time, and the verdict then drove a 
 Both are now `CSecure::equalsMask` + `CSecure::select`, so neither the comparison nor the
 choice branches on anything secret.
 
-Still outstanding, beyond ML-KEM: no RSA, DSA or EC private-key operation scrubs its
-intermediates. `CSecure::zero()` is now there to be used, and applying it across those is
-worth doing before any of this is used for anything real.
+The same primitive has since been applied across the pre-quantum algorithms too -- the
+ECDSA/DSA signing nonces, EdDSA's nonce and expanded seed, X25519's scalar and shared secret,
+and RSA's CRT intermediates -- via `CSecure::zero()` and `CBigNum::secureClear()`.
 
 ### Phase 5 -- ML-DSA (a new `IAsymmetric`)
 

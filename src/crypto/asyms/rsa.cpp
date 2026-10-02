@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/rsa.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/asn1/der.hpp>
@@ -440,9 +441,23 @@ namespace crypto {
                     m.mul(q);
                     m.add(m2);
 
-                    if (CBigNum::modExp(m, priv.e(), priv.n()) == x) {
+                    const bool consistent = (CBigNum::modExp(m, priv.e(), priv.n()) == x);
+
+                    // --> Each CRT intermediate hands over the factorization, not merely a hint
+                    // of it: m1 is m mod p, so m - m1 is a multiple of p and gcd(m - m1, n) is p
+                    // exactly. For signing, m is the published signature, which makes m1 and m2
+                    // strictly more sensitive than the value being computed. They are cleared
+                    // before either return, and so is m on the path where the re-encrypt check
+                    // failed and it is a wrong value nobody wants.
+                    m1.secureClear();
+                    m2.secureClear();
+                    h.secureClear();
+
+                    if (consistent) {
                         return m;
                     }
+
+                    m.secureClear();
                 }
 
                 return CBigNum::modExp(x, priv.d(), priv.n());
@@ -739,6 +754,7 @@ namespace crypto {
                 uint8_t allOk = uint8_t(leadOk & sepFound & lenOk);
 
                 if (allOk == 0) {
+                    CSecure::zero(em.toSpan());
                     return ERET_BADREQ;
                 }
 
@@ -746,11 +762,17 @@ namespace crypto {
                 size_t msgLen = keyBytes - msgStart;
 
                 if (output.size < msgLen) {
+                    CSecure::zero(em.toSpan());
                     return ERET_NOSPC;
                 }
 
                 std::memcpy(output.data, emPtr + msgStart, msgLen);
                 output = SByteSpan(output.data, msgLen);
+
+                // em held the full padded plaintext. The caller now has the message itself; the
+                // padding around it is of no further use to anyone, here least of all.
+                CSecure::zero(em.toSpan());
+
                 return ERET_OK;
             }
 
