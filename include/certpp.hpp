@@ -33,6 +33,8 @@
 #include <certpp/crypto/hashers/sha256.hpp>
 #include <certpp/crypto/hashers/sha384.hpp>
 #include <certpp/crypto/hashers/sha512.hpp>
+#include <certpp/crypto/hashers/sha3_256.hpp>
+#include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
 #include <certpp/crypto/keys.hpp>

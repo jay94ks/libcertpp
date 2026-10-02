@@ -22,6 +22,8 @@ namespace crypto {
         EHASH_SHA256,      /**< SHA-256 hash algorithm */
         EHASH_SHA384,      /**< SHA-384 hash algorithm */
         EHASH_SHA512,      /**< SHA-512 hash algorithm */
+        EHASH_SHA3_256,    /**< SHA3-256 hash algorithm (FIPS 202) */
+        EHASH_SHA3_512,    /**< SHA3-512 hash algorithm (FIPS 202) */
         EHASH_SHAKE128,    /**< SHAKE-128 hash algorithm */
         EHASH_SHAKE256,    /**< SHAKE-256 hash algorithm */
 

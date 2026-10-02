@@ -677,3 +677,123 @@ assumed.
 
 Neither change touches a public signature, and the hardware-accelerated
 multiply paths above both are untouched.
+
+## Post-quantum groundwork: ML-KEM's substrate, and SHA-3
+
+Phases 1-3 of [`pqc-review.md`](pqc-review.md)'s plan, plus one prerequisite
+the plan had missed.
+
+### Incremental SHAKE squeezing (Phase 2)
+
+`SHAKE128`/`SHAKE256` could only produce the one fixed `byteWidth()` an
+instance was constructed with, but FIPS 203's `SampleNTT` and FIPS 204's
+challenge/mask expansion rejection-sample from a SHAKE stream until enough
+candidates are accepted, with no length known in advance. Both now have
+`squeeze()`, which returns successive chunks and advances the sponge;
+`finish()` stays the fixed-length, repeatable view, squeezing from a copy. The
+test asserts chunk-invariance across every chunk size from one byte up,
+including splits landing exactly on, just before and just after each rate
+boundary — the only place the sponge permutes, and so the only place a cursor
+off-by-one would show. A bug turned up while writing it: the guards ordered
+`if (out.empty()) return true;` ahead of the null check, and `TSpan::empty()`
+is true for a null pointer as well as a zero size, so a caller asking for
+bytes with nowhere to put them got a cheerful success.
+
+### SHA3-256 and SHA3-512 — a missed prerequisite
+
+ML-KEM needs `H = SHA3-256` and `G = SHA3-512`, and this library had SHAKE but
+no fixed-output SHA-3 at all. The plan hadn't recorded that, so it surfaced
+only when Phase 4 was about to start.
+
+Both are now `EHashers` members. SHA-3 is the same sponge as SHAKE, so they
+reuse `KeccakCore` and share a new private `Sha3Core` with each other — the
+arrangement `Sha2_32Core` already has between SHA-224 and SHA-256, written as
+operations over raw arrays so each public header declares its own context
+without depending on anything under `src/`. The only differences from SHAKE
+are the rate (`200 - 2*digestWidth`) and a `0x06` domain byte where SHAKE uses
+`0x1F` — one byte, and the entire distinction between a SHA-3 digest and a
+SHAKE output of the same length over an identical sponge, which is why the
+tests assert the two genuinely differ rather than only checking vectors.
+`finish()` follows the SHA-2 convention: a query that leaves the sponge alone,
+so it repeats and absorption continues afterwards.
+
+### ML-KEM ring arithmetic, samplers and wire encoding (Phase 3)
+
+`src/crypto/pq/` now holds `MlKemRing` (R_q = Z_q[X]/(X^256+1), q=3329: NTT,
+inverse NTT, base-case multiply, plus a schoolbook negacyclic multiply that
+exists only to check the others), `MlKemCodec` (ByteEncode/ByteDecode,
+Compress/Decompress) and `MlKemSampler` (SampleNTT, SamplePolyCBD). Private to
+the PQ work, so no `CERTPP_API` and no type prefix.
+
+FIPS 203 fixes the NTT's exact *representation*, not just its behaviour — an
+encapsulation key is a ByteEncode of NTT-domain coefficients, so those values
+go on the wire. A transform that round-trips correctly but orders its twiddles
+differently is self-consistent and interoperates with nothing, which is
+precisely the failure mode that hid the byte-granular ECDSA digest truncation
+recorded above. So the tests deliberately don't rest on round trips: every
+twiddle is re-derived from `17^BitRev7(i)` independently of how the
+implementation builds it, the NTT-domain multiply is checked against the
+schoolbook convolution, `X^256 == -1` is asserted directly, and 256-coefficient
+arrays are pinned by checksum plus endpoints so a transposition anywhere fails.
+
+Two things worth recording from the process:
+
+- Every algorithm here was validated in Python against the specification text
+  *before* any C++ was written. That is also how the resulting zeta and gamma
+  tables came to be cross-confirmed against FIPS 203 Appendix A by a separate
+  path.
+- The compression rounding settled a detail worth not guessing at. q is odd,
+  so the usual `(x*2^d + q/2)/q` truncates `q/2` and leaves the round-half-up
+  tie rule to luck. Checking both that form and the provably-correct
+  `(2*x*2^d + q)/(2*q)` against the exact rational definition for every
+  coefficient in `[0, q)` at every width showed they agree everywhere — but
+  only one is right by construction, and that is the one implemented.
+
+`MlKemSampler::sampleNtt()` is the first real consumer of `squeeze()` and
+justifies it concretely: it consumes 453-498 bytes of stream depending on the
+seed. Its index bytes are appended in the order given, and a test asserts that
+swapping them changes the result, because FIPS 203's matrix expansion
+deliberately passes them transposed and a transposed call would otherwise be
+undetectable.
+
+`CMakeLists.txt` compiles `src/crypto/pq/` directly into tests under
+`tests/crypto/pq/`, since that code is deliberately not exported and linking
+cannot reach it. Scoped to that one directory: everything else is still tested
+through the public surface, as `DesCore` and `KeccakCore` are.
+
+### Corrections to the plan itself
+
+Three preparation tasks ran against the specs and the standardization record,
+and found the plan wrong in several places:
+
+- Its Phase 3 gate said to assert the NTT against "the standard's worked
+  example". **FIPS 203 contains no worked examples and no intermediate values
+  at all** — its appendices are the zeta table, SampleNTT's loop bounds, and
+  the differences from CRYSTALS-KYBER — and NIST publishes no example-values
+  page for ML-KEM. FIPS 204 is the same, though its Appendix B does print the
+  full zetas table. The gate now states what is actually achievable.
+- The X.509 profiles are **published**, not "beginning to standardize": RFC
+  9881 (ML-DSA), RFC 9909 (SLH-DSA), RFC 9935 (ML-KEM). So the OIDs are
+  settled, and `2.16.840.1.101.3.4.3.19` — the in-tree IdenTrust fixture's OID
+  — is specifically **ML-DSA-87**, which determines which parameter set flips
+  that fixture to `certs/implemented/`.
+- The 2030/2035 deprecation dates are **NIST IR 8547**, not SP 800-131A, and
+  both documents are still drafts.
+- ML-DSA's largest signature is **4627** bytes, not 4595 (that was the IPD
+  figure).
+- FIPS 206 has no public draft 25 months after FIPS 204; HQC is planned as
+  FIPS 207 and still pre-draft. SP 800-227 (KEM recommendations) went final and
+  is normative for `IKem`.
+- Hedged ML-DSA signatures are byte-reproducible after all, since ACVP's prompt
+  supplies `rnd` — so Phase 5's gate covers all 24 sigGen groups rather than
+  only the twelve deterministic ones.
+
+The ACVP vectors for both algorithms are located, pinned to a revision and
+validated ahead of the code, with provenance recorded in the plan — including
+that ML-KEM's implicit-rejection cases are a genuine Fujisaki-Okamoto oracle
+(all 45 satisfy `k == SHAKE256(z||c, 32)` and no valid case does) and that the
+ML-DSA vectors reproduce byte-exactly under an independent implementation. The
+spec traps worth knowing before writing either algorithm — ML-KEM's `G(d||k)`
+parameter byte and transposed `SampleNTT` indices, ML-DSA's hint-decode
+rejection conditions and Appendix C loop bounds — are written into their
+phases rather than left to be rediscovered.

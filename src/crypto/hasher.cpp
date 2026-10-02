@@ -5,6 +5,8 @@
 #include <certpp/crypto/hashers/sha256.hpp>
 #include <certpp/crypto/hashers/sha384.hpp>
 #include <certpp/crypto/hashers/sha512.hpp>
+#include <certpp/crypto/hashers/sha3_256.hpp>
+#include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
 
@@ -37,6 +39,10 @@ namespace crypto {
             case EHASH_SHA512:
                 out = std::make_shared<SHA512>();
                 return ERET_OK;
+
+            case EHASH_SHA3_256: out = std::make_shared<SHA3_256>(); return ERET_OK;
+
+            case EHASH_SHA3_512: out = std::make_shared<SHA3_512>(); return ERET_OK;
 
             case EHASH_SHAKE128:
                 out = std::make_shared<SHAKE128>();

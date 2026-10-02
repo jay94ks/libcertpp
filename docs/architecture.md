@@ -13,7 +13,7 @@ sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
 
 `crypto` has: an `IHasher` interface with from-scratch MD5/SHA-1/SHA-224/
-SHA-256/SHA-384/SHA-512/SHAKE128/SHAKE256 implementations; a CSPRNG utility
+SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256 implementations; a CSPRNG utility
 (`CRng`); an `IAsymmetric` interface with seven concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
 decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
@@ -83,6 +83,8 @@ include/
         sha256.hpp                 # SHA-256 (FIPS 180-4)
         sha384.hpp                 # SHA-384 (FIPS 180-4)
         sha512.hpp                 # SHA-512 (FIPS 180-4)
+        sha3_256.hpp                # SHA3-256 (FIPS 202): the Keccak sponge with a fixed 32-byte output and the 0x06 domain byte
+        sha3_512.hpp                 # SHA3-512 (FIPS 202): same, 64-byte output, 72-byte rate
         shake128.hpp                # SHAKE128, the 128-bit-security sibling of SHAKE256 -- same shape, shares KeccakCore
         shake256.hpp                # SHAKE256, the Keccak/SHA-3-family XOF (FIPS 202); output length fixed per instance via the constructor, not the algorithm
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
@@ -163,8 +165,12 @@ src/
       sha2_64core.cpp
       sha384.cpp                    # SHA-384: own context/IV/truncation, shared transform
       sha512.cpp                     # SHA-512: own context/IV, shared transform
-      keccakcore.hpp                  # KeccakCore: private, shared Keccak-f[1600] permutation + sponge absorb, used by shake128.cpp/shake256.cpp
+      keccakcore.hpp                  # KeccakCore: private, shared Keccak-f[1600] permutation + sponge absorb, used by every SHA-3/SHAKE variant
       keccakcore.cpp
+      sha3core.hpp                     # Sha3Core: private, shared SHA-3 buffering/padding (0x06 domain byte) over KeccakCore, used by sha3_256.cpp/sha3_512.cpp
+      sha3core.cpp
+      sha3_256.cpp                      # SHA3-256: drives Sha3Core at RATE=136
+      sha3_512.cpp                       # SHA3-512: drives Sha3Core at RATE=72
       shake128.cpp                     # SHAKE128: drives KeccakCore at RATE=168
       shake256.cpp                    # SHAKE256: drives KeccakCore at RATE=136
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
@@ -261,6 +267,7 @@ tests/
       sha256.cpp                     # SHA-256 test cases (FIPS 180-4 vectors)
       sha384.cpp                       # SHA-384 test cases (FIPS 180-4 vectors)
       sha512.cpp                         # SHA-512 test cases (FIPS 180-4 vectors)
+      sha3.cpp                            # SHA3-256/SHA3-512 test cases (FIPS 202 published examples, rate-boundary lengths, million-'a' stress, chunk-invariance, and that SHA-3 differs from SHAKE at the same output length)
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
     rng.cpp                       # CRng::fill() test cases
@@ -943,7 +950,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   vectors (including each algorithm's million-`'a'` multi-block stress
   vector, which exercises `transform()` across thousands of blocks), which
   on a SHA-NI-capable CPU exercise the accelerated path automatically rather
-  than needing a dedicated forced-path test. MD5/SHA-384/SHA-512/SHAKE128/SHAKE256
+  than needing a dedicated forced-path test. MD5/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256
   have no equivalent -- there is no mainstream x86 hardware extension for
   MD5 or Keccak, and no widely-deployed x86 SHA-512 extension the way there
   is for SHA-1/SHA-224/SHA-256, so `Sha2_64Core::transform()`/`SHAKE256`'s
@@ -989,6 +996,40 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   added ahead of need, as the first step of the ML-KEM/ML-DSA groundwork
   described in [`docs/pqc-review.md`](pqc-review.md), since both FIPS
   203/204 use SHAKE128 for matrix/vector expansion.
+
+  Both XOFs additionally expose `squeeze(const SByteSpan&)` alongside
+  `finish()`: successive calls return successive chunks of the output stream,
+  advancing the sponge, so output length is independent of `byteWidth()`.
+  `finish()` is the fixed-length, repeatable view (it squeezes from a copy and
+  leaves the cursor alone); `squeeze()` is the streaming one. They are
+  alternatives rather than something to interleave. This exists because FIPS
+  203's `SampleNTT` and FIPS 204's challenge/mask expansion rejection-sample
+  from a SHAKE stream until enough candidates are accepted -- with no length
+  knowable in advance. `MlKemSampler::sampleNtt()` consumes 453-498 bytes
+  depending on the seed, which is the concrete demonstration.
+- **`crypto/hashers/sha3_256.hpp`/`sha3_512.hpp` /
+  `src/crypto/hashers/sha3_256.cpp`/`sha3_512.cpp`** implement SHA3-256 and
+  SHA3-512 (FIPS 202 6.1). Despite the name these are not SHA-2 variants:
+  SHA-3 is the same sponge as the SHAKE XOFs above, so it reuses the same
+  `KeccakCore` permutation, and the buffering/padding common to both digests
+  lives in a shared private `Sha3Core`
+  (`src/crypto/hashers/sha3core.hpp`/`.cpp`) -- the same arrangement
+  `Sha2_32Core` has between SHA-224 and SHA-256, as free functions over raw
+  arrays so each public header can declare its own context without depending
+  on anything under `src/`.
+  SHA-3 differs from SHAKE in exactly two respects: the rate is
+  `200 - 2*digestWidth` (136 bytes for SHA3-256, 72 for SHA3-512, the capacity
+  being twice the output length), and the domain-separation byte is `0x06`
+  rather than SHAKE's `0x1F`. That single byte is the whole difference between
+  a SHA-3 digest and a SHAKE output of the same length over an identical
+  sponge, which is why `tests/crypto/hashers/sha3.cpp` asserts the two
+  actually differ rather than only checking digests against vectors.
+  `finish()` follows the SHA-2 convention rather than the XOFs': it is a query
+  that leaves the sponge untouched, so it repeats and absorption can continue
+  afterwards. These were added because ML-KEM needs them as FIPS 203's `H` and
+  `G` -- a prerequisite `docs/pqc-review.md`'s plan had missed, since the
+  library had SHAKE but no fixed-output SHA-3 at all -- but they are ordinary
+  `EHashers` members (`EHASH_SHA3_256`/`EHASH_SHA3_512`) usable anywhere.
 - **`crypto/keys.hpp` / `src/crypto/keys.cpp`** define `SKeySize`/
   `SKeySizeSpec` (a `{minSize, maxSize, step}` range an `IAsymmetric`
   validates its `keySizes()` against); `IKeyBase` (`keySize()`,
@@ -1852,8 +1893,8 @@ affects the others:
   SHA1MSG2 and SHA256RNDS2/SHA256MSG1/SHA256MSG2 respectively), gated behind
   a runtime CPUID check (`hasSha()`, CPUID leaf 7 sub-leaf 0, EBX bit 29) the
   same way `CBigNum`'s/`CGf2m`'s paths gate on their own CPUID bits. `MD5`/
-  `SHA384`/`SHA512`/`SHAKE128`/`SHAKE256` have no accelerated path and are
-  unaffected by this option -- there is no mainstream x86 hardware extension
+  `SHA384`/`SHA512`/`SHA3-256`/`SHA3-512`/`SHAKE128`/`SHAKE256` have no accelerated path and
+  are unaffected by this option -- there is no mainstream x86 hardware extension
   for MD5 or Keccak, and no widely-deployed x86 SHA-512 extension the way
   there is for SHA-1/SHA-256.
 - `CERTPP_DISABLE_HWACCEL_AES` (`OFF` by default) forces `AesCore`'s block

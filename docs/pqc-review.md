@@ -16,6 +16,7 @@ appended at the end.
 | Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
 | ML-KEM ring arithmetic (`src/crypto/pq/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
 | ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/pq/mlkemcodec.hpp`, `mlkemsampler.hpp`; pinned against an independent model by whole-array checksum |
+| SHA3-256 / SHA3-512 (ML-KEM's H and G) | **done** -- a prerequisite this plan had missed; the library had SHAKE but no fixed-output SHA-3 |
 | ML-DSA ring arithmetic (q=8380417) | not started |
 | ML-KEM | not started |
 | ML-DSA | not started |
@@ -151,7 +152,13 @@ Both algorithms work over the same polynomial ring `R_q = Z_q[X]/(X^256+1)` (ML-
 `q = 3329`; ML-DSA: `q = 8380417`) and both need:
 
 1. **A SHAKE-based XOF/hash layer** for domain-separated expansion (matrix generation,
-   sampling, the Fiat-Shamir challenge in ML-DSA). **Done.** FIPS 203/204 use SHAKE128 for
+   sampling, the Fiat-Shamir challenge in ML-DSA) -- **and, for ML-KEM, fixed-output SHA-3.**
+   This item originally claimed the hash layer was finished once SHAKE128 existed, which was
+   wrong: FIPS 203 uses `H = SHA3-256` and `G = SHA3-512`, and the library had no fixed-output
+   SHA-3 at all. Both were added (`EHASH_SHA3_256`/`EHASH_SHA3_512`), sharing `KeccakCore` with
+   the XOFs and a new private `Sha3Core` with each other -- SHA-3 is the same sponge as SHAKE,
+   differing only in the rate and in a `0x06` domain byte where SHAKE uses `0x1F`. ML-DSA needs
+   no SHA-3: FIPS 204 is SHAKE-only. **Done.** FIPS 203/204 use SHAKE128 for
    matrix/vector expansion and SHAKE256 for everything else (G, H, the signing XOF), and
    both now exist: `SHAKE256` was already there, and `SHAKE128`
    (`crypto/hashers/shake128.hpp`, `EHASH_SHAKE128`) was added for this. The
