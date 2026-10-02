@@ -12,17 +12,17 @@ appended at the end.
 |---|---|
 | `SHAKE128` (`crypto/hashers/shake128.hpp`) | **done** -- `EHASH_SHAKE128`, umbrella header, KAT tests |
 | Shared `KeccakCore` (`src/crypto/hashers/keccakcore.hpp`) | **done** -- permutation + sponge absorb, shared by SHAKE128/SHAKE256 |
-| `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared only** -- header-only, no implementation, not in `certpp.hpp` |
+| `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared**; `IKem::builtIn()` defined in `src/crypto/kem.cpp` and returns null, since `EKems` has no concrete members yet. Deliberately not in `certpp.hpp` until an algorithm is behind it |
+| Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
 | NTT ring arithmetic (`R_q`) | not started |
 | ML-KEM | not started |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
 
-Two loose ends the declared-only state leaves behind, both to be closed by Phase 1 of the
-plan: `IKem::builtIn(EKems)` is declared but has no definition anywhere (there is no
-`src/crypto/kem.cpp`), so calling it fails at link time rather than returning null; and
-`EKems` has no concrete enumerators yet (`EKEM_MAX = 0`), so there is nothing for it to
-dispatch to in any case.
+So the groundwork is finished and the next step is the ring arithmetic. One thing the
+"declared" row above still implies: `EKems` has no concrete enumerators yet
+(`EKEM_MAX = 0`), so `IKem::builtIn()` has nothing to dispatch to and correctly returns
+null for every input. Phase 4 gives it its first member.
 
 ## Why this matters for libcertpp specifically
 
@@ -293,27 +293,36 @@ NIST's ACVP vectors for the algorithm in question, fetched and transcribed the s
 `tests/crypto/hashers/shake128.cpp`'s NIST vector already was -- and cross-checked against
 a second independent implementation, per the lesson restated under "What's genuinely hard".
 
-### Phase 1 -- close out the KEM interface (small)
+### Phase 1 -- close out the KEM interface (small) -- **done**
 
-- Add `src/crypto/kem.cpp` defining `IKem::builtIn(EKems)`, mirroring
-  `src/crypto/asym.cpp`'s `IAsymmetric::builtIn()` dispatch. Until Phase 4 it returns
-  `nullptr` for every input, which is the honest behaviour and, unlike today's missing
-  definition, links.
-- Add `#include <certpp/crypto/kem.hpp>` to `include/certpp.hpp`.
-- Document `crypto/kem.hpp` and the KEM key family in
-  [`architecture.md`](architecture.md) (already present) and note in
-  [`changelog.md`](changelog.md) that the interface is live but unimplemented.
+- `src/crypto/kem.cpp` now defines `IKem::builtIn(EKems)`, mirroring
+  `src/crypto/asym.cpp`'s `IAsymmetric::builtIn()` dispatch. It returns `nullptr` for every
+  input until Phase 4 adds the first parameter set, which is the honest behaviour and,
+  unlike the missing definition it replaced, links rather than failing at link time.
+- `crypto/kem.hpp` is still deliberately **out** of `include/certpp.hpp`. Including a header
+  whose only factory cannot return anything would advertise an API that does not exist yet;
+  it goes in with Phase 4, in the same change that gives `EKems` its first member.
+  [`architecture.md`](architecture.md) records this as intentional.
 
-### Phase 2 -- incremental SHAKE squeezing (small, blocking)
+### Phase 2 -- incremental SHAKE squeezing (small, blocking) -- **done**
 
 FIPS 203's `SampleNTT` rejection-samples from an unbounded SHAKE128 stream, and FIPS 204
-does the same for its challenge/mask expansion, but `SHAKE128`/`SHAKE256` today expose only
-a single fixed-length `finish()` from offset 0. Add an incremental squeeze -- a
-`squeeze(SByteSpan&)` that can be called repeatedly, advancing the sponge, alongside the
-existing `finish()`. The state copy `finish()` now makes (so it stays repeatable) is the
-natural place for this to diverge: `squeeze()` advances the live state by design.
-Test with a long multi-block output compared against one-shot `hashlib.shake_128` output of
-the same total length.
+does the same for its challenge/mask expansion, but `SHAKE128`/`SHAKE256` exposed only a
+single fixed-length `finish()` from offset 0 -- no way to stream.
+
+Both now have `squeeze(const SByteSpan&)`: it finalizes absorption on first call exactly as
+`finish()` does, then returns successive chunks of the output stream, advancing the sponge
+and tracking a cursor within the current rate block. Output length is independent of
+`byteWidth()`, which is the whole point. The padding step both entry points need was
+factored into a shared `finalizeAbsorption()` rather than duplicated.
+
+`finish()` keeps squeezing from a *copy*, so it stays repeatable and leaves the cursor
+alone; the two are documented as alternatives rather than to be interleaved. The property
+worth testing is chunk-invariance, and `tests/crypto/hashers/shake_squeeze.cpp` asserts it
+across every chunk size from 1 byte up, including splits landing exactly on, just before and
+just after each rate boundary (168 for SHAKE128, 136 for SHAKE256) -- that boundary is where
+the sponge permutes, so a cursor off-by-one would show up nowhere else. Expected streams come
+from Python's `hashlib`, three rate blocks plus seven bytes long.
 
 ### Phase 3 -- the shared ring arithmetic (the real work)
 

@@ -10,6 +10,7 @@ namespace crypto {
         std::memset(_ctx.buffer, 0, sizeof(_ctx.buffer));
         _ctx.bufferLen = 0;
         _ctx.squeezing = false;
+        _ctx.squeezePos = 0;
     }
 
     size_t SHAKE256::push(const SReadOnlyByteSpan& buf) {
@@ -52,24 +53,33 @@ namespace crypto {
         return consumed;
     }
 
+    /* Applies SHAKE's domain-separated multi-rate padding and absorbs the final block, switching
+     * the sponge from absorbing to squeezing. Idempotent: both finish() and squeeze() call it, and
+     * whichever runs first does the work. */
+    void SHAKE256::finalizeAbsorption() {
+        if (_ctx.squeezing) {
+            return;
+        }
+
+        // Append 0x1F, zero-fill, then OR 0x80 into the last byte of the rate-sized block --
+        // merged into one byte if the buffered content leaves exactly one byte free.
+        uint8_t block[RATE] = { 0 };
+        std::memcpy(block, _ctx.buffer, _ctx.bufferLen);
+        block[_ctx.bufferLen] ^= 0x1F;
+        block[RATE - 1] ^= 0x80;
+
+        KeccakCore::absorbBlock(_ctx.state, block, RATE);
+        _ctx.squeezing = true;
+        _ctx.bufferLen = 0;
+        _ctx.squeezePos = 0;
+    }
+
     bool SHAKE256::finish(SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }
 
-        if (!_ctx.squeezing) {
-            // SHAKE's domain-separated multi-rate padding: append 0x1F, zero-fill, then OR
-            // 0x80 into the last byte of the rate-sized block -- merged into one byte if the
-            // buffered content leaves exactly one byte free.
-            uint8_t block[RATE] = { 0 };
-            std::memcpy(block, _ctx.buffer, _ctx.bufferLen);
-            block[_ctx.bufferLen] ^= 0x1F;
-            block[RATE - 1] ^= 0x80;
-
-            KeccakCore::absorbBlock(_ctx.state, block, RATE);
-            _ctx.squeezing = true;
-            _ctx.bufferLen = 0;
-        }
+        finalizeAbsorption();
 
         size_t produced = 0;
         size_t needed = byteWidth();
@@ -96,6 +106,45 @@ namespace crypto {
             if (produced < needed) {
                 KeccakCore::permute(state);
             }
+        }
+
+        return true;
+    }
+
+    /* Squeezes the next out.size bytes of the output stream, advancing the sponge. */
+    bool SHAKE256::squeeze(const SByteSpan& out) {
+        // --> Ordered this way on purpose: TSpan::empty() is true for a null pointer *or* a zero
+        // size, so testing it first would quietly report success for a caller asking for bytes
+        // with nowhere to put them.
+        if (out.size == 0) {
+            return true; // nothing requested
+        }
+
+        if (!out.data) {
+            return false; // bytes requested, no buffer to write them to
+        }
+
+        finalizeAbsorption();
+
+        size_t produced = 0;
+        while (produced < out.size) {
+            // --> The first rate block is readable straight out of the state: absorbBlock()
+            // already permuted. Only a block boundary *after* that costs another permutation,
+            // which is why the cursor is checked before the copy rather than after it.
+            if (_ctx.squeezePos == RATE) {
+                KeccakCore::permute(_ctx.state);
+                _ctx.squeezePos = 0;
+            }
+
+            size_t available = RATE - _ctx.squeezePos;
+            size_t take = out.size - produced;
+            if (take > available) {
+                take = available;
+            }
+
+            std::memcpy(out.data + produced, _ctx.state + _ctx.squeezePos, take);
+            _ctx.squeezePos += take;
+            produced += take;
         }
 
         return true;

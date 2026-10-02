@@ -25,11 +25,19 @@ namespace crypto {
             uint8_t state[200];  // --> The 1600-bit Keccak sponge state, byte-oriented.
             uint8_t buffer[168]; // --> Unabsorbed input, buffered until a full rate-sized block is available.
             size_t bufferLen;    // --> Number of valid bytes currently in buffer (0-167).
-            bool squeezing;      // --> True once finish()'s padding/permutation has run (push() rejects further input).
+            bool squeezing;      // --> True once the padding/permutation has run (push() rejects further input).
+            size_t squeezePos;   // --> squeeze()'s cursor into the current rate block (0-168); unused by finish().
         };
 
     private:
         Context _ctx;
+
+        /**
+         * Applies SHAKE's domain-separated multi-rate padding and absorbs the final block,
+         * switching the sponge from absorbing to squeezing. Idempotent -- whichever of finish()
+         * or squeeze() runs first does the work, and the other finds it already done.
+         */
+        void finalizeAbsorption();
 
         static constexpr size_t RATE = 168; // 1344 bits -- SHAKE128's rate (capacity = 256 bits)
 
@@ -56,11 +64,34 @@ namespace crypto {
 
         /**
          * Finalizes absorption (applying the SHAKE domain-separated padding) and squeezes
-         * byteWidth() bytes of output.
+         * byteWidth() bytes of output -- the first byteWidth() bytes of this instance's output
+         * stream. Squeezes from a copy of the sponge state, so it may be called more than once
+         * and returns the same bytes every time.
          * @param out The output buffer to store the result (at least byteWidth() bytes).
          * @return True if the output was successfully produced, false otherwise.
          */
         bool finish(SByteSpan& out) override;
+
+        /**
+         * Squeezes the next out.size bytes of this instance's output stream, advancing the sponge
+         * -- the genuine extendable-output interface, for a caller that needs an arbitrary and
+         * possibly unbounded amount of output rather than the one fixed length byteWidth() fixes.
+         * Finalizes absorption on the first call, exactly as finish() does, so push() is rejected
+         * afterwards.
+         *
+         * Successive calls continue where the previous one stopped, so squeezing n bytes in any
+         * combination of chunk sizes yields the same n bytes. byteWidth() does not constrain it.
+         * FIPS 203/204 need this: their rejection samplers read from a SHAKE stream until enough
+         * candidates are accepted, with no length known in advance.
+         *
+         * Do not interleave this with finish(). finish() always reports the stream's first
+         * byteWidth() bytes and deliberately leaves this cursor alone, so calling it after
+         * squeeze() has advanced the sponge returns continuation bytes rather than the first
+         * ones. Pick one of the two per instance.
+         * @param out The output buffer; exactly out.size bytes are written.
+         * @return True if the output was successfully produced, false otherwise.
+         */
+        bool squeeze(const SByteSpan& out);
     };
 
 } // namespace crypto
