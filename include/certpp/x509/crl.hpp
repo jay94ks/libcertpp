@@ -154,6 +154,8 @@ namespace x509 {
         CDistinguishedName _issuer;
         SDateTime _thisUpdate;
         SDateTime _nextUpdate;
+        COctet _signature;
+        crypto::EHashers _sigHashAlgo;
 
     public:
         /**
@@ -163,6 +165,7 @@ namespace x509 {
             _version = 0;
             _thisUpdate = SDateTime();
             _nextUpdate = SDateTime();
+            _sigHashAlgo = crypto::EHASH_UNKNOWN;
         }
 
         /**
@@ -176,6 +179,8 @@ namespace x509 {
             _issuer = other._issuer;
             _thisUpdate = other._thisUpdate;
             _nextUpdate = other._nextUpdate;
+            _signature = other._signature;
+            _sigHashAlgo = other._sigHashAlgo;
         }
 
         /**
@@ -189,6 +194,8 @@ namespace x509 {
             _issuer = std::move(other._issuer);
             _thisUpdate = std::move(other._thisUpdate);
             _nextUpdate = std::move(other._nextUpdate);
+            _signature = std::move(other._signature);
+            _sigHashAlgo = other._sigHashAlgo;
         }
 
         /**
@@ -204,6 +211,8 @@ namespace x509 {
                 _issuer = other._issuer;
                 _thisUpdate = other._thisUpdate;
                 _nextUpdate = other._nextUpdate;
+                _signature = other._signature;
+                _sigHashAlgo = other._sigHashAlgo;
             }
 
             return *this;
@@ -222,6 +231,8 @@ namespace x509 {
                 swap(_issuer, other._issuer);
                 swap(_thisUpdate, other._thisUpdate);
                 swap(_nextUpdate, other._nextUpdate);
+                swap(_signature, other._signature);
+                swap(_sigHashAlgo, other._sigHashAlgo);
             }
 
             return *this;
@@ -304,10 +315,47 @@ namespace x509 {
 
         /**
          * Checks if the given certificate is revoked according to the CRL.
+         *
+         * This answers only "does this CRL list this certificate": it does not verify the CRL's
+         * own signature, nor confirm the CRL was issued by the certificate's issuer. A caller
+         * that needs either must call verifyBy() and compare issuer() itself -- a CRL from an
+         * unrelated CA with a colliding serial number would otherwise produce a verdict about a
+         * certificate it says nothing about.
          * @param cert The certificate to check.
          * @return An error code indicating if the certificate is revoked or not.
          */
         ERetCode check(const CCert& cert) const;
+
+        /**
+         * Returns the raw signature bits from CertificateList.signatureValue, with the BIT STRING
+         * wrapper and its unused-bit count stripped. Its internal format is the signature
+         * algorithm's own, exactly as with CCert::signature().
+         * @return The signature value, or an empty COctet if no CRL has been decoded.
+         */
+        inline const COctet& signature() const { return _signature; }
+
+        /**
+         * Returns the exact tbsCertList element the signature was computed over: its complete TLV
+         * (tag and length included), as it appears inside rawData(). These are the original
+         * issuer-produced bytes rather than a re-encoding, for the same reason
+         * CCert::tbsCertificate() is -- the signature covers what the issuer wrote.
+         * @return The tbsCertList's complete DER element, or an empty span if no CRL has been
+         * decoded or its outer structure cannot be walked.
+         */
+        SReadOnlyByteSpan tbsCertList() const;
+
+        /**
+         * Verifies this CRL's signature against an issuer certificate's public key.
+         *
+         * Like CCert::verifyBy(), this is a single-link signature check only: it does not confirm
+         * that issuer() matches the certificate's subject, nor check thisUpdate()/nextUpdate().
+         * @param issuer The certificate whose public key is expected to have signed this CRL.
+         * @return ERET_OK if the signature verifies; ERET_INVAL if no CRL has been decoded or it
+         * carries no signature/tbsCertList; ERET_KEY_EMPTY if the issuer exposes no usable public
+         * key; ERET_NOTSUP if the signature algorithm isn't one this library can verify;
+         * ERET_HASH_PIPE if hashing failed; otherwise whatever the algorithm's verify() reported.
+         */
+        ERetCode verifyBy(const CCert& issuer) const;
     };
 
 

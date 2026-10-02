@@ -493,6 +493,47 @@ namespace x509 {
         inline const COctet& thumbprint() const { return _thumbprint; }
 
         /**
+         * @brief Gets the raw signature bits from Certificate.signatureValue -- the signature
+         * itself, with the BIT STRING wrapper and its unused-bit count already stripped. Its
+         * internal format is the signature algorithm's own: a bare big-endian integer for RSA,
+         * a DER Dss-Sig-Value/Ecdsa-Sig-Value SEQUENCE for DSA/ECDSA, R||S for EdDSA.
+         * @return The signature value, or an empty COctet if this certificate was never imported.
+         */
+        inline const COctet& signature() const { return _signature; }
+
+        /**
+         * @brief Returns the exact TBSCertificate element the signature was computed over: its
+         * complete TLV (tag and length included), as it appears inside rawData().
+         *
+         * This is the span to hash when verifying by hand. It is deliberately the original bytes
+         * rather than a re-encoding of the parsed fields -- re-encoding would silently "repair"
+         * any encoding quirk the issuer actually signed, and the signature covers the issuer's
+         * bytes, not this library's idea of them.
+         * @return The TBSCertificate's complete DER element, or an empty span if this certificate
+         * was never imported or its outer structure cannot be walked.
+         */
+        SReadOnlyByteSpan tbsCertificate() const;
+
+        /**
+         * @brief Verifies this certificate's own signature against an issuer certificate's public
+         * key -- i.e. answers "did this issuer sign this certificate?".
+         *
+         * This is a single-link check and nothing more: it does not walk a chain, match issuer
+         * and subject names, check validity dates, or enforce BasicConstraints/KeyUsage. A caller
+         * building a validator supplies all of that itself; see docs/architecture.md's scope note.
+         * Pass *this as the issuer to check a self-signed certificate.
+         * @param issuer The certificate whose public key is expected to have signed this one.
+         * @return ERET_OK if the signature verifies; ERET_INVAL if either certificate is empty or
+         * this one carries no signature/TBS to check; ERET_KEY_EMPTY if the issuer exposes no
+         * usable public key; ERET_NOTSUP if this certificate's signature algorithm isn't one this
+         * library can verify (an unregistered OID, or RSASSA-PSS, whose parameters signAlgo()'s
+         * OID-keyed table cannot resolve); ERET_HASH_PIPE if hashing failed; otherwise whatever
+         * the algorithm's own verify() reported, with a plain mismatch distinguishable from an
+         * error.
+         */
+        ERetCode verifyBy(const CCert& issuer) const;
+
+        /**
          * @brief Gets the key algorithm of the certificate.
          * @return The key algorithm.
          */

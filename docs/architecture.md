@@ -32,11 +32,12 @@ implementations (`AES`, `DES`, `TripleDES` -- all CBC/PKCS#7 -- and the
 `x509/exts/` (BasicConstraints, KeyUsage, ExtendedKeyUsage,
 SubjectAlternativeName, SubjectKeyIdentifier, AuthorityKeyIdentifier,
 CRLDistributionPoints, AuthorityInformationAccess, CertificatePolicies,
-NameConstraints). It has no certificate chain validation / path-building
-engine of its own, and no API for verifying a certificate's or CRL's own
-signature either -- OCSP is the one place signature verification exists
-(`COcspRequest`/`COcspResponse::verifySignature()`). See "Where this will
-grow" below for both gaps.
+NameConstraints). Single-link signature verification exists for all three
+(`CCert::verifyBy(issuer)`, `CCrlReader::verifyBy(issuer)`,
+`COcspRequest`/`COcspResponse::verifySignature()`), but there is no chain
+validation / path-building engine on top of it -- no name chaining, validity
+windows, or BasicConstraints/KeyUsage/NameConstraints enforcement. See
+"Where this will grow" below.
 
 The public API surface is header-based under
 [`include/certpp/`](../include/certpp/), re-exported through the umbrella
@@ -134,8 +135,8 @@ src/
     djb.cpp                    # CDjb::compute()/computeAsUpper()/computeAsLower()
     hex.cpp                     # CHex::decode()
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
-    bignum.cpp                   # CBigNum: schoolbook add/sub/mul/divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
-    gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + bit-serial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
+    bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
+    gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
     buffer.cpp                # CBuffer::store()/resize()
     octet.cpp                 # COctet::store()/clear()
@@ -214,6 +215,7 @@ tests/
     djb.cpp                    # CDjb hash test cases
     base64.cpp                  # CBase64 streaming/one-shot encode/decode test cases, incl. PEM line breaking
     bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
+    divmod.cpp                  # CBigNum::divMod() differentially fuzzed against a bit-serial reference built from the public API, plus constructed inputs for Algorithm D's add-back branch (unreachable by random testing)
     gf2m.cpp                     # CGf2m field-axiom/known-answer-vector/encode-decode test cases, one known-answer vector per field size, independently cross-derived via a standalone Python implementation
   io/
     array.cpp                 # TArray<T> test cases
@@ -227,6 +229,7 @@ tests/
     writer.cpp                       # CWriter test cases
     roundtrip.cpp                   # encode/decode integration tests
     der.cpp                           # CDer test cases
+    malformed.cpp                      # adversarial/negative DER: length-rule, tag-form, BIT STRING, INTEGER, OID and time gates fed bytes they must reject
   crypto/
     asyms/
       rsa.cpp                        # RSA keygen/DER round-trip/sign-verify/encrypt-decrypt test cases
@@ -237,6 +240,9 @@ tests/
       p384.cpp                       # P384: same coverage as p192.cpp
       p521.cpp                       # P521: same coverage as p192.cpp
       secp256k1.cpp                  # SECP256K1: same coverage as p192.cpp
+      kat_ecdsa.cpp                   # ECDSA verification against NIST CAVP 186-4 SigVer vectors (K-163/B-163/B-233/K-283/B-283 + P-256 control), positives and negatives -- external oracle for the FIPS 186-4 digest-truncation rule the per-curve round trips can't see
+      kat_dsa.cpp                      # DSA verification against NIST CAVP 186-3 SigVer vectors (L=1024/N=160, L=2048/N=256)
+      kat_rsa.cpp                       # RSA PKCS#1 v1.5 verification against NIST CAVP 186-3 SigVer15 vectors
       bpool160r1.cpp, bpool192r1.cpp, bpool224r1.cpp, bpool256r1.cpp,
       bpool320r1.cpp, bpool384r1.cpp, bpool512r1.cpp, bpool160t1.cpp,
       bpool192t1.cpp, bpool224t1.cpp, bpool256t1.cpp, bpool320t1.cpp,
@@ -271,6 +277,8 @@ tests/
     ocsp.cpp                      # COcspCertId/COcspEntry/COcspRequestBuilder/COcspResponse round-trip + signature-verification test cases
     exts/                         # one .cpp per extension type, each building -> encoding -> reparsing its own extension
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
+    verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
+    malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
     realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS, ML-DSA)
 third-party/
   CMakeLists.txt           # exposes vendored deps as CMake targets; add_subdirectory'd only when CERTPP_BUILD_TESTS=ON
@@ -404,6 +412,31 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `toLittleEndian`) are unaffected -- they don't operate on an existing
   instance's value, so there's nothing to alias.
 
+  `divMod()` is Knuth's Algorithm D (TAOCP vol. 2, 4.3.1) in base 2^32: it
+  normalizes the divisor so its top limb has its high bit set, then produces
+  one quotient limb at a time from an estimate over the top two limbs of the
+  running remainder, correcting the estimate down and -- rarely -- adding the
+  divisor back when it was still one too high. The earlier implementation was
+  a bit-serial restoring division: one shift, compare and conditional
+  subtract across the whole divisor *per bit of the dividend*. Since every
+  `modExp()` performs thousands of reductions, this one routine was the
+  dominant cost in RSA, DSA and ECDSA alike -- replacing it took the full
+  test suite from 1243s to 140s, with the asymmetric algorithms individually
+  7-14x faster.
+
+  Algorithm D's correctness hinges on two things that ordinary use never
+  exercises, so both are tested deliberately in `tests/utils/divmod.cpp`:
+  the estimate-correction loop, and the add-back branch, which fires on the
+  order of once per 2^31 quotient limbs and is *impossible* for a two-limb
+  divisor (the estimate is exact there, because the two-limb test then
+  examines the whole divisor). Random testing reaches the branch zero times,
+  so its inputs were constructed -- exercised exhaustively in a 4-bit-limb
+  model of the same algorithm first, then scaled into the top nibble of each
+  32-bit limb, which preserves every ratio the estimate depends on. The
+  whole routine is also differentially fuzzed against a deliberately naive
+  bit-serial reference written using nothing but `CBigNum`'s public
+  operations, which is the algorithm this one replaced.
+
   `mul()` additionally has a hardware-accelerated path (x86-64 only, and
   only when `CERTPP_DISABLE_HWACCEL_SIMD` isn't set): `mulAccelerated()`
   reinterprets pairs of the native 32-bit limbs as 64-bit digits and uses
@@ -438,12 +471,20 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   GF(2^571)) rather than arbitrary-precision like `CBigNum`, since a field
   element's width never grows past its field's fixed `m`. `add()` is XOR;
   `mul()` is schoolbook shift-and-XOR carry-less multiply followed by
-  bit-serial reduction against the field's trinomial/pentanomial reduction
+  reduction against the field's trinomial/pentanomial reduction
   polynomial -- or, on x86/x86-64 with `CERTPP_DISABLE_HWACCEL_SIMD` unset and a
   runtime CPUID check confirming PCLMULQDQ support, a fixed 9x9 grid of
   hardware carry-less multiplies (`_mm_clmulepi64_si128`) building the same
-  pre-reduction wide product instead, with the bit-serial reduction step
-  itself unchanged either way; `square()` is implemented as `mul(self)` rather than a
+  pre-reduction wide product instead, with the reduction step
+  itself unchanged either way. That reduction (`reduceWide()`) is word-level,
+  not bit-serial: `x^m == x^terms[0] + ... + 1` displaces *every* excess bit
+  by the same amount, so the whole excess folds at once -- take
+  `hi = wide >> m`, clear from bit `m` up, then XOR `hi` back in at offset 0
+  and at each term offset, repeating until nothing remains at or above `m`
+  (exactly twice for all five fields here). The earlier bit-serial version
+  walked one bit at a time from `2m-2` down to `m`, toggling `1+termCount`
+  bits per set bit, which measured at 95-98% of a multiplication's cost and
+  so left the PCLMULQDQ product buying almost nothing; `square()` is implemented as `mul(self)` rather than a
   dedicated bit-spread fast path -- correct and much simpler, the same
   performance/simplicity trade-off `CBigNum`/`CEcCurve` already make;
   `inverse()` is the binary extended Euclidean algorithm over `GF(2)[x]`.
@@ -1681,6 +1722,35 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   themselves) since they're the three extensions virtually every consumer
   needs.
 
+  `verifyBy(issuer)` answers "did this issuer sign this certificate?" --
+  pass `*this` for a self-signed one. It hashes `tbsCertificate()` (the
+  original TBS TLV as it appears in `rawData()`, never a re-encoding of the
+  parsed fields: the signature covers the issuer's bytes, and re-encoding
+  would silently "repair" any quirk they contain) and checks it against
+  `signature()` with the issuer's public key. Whether to hash at all is
+  decided from the *issuer key's* own algorithm rather than from
+  `_sigHashAlgo == EHASH_UNKNOWN`, because that value is ambiguous --
+  `resolveSigAlgo()` leaves it untouched for an unregistered OID, which is
+  indistinguishable from EdDSA's legitimate "no separate hash", and reading
+  it as EdDSA would hand raw TBS bytes to an ECDSA/DSA verify as though they
+  were a digest. It is a *single-link* check: no name chaining, no validity
+  window, no constraint enforcement. RSASSA-PSS-signed certificates report
+  `ERET_NOTSUP`, since `SIG_ALGOS` has no id-RSASSA-PSS entry to resolve.
+
+  `importDer()` enforces several DER rules whose absence had been
+  exploitable, each covered by `tests/x509/malformed.cpp`: the `Certificate`
+  SEQUENCE must be the entire input (a trailing suffix is kept verbatim in
+  `_rawData`, so accepting one gave a single certificate unlimited
+  `thumbprint()` values and made `exportDer()` replay non-DER bytes); the
+  `extensions [3]` wrapper must be constructed and must parse, since
+  treating a malformed one as "no extensions present" turned a constrained
+  certificate into an unconstrained one that still imported successfully;
+  `TBSCertificate.signature` must name the same algorithm as
+  `Certificate.signatureAlgorithm` (RFC 5280 4.1.1.2 -- the inner copy is
+  signed, the outer is not, yet the outer is what drives verification); and
+  `signatureValue`'s BIT STRING must declare zero unused bits, as the
+  `SubjectPublicKeyInfo` one already had to.
+
   Real, currently-valid commercial certificates (fetched via `openssl
   s_client`/crt.sh) are checked into `tests/x509/certs/implemented/` as
   `.der` files (read via a small `readCertFile()` test helper, located
@@ -1710,9 +1780,14 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `removeFromCRL` has no flag at all), so it lives in its own private
   `CrlReasonCodec` (`src/x509/crlreason.hpp`) instead of being open-coded
   at each call site.
+  `verifyBy(issuer)`/`tbsCertList()`/`signature()` mirror `CCert`'s own
+  three exactly, down to deciding hash-versus-raw from the issuer key's
+  algorithm -- see that bullet for the reasoning.
   Two scope notes: `check()` reports only whether the certificate appears
-  in the list -- it verifies no signature and does not confirm the CRL was
-  issued by the certificate's own issuer -- and `CCrlWriter` emits no
+  in the list -- it verifies no signature of its own (call `verifyBy()`
+  separately) and does not confirm the CRL was issued by the certificate's
+  own issuer, so a CRL from an unrelated CA with a colliding serial number
+  would still produce a verdict -- and `CCrlWriter` emits no
   `crlExtensions`, so the `CRLNumber`/`AuthorityKeyIdentifier` RFC 5280
   5.1.2 expects are absent from CRLs it produces.
 - **`x509/ocsp.hpp` / `src/x509/ocsp.cpp`** define the OCSP (RFC 6960)
@@ -1847,15 +1922,14 @@ list-of-value-object-shaped field, reuses
 `x509/generalname.hpp`/`access.hpp`/`policy.hpp` rather than redefining
 those shapes locally.
 
-What is genuinely still missing here is the *relational* half of X.509, and
-it is deliberately scoped out for now rather than half-built:
+Single-link signature verification is in place: `CCert::verifyBy(issuer)`,
+`CCrlReader::verifyBy(issuer)` and OCSP's own `verifySignature()` each answer
+"did this issuer sign this?" against the original signed bytes
+(`CCert::tbsCertificate()`/`CCrlReader::tbsCertList()` expose those bytes for
+a caller that wants to do it by hand). What is still missing is the
+*relational* half of X.509, deliberately scoped out for now rather than
+half-built:
 
-- **Certificate/CRL signature verification.** `CCert` parses the signature
-  but exposes neither it nor the TBS byte range, so nothing can check a
-  certificate against its issuer; `CCrlReader` discards both. (OCSP is the
-  exception -- `COcspRequest`/`COcspResponse::verifySignature()` exist.)
-  `tests/x509/cert.cpp` has to re-walk the DER by hand to recover those
-  bytes, which is the clearest sign the API is missing an accessor.
 - **Chain building and path validation** -- name chaining, validity
   windows, `BasicConstraints`/`KeyUsage`/`NameConstraints` enforcement, and
   RFC 5280's "reject an unrecognized critical extension" rule. This library

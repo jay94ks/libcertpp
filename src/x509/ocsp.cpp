@@ -132,6 +132,12 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> The CertID SEQUENCE must be the whole input, not merely its prefix; see
+        // CCert::importDer() for why trailing bytes are not a harmless leniency.
+        if (!outer.atEnd()) {
+            return ERET_BADREQ;
+        }
+
         CReader algIdSeq;
         if (!certIdSeq.readSequence(algIdSeq)) {
             return ERET_BADREQ;
@@ -269,6 +275,12 @@ namespace x509 {
         CReader outer(rawData.toSpan(), EAENC_DER);
         CReader entrySeq;
         if (!outer.readSequence(entrySeq)) {
+            return ERET_BADREQ;
+        }
+
+        // --> The SingleResponse SEQUENCE must be the whole input, not merely its prefix; see
+        // CCert::importDer() for why trailing bytes are not a harmless leniency.
+        if (!outer.atEnd()) {
             return ERET_BADREQ;
         }
 
@@ -460,6 +472,12 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> The OCSPRequest SEQUENCE must be the whole input, not merely its prefix; see
+        // CCert::importDer() for why trailing bytes are not a harmless leniency.
+        if (!outer.atEnd()) {
+            return ERET_BADREQ;
+        }
+
         SReadOnlyByteSpan beforeTbs = reqSeq.remaining();
         CTag tbsOuterTag;
         SReadOnlyByteSpan tbsOuterContent;
@@ -563,7 +581,8 @@ namespace x509 {
 
                     SReadOnlyByteSpan sigBits;
                     uint8_t sigUnused = 0;
-                    if (sigSeq.readBitString(sigBits, sigUnused)) {
+                    // --> sigUnused must be 0: a signature is a whole number of octets.
+                    if (sigSeq.readBitString(sigBits, sigUnused) && sigUnused == 0) {
                         signatureValue = COctet(sigBits);
                     }
                     // certs [0] EXPLICIT SEQUENCE OF Certificate OPTIONAL -- not read; it's the
@@ -1288,6 +1307,12 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> The OCSPResponse SEQUENCE must be the whole input, not merely its prefix; see
+        // CCert::importDer() for why trailing bytes are not a harmless leniency.
+        if (!outer.atEnd()) {
+            return ERET_BADREQ;
+        }
+
         uint32_t statusValue = 0;
         if (!respSeq.readEnumerated(statusValue)) {
             return ERET_BADREQ;
@@ -1429,7 +1454,9 @@ namespace x509 {
 
         SReadOnlyByteSpan sigBits;
         uint8_t sigUnused = 0;
-        if (!basicSeq.readBitString(sigBits, sigUnused)) {
+        // --> sigUnused must be 0: a signature is a whole number of octets. See
+        // CCert::importDer() for why leaving it unchecked mattered.
+        if (!basicSeq.readBitString(sigBits, sigUnused) || sigUnused != 0) {
             return ERET_BADREQ;
         }
 

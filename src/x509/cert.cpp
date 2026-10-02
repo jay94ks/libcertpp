@@ -742,6 +742,16 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> The Certificate SEQUENCE must be the whole input. Accepting a suffix is not a
+        // harmless leniency here: _rawData keeps whatever was handed in, so thumbprint() -- the
+        // SHA-1 over rawData() that callers use as a certificate's identity -- changes with every
+        // byte appended, which hands an attacker unlimited distinct fingerprints for one
+        // certificate and breaks any blocklist or dedupe keyed on it. exportDer() would also
+        // re-emit the non-DER suffix to whoever asked.
+        if (!outer.atEnd()) {
+            return ERET_BADREQ;
+        }
+
         CReader tbsSeq;
         if (!certSeq.readSequence(tbsSeq)) {
             return ERET_BADREQ;
@@ -769,11 +779,22 @@ namespace x509 {
         }
         serialNumber = COctet(content);
 
-        // signature AlgorithmIdentifier -- TBSCertificate's own copy, required by the grammar to
-        // match Certificate.signatureAlgorithm (read further down); not separately retained.
-        CReader tbsSigAlgoSeq;
-        if (!tbsSeq.readSequence(tbsSigAlgoSeq)) {
-            return ERET_BADREQ;
+        // signature AlgorithmIdentifier -- TBSCertificate's own copy. RFC 5280 4.1.1.2 requires
+        // it to match Certificate.signatureAlgorithm, and that match is load-bearing rather than
+        // decorative: this inner copy is inside the signed bytes, the outer one is not, yet it is
+        // the outer one that signAlgo()/createHasher()/verifyBy() act on. Leaving them unchecked
+        // let an unauthenticated field choose the digest used to verify the authenticated ones.
+        // Only the OID is compared; the parameters are deliberately not, since a few real-world
+        // issuers differ between the two copies on absent-vs-NULL for the same algorithm.
+        CString tbsSigAlgoOid;
+        {
+            CReader tbsSigAlgoSeq;
+            if (!tbsSeq.readSequence(tbsSigAlgoSeq)) {
+                return ERET_BADREQ;
+            }
+            if (!tbsSigAlgoSeq.readOidString(tbsSigAlgoOid)) {
+                return ERET_BADREQ;
+            }
         }
 
         // issuer Name
@@ -842,15 +863,48 @@ namespace x509 {
         {
             CTag tag;
             SReadOnlyByteSpan content;
-            bool have = tbsSeq.readNextElement(tag, content);
+
+            // --> "Nothing left to read" and "the next element doesn't parse" must not be
+            // conflated. readNextElement() reports both as false, and treating the pair as
+            // "no optional fields present" was fail-open: a [3] wrapper whose declared length
+            // ran past the TBSCertificate made the read fail, and the certificate then imported
+            // ERET_OK with every extension missing. Checking atEnd() first separates the two.
+            auto readOptional = [&tbsSeq, &tag, &content](bool& outHave) -> bool {
+                if (tbsSeq.atEnd()) {
+                    outHave = false;
+                    return true;
+                }
+
+                outHave = tbsSeq.readNextElement(tag, content);
+                return outHave;
+            };
+
+            bool have = false;
+            if (!readOptional(have)) {
+                return ERET_BADREQ;
+            }
 
             if (have && tag.tagClass() == EATAG_CONTEXT_SPECIFIC && tag.value() == 1) {
-                have = tbsSeq.readNextElement(tag, content); // issuerUniqueID -- skip
+                if (!readOptional(have)) { // issuerUniqueID -- skip
+                    return ERET_BADREQ;
+                }
             }
             if (have && tag.tagClass() == EATAG_CONTEXT_SPECIFIC && tag.value() == 2) {
-                have = tbsSeq.readNextElement(tag, content); // subjectUniqueID -- skip
+                if (!readOptional(have)) { // subjectUniqueID -- skip
+                    return ERET_BADREQ;
+                }
             }
-            if (have && tag.tagClass() == EATAG_CONTEXT_SPECIFIC && tag.value() == 3 && tag.isConstructed()) {
+            if (have && tag.tagClass() == EATAG_CONTEXT_SPECIFIC && tag.value() == 3) {
+                // --> A primitive [3] has to be rejected, not skipped. `extensions [3] EXPLICIT
+                // Extensions` wraps a SEQUENCE, so the tag is always constructed (X.690 8.14);
+                // treating `0x83` as "no extensions present" instead meant a single flipped bit
+                // turned a constrained certificate into an unconstrained one that still imported
+                // ERET_OK -- BasicConstraints, KeyUsage, SAN and the rest all silently absent,
+                // and indistinguishable from a certificate that genuinely carries none.
+                if (!tag.isConstructed()) {
+                    return ERET_BADREQ;
+                }
+
                 extensionsRaw = COctet(content);
             }
         }
@@ -866,12 +920,21 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> RFC 5280 4.1.1.2: the two copies must name the same algorithm. See the
+        // tbsSigAlgoOid read above for why this is a security check and not a formality.
+        if (sigAlgoOid.compare(tbsSigAlgoOid) != 0) {
+            return ERET_BADREQ;
+        }
+
         resolveSigAlgo(sigAlgoOid, sigAlgoHash, signAlgoName);
 
         // signatureValue BIT STRING
         SReadOnlyByteSpan sigBits;
         uint8_t sigUnusedBits = 0;
-        if (!certSeq.readBitString(sigBits, sigUnusedBits)) {
+        // --> A signature is a whole number of octets, so its BIT STRING carries no unused bits.
+        // The SubjectPublicKeyInfo BIT STRING above already required this; leaving it off here
+        // gave every signature up to eight extra encodings of the same bits.
+        if (!certSeq.readBitString(sigBits, sigUnusedBits) || sigUnusedBits != 0) {
             return ERET_BADREQ;
         }
 
@@ -1432,6 +1495,95 @@ namespace x509 {
         crypto::IHasherPtr hasher;
         crypto::IHasher::create(_sigHashAlgo, hasher);
         return hasher;
+    }
+
+    /* Returns the TBSCertificate's complete TLV, the bytes the signature covers. */
+    SReadOnlyByteSpan CCert::tbsCertificate() const {
+        if (_rawData.empty()) {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        // --> Certificate ::= SEQUENCE { tbsCertificate TBSCertificate, signatureAlgorithm, ... }.
+        // What gets signed is the first element's whole TLV, header included, so the length comes
+        // from readEncodedValue()'s own bytesRead rather than from pointer arithmetic over the
+        // content span: an empty content span can carry a null data pointer (TSpan::slice()
+        // returns {nullptr, 0} once it reaches the end), which would make
+        // `content.data + content.size - start` meaningless. Re-walked from _rawData on demand
+        // rather than recorded during importDer(), which reads through CReader and so never sees
+        // raw offsets -- two header decodes, and only when asked.
+        SReadOnlyByteSpan outer = _rawData.toSpan();
+
+        CTag tag;
+        SReadOnlyByteSpan outerContent;
+        size_t outerRead = 0;
+        if (!CDecoder::readEncodedValue(outer, EAENC_DER, tag, outerContent, outerRead)
+            || tag != CTag::SEQ || outerContent.empty())
+        {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        SReadOnlyByteSpan tbsContent;
+        size_t tbsRead = 0;
+        if (!CDecoder::readEncodedValue(outerContent, EAENC_DER, tag, tbsContent, tbsRead)
+            || tag != CTag::SEQ)
+        {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        return SReadOnlyByteSpan(outerContent.data, tbsRead);
+    }
+
+    /* Verifies this certificate's signature against an issuer certificate's public key. */
+    ERetCode CCert::verifyBy(const CCert& issuer) const {
+        if (empty() || issuer.empty() || _signature.empty()) {
+            return ERET_INVAL;
+        }
+
+        SReadOnlyByteSpan tbs = tbsCertificate();
+        if (tbs.empty()) {
+            return ERET_INVAL;
+        }
+
+        crypto::IPublicKeyPtr issuerKey = issuer.publicKey();
+        if (!issuerKey) {
+            return ERET_KEY_EMPTY;
+        }
+
+        crypto::IAsymmetricContextPtr ctx = issuer.createAsymmetricContext();
+        if (!ctx) {
+            return ERET_NOTSUP;
+        }
+
+        // --> Whether to hash first is decided by the issuer's key algorithm, never by
+        // _sigHashAlgo == EHASH_UNKNOWN. That value is ambiguous: resolveSigAlgo() leaves it
+        // untouched for an OID absent from SIG_ALGOS, which is indistinguishable from EdDSA's
+        // legitimate "no separate hash" -- and reading it as EdDSA would hand the raw TBS bytes
+        // to an ECDSA/DSA verify as though they were a digest, which truncates them to the
+        // order's bit length and leaves the signature covering a prefix of the plaintext rather
+        // than a hash of the message. OCSP's own verifySignature() had exactly that bug.
+        crypto::EAsymmetrics keyAlgo = issuerKey->algorithm();
+        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
+            return ctx->verify(tbs, _signature.toSpan());
+        }
+
+        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+            return ERET_NOTSUP;
+        }
+
+        crypto::IHasherPtr hasher = createHasher();
+        if (!hasher) {
+            return ERET_HASH_PIPE;
+        }
+
+        CBuffer digest;
+        if (!digest.resize(hasher->byteWidth())
+            || !hasher->push(tbs)
+            || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
+        {
+            return ERET_HASH_PIPE;
+        }
+
+        return ctx->verify(digest.toSpan(), _signature.toSpan());
     }
 
     /* Creates a context bound to this certificate's public key, and its attached private key

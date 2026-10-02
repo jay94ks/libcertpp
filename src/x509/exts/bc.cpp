@@ -27,7 +27,12 @@ namespace x509 {
         seq.readBoolean(_isCa); // OPTIONAL DEFAULT FALSE -- absent leaves _isCa false
 
         int64_t pathLen = 0;
-        if (seq.readInteger(pathLen)) {
+        if (seq.readInteger(pathLen) && pathLen >= 0) {
+            // --> pathLenConstraint is INTEGER (0..MAX) (RFC 5280 4.2.1.9), so a negative value
+            // is malformed, not a constraint of -1. A path-length check written as
+            // `depth <= pathLenConstraint()` against a negative value would reject everything,
+            // but one written as a decrementing counter could just as easily wrap -- better to
+            // leave hasPathLenConstraint() false and let the caller treat it as absent.
             _hasPathLenConstraint = true;
             _pathLenConstraint = pathLen;
         }

@@ -70,6 +70,30 @@ namespace certpp {
          */
         static void subtractLimbs(uint32_t* a, const uint32_t* b, size_t count);
 
+        /**
+         * Writes src, shifted left by shift bits (0-31), into dst -- divMod()'s Knuth-D
+         * normalization step. dst must hold count+1 limbs; dst[count] receives the bits carried
+         * out of the top limb.
+         * @param dst Destination buffer, count+1 limbs.
+         * @param src Source buffer, count limbs, little-endian.
+         * @param count Number of source limbs.
+         * @param shift Bit count to shift left by; must be 0-31.
+         */
+        static void shiftLeftInto(uint32_t* dst, const uint32_t* src, size_t count, int shift);
+
+        /**
+         * Writes the low dstCount limbs of src, shifted right by shift bits (0-31), into dst --
+         * divMod()'s Knuth-D denormalization step.
+         * @param dst Destination buffer, dstCount limbs.
+         * @param src Source buffer, srcCount limbs, little-endian.
+         * @param srcCount Number of readable source limbs (may exceed dstCount).
+         * @param dstCount Number of limbs to produce.
+         * @param shift Bit count to shift right by; must be 0-31.
+         */
+        static void shiftRightInto(
+            uint32_t* dst, const uint32_t* src, size_t srcCount, size_t dstCount, int shift
+        );
+
         // --> SignedBig is used only by modInverse()'s extended-Euclidean bookkeeping (the
         // Bezout coefficients can go negative, even though CBigNum itself never does); see its
         // own doc comment (defined just after this class, for the reason given above it).

@@ -150,31 +150,81 @@ namespace certpp {
             return true;
         }
 
-        /* Reduces a WIDE_LIMBS-limb product (degree up to 2*field.m - 2) modulo field's
-         * reduction polynomial in place, leaving the result in wide's low LIMB_COUNT limbs (its high
-         * limbs end up zero). Bit-serial: processes the product's bits from the top down,
-         * eliminating each one above degree m-1 by substituting field's reduction identity
-         * (x^m == x^terms[0] + ... + 1) -- see Hankerson/Menezes/Vanstone "Guide to Elliptic
-         * Curve Cryptography" 2.35 for the general method this specializes. */
-        void CGf2m::reduceWide(uint64_t* wide, const SGf2mField& field) {
-            size_t m = field.m;
-            size_t k = 2 * m - 2;
+        /* dst = src >> shift. */
+        void CGf2m::shiftRightInto(uint64_t* dst, const uint64_t* src, size_t nLimbs, size_t shift) {
+            const size_t limbShift = shift / 64;
+            const size_t bitShift = shift % 64;
 
-            while (true) {
-                if (testBitIn(wide, WIDE_LIMBS, k)) {
-                    toggleBitIn(wide, WIDE_LIMBS, k);
+            for (size_t i = 0; i < nLimbs; ++i) {
+                const size_t from = i + limbShift;
+                uint64_t value = from < nLimbs ? src[from] : 0;
 
-                    size_t shift = k - m;
-                    toggleBitIn(wide, WIDE_LIMBS, shift); // the reduction polynomial's "+1" term
-                    for (size_t t = 0; t < field.termCount; ++t) {
-                        toggleBitIn(wide, WIDE_LIMBS, shift + field.terms[t]);
+                if (bitShift != 0) {
+                    value >>= bitShift;
+
+                    if ((from + 1) < nLimbs) {
+                        value |= uint64_t(src[from + 1] << (64 - bitShift));
                     }
                 }
 
-                if (k == m) {
-                    break;
+                dst[i] = value;
+            }
+        }
+
+        /* Truncates to a polynomial of degree < bit. */
+        void CGf2m::clearBitsFrom(uint64_t* limbs, size_t nLimbs, size_t bit) {
+            const size_t limbIndex = bit / 64;
+            const size_t bitIndex = bit % 64;
+
+            if (limbIndex >= nLimbs) {
+                return;
+            }
+
+            limbs[limbIndex] &= bitIndex != 0 ? ((uint64_t(1) << bitIndex) - 1) : uint64_t(0);
+
+            for (size_t i = limbIndex + 1; i < nLimbs; ++i) {
+                limbs[i] = 0;
+            }
+        }
+
+        /* Reduces a WIDE_LIMBS-limb product (degree up to 2*field.m - 2) modulo field's
+         * reduction polynomial in place, leaving the result in wide's low LIMB_COUNT limbs (its high
+         * limbs end up zero) -- see Hankerson/Menezes/Vanstone "Guide to Elliptic Curve
+         * Cryptography" 2.35 for the general method.
+         *
+         * Word-level rather than bit-serial. The identity is x^m == x^terms[0] + ... + 1, so every
+         * bit at position p >= m moves down to p-m and to p-m+terms[t]; crucially, that is the
+         * *same* displacement for every such bit, so the whole excess can be folded at once:
+         * take hi = wide >> m, clear everything from bit m up, then XOR hi back in at 0 and at
+         * each term offset. The previous implementation walked one bit at a time from 2m-2 down to
+         * m, toggling 1+termCount bits (each with its own divide and modulo) per set bit -- for
+         * B-571 that is ~570 iterations and thousands of toggles where this does two folds. The
+         * reduction had been measured at 95-98% of a multiplication's cost, which meant the
+         * PCLMULQDQ-accelerated product above was buying almost nothing; this is what lets that
+         * acceleration actually show up in binary-curve ECDSA.
+         *
+         * Folding can leave bits at or above m again (p-m+terms[t] >= m whenever p >= 2m-terms[t]),
+         * so it loops. For all five fields this library ships the loop runs exactly twice -- the
+         * second fold always lands strictly below m -- but it is written as a loop rather than two
+         * unrolled passes so it stays correct for any reduction polynomial. */
+        void CGf2m::reduceWide(uint64_t* wide, const SGf2mField& field) {
+            const size_t m = field.m;
+
+            while (true) {
+                const size_t degree = degreeOf(wide, WIDE_LIMBS);
+                if (degree == SIZE_MAX || degree < m) {
+                    return;
                 }
-                --k;
+
+                uint64_t hi[WIDE_LIMBS] = {};
+                shiftRightInto(hi, wide, WIDE_LIMBS, m);
+
+                clearBitsFrom(wide, WIDE_LIMBS, m);
+
+                xorShiftedInto(wide, WIDE_LIMBS, hi, WIDE_LIMBS, 0); // the "+1" term
+                for (size_t t = 0; t < field.termCount; ++t) {
+                    xorShiftedInto(wide, WIDE_LIMBS, hi, WIDE_LIMBS, field.terms[t]);
+                }
             }
         }
 

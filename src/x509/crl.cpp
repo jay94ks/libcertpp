@@ -209,6 +209,12 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
+        // --> The CertificateList SEQUENCE must be the whole input; see CCert::importDer() for
+        // why a trailing suffix is not a harmless leniency.
+        if (!outer.atEnd()) {
+            return ERET_BADREQ;
+        }
+
         CReader tbsSeq;
         if (!certListSeq.readSequence(tbsSeq)) {
             return ERET_BADREQ;
@@ -295,18 +301,30 @@ namespace x509 {
             // absent) -- already consumed above, discarded; nothing further to do.
         }
 
-        // CertificateList.signatureAlgorithm AlgorithmIdentifier -- read past (must match
-        // tbsCertList's own copy above) but not retained, same as tbsSigAlgoSeq.
+        // CertificateList.signatureAlgorithm AlgorithmIdentifier -- its OID is resolved to a
+        // digest algorithm so verifyBy() knows what to hash tbsCertList with. (The grammar
+        // requires it to match tbsCertList's own copy above, which this does not currently
+        // check.) An OID outside CCert's table leaves sigHash at EHASH_UNKNOWN, which verifyBy()
+        // treats as "can't verify this" rather than as EdDSA.
         CReader sigAlgoSeq;
         if (!certListSeq.readSequence(sigAlgoSeq)) {
             return ERET_BADREQ;
         }
 
-        // signatureValue BIT STRING -- read past but not retained (see this method's own
-        // top-of-function comment on why).
+        crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
+        {
+            CString sigAlgoOid, sigAlgoName;
+            if (sigAlgoSeq.readOidString(sigAlgoOid)) {
+                CCert::resolveSigAlgo(sigAlgoOid, sigHash, sigAlgoName);
+            }
+        }
+
+        // signatureValue BIT STRING.
         SReadOnlyByteSpan sigBits;
         uint8_t sigUnusedBits = 0;
-        if (!certListSeq.readBitString(sigBits, sigUnusedBits)) {
+        // --> No unused bits: a signature is a whole number of octets. See
+        // CCert::importDer() for why the omission mattered.
+        if (!certListSeq.readBitString(sigBits, sigUnusedBits) || sigUnusedBits != 0) {
             return ERET_BADREQ;
         }
 
@@ -316,6 +334,8 @@ namespace x509 {
         _issuer = move(issuer);
         _thisUpdate = thisUpdate;
         _nextUpdate = nextUpdate;
+        _signature = COctet(sigBits);
+        _sigHashAlgo = sigHash;
         return ERET_OK;
     }
 
@@ -331,6 +351,86 @@ namespace x509 {
 
         rawData = _rawData;
         return ERET_OK;
+    }
+
+    /* Returns the tbsCertList TLV the signature covers. */
+    SReadOnlyByteSpan CCrlReader::tbsCertList() const {
+        if (_rawData.empty()) {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        // --> CertificateList ::= SEQUENCE { tbsCertList TBSCertList, signatureAlgorithm, ... }:
+        // the signed bytes are the first element's whole TLV, header included. Identical in shape
+        // to CCert::tbsCertificate() -- see its comment for why the length comes from
+        // readEncodedValue()'s bytesRead rather than from pointer arithmetic on the content span.
+        SReadOnlyByteSpan outer = _rawData.toSpan();
+
+        CTag tag;
+        SReadOnlyByteSpan outerContent;
+        size_t outerRead = 0;
+        if (!CDecoder::readEncodedValue(outer, EAENC_DER, tag, outerContent, outerRead)
+            || tag != CTag::SEQ || outerContent.empty())
+        {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        SReadOnlyByteSpan tbsContent;
+        size_t tbsRead = 0;
+        if (!CDecoder::readEncodedValue(outerContent, EAENC_DER, tag, tbsContent, tbsRead)
+            || tag != CTag::SEQ)
+        {
+            return SReadOnlyByteSpan(nullptr, 0);
+        }
+
+        return SReadOnlyByteSpan(outerContent.data, tbsRead);
+    }
+
+    /* Verifies this CRL's signature against an issuer certificate's public key. */
+    ERetCode CCrlReader::verifyBy(const CCert& issuer) const {
+        if (_rawData.empty() || issuer.empty() || _signature.empty()) {
+            return ERET_INVAL;
+        }
+
+        SReadOnlyByteSpan tbs = tbsCertList();
+        if (tbs.empty()) {
+            return ERET_INVAL;
+        }
+
+        crypto::IPublicKeyPtr issuerKey = issuer.publicKey();
+        if (!issuerKey) {
+            return ERET_KEY_EMPTY;
+        }
+
+        crypto::IAsymmetricContextPtr ctx = issuer.createAsymmetricContext();
+        if (!ctx) {
+            return ERET_NOTSUP;
+        }
+
+        // --> Decided by the issuer's key algorithm, never by _sigHashAlgo == EHASH_UNKNOWN --
+        // see CCert::verifyBy() for why that test would be unsafe here.
+        crypto::EAsymmetrics keyAlgo = issuerKey->algorithm();
+        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
+            return ctx->verify(tbs, _signature.toSpan());
+        }
+
+        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
+            return ERET_NOTSUP;
+        }
+
+        crypto::IHasherPtr hasher;
+        if (crypto::IHasher::create(_sigHashAlgo, hasher) != ERET_OK || !hasher) {
+            return ERET_HASH_PIPE;
+        }
+
+        CBuffer digest;
+        if (!digest.resize(hasher->byteWidth())
+            || !hasher->push(tbs)
+            || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
+        {
+            return ERET_HASH_PIPE;
+        }
+
+        return ctx->verify(digest.toSpan(), _signature.toSpan());
     }
 
     /* Finds the revocation entry for cert, if any. ERET_INVAL (not ERET_OK) when no entry
