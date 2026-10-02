@@ -719,7 +719,7 @@ so it repeats and absorption continues afterwards.
 
 ### ML-KEM ring arithmetic, samplers and wire encoding (Phase 3)
 
-`src/crypto/pq/` now holds `MlKemRing` (R_q = Z_q[X]/(X^256+1), q=3329: NTT,
+A new set of private units holds `MlKemRing` (R_q = Z_q[X]/(X^256+1), q=3329: NTT,
 inverse NTT, base-case multiply, plus a schoolbook negacyclic multiply that
 exists only to check the others), `MlKemCodec` (ByteEncode/ByteDecode,
 Compress/Decompress) and `MlKemSampler` (SampleNTT, SamplePolyCBD). Private to
@@ -756,8 +756,8 @@ swapping them changes the result, because FIPS 203's matrix expansion
 deliberately passes them transposed and a transposed call would otherwise be
 undetectable.
 
-`CMakeLists.txt` compiles `src/crypto/pq/` directly into tests under
-`tests/crypto/pq/`, since that code is deliberately not exported and linking
+`CMakeLists.txt` compiles those private units directly into the tests that
+exercise them, since that code is deliberately not exported and linking
 cannot reach it. Scoped to that one directory: everything else is still tested
 through the public surface, as `DesCore` and `KeccakCore` are.
 
@@ -804,7 +804,7 @@ The first half of [`pqc-review.md`](pqc-review.md)'s Phase 4 — the algorithm,
 validated against NIST's vectors. The `IKem` wrapper that makes it reachable
 through the library's own interface vocabulary is the other half, still to do.
 
-`crypto/pq/mlkem.hpp` publishes `CMlKem` (K-PKE, Algorithms 13–15, and the
+`crypto/kems/mlkem.hpp` publishes `CMlKem` (K-PKE, Algorithms 13–15, and the
 Fujisaki-Okamoto transform over it, Algorithms 16–18), `SMlKemParams`,
 `CMlKemSampler` and `SMlKemPoly`. The samplers and the parameter/polynomial
 types were private under `src/` while they were only substrate; they moved to
@@ -845,7 +845,7 @@ last two hand-written sizes from the implementation.
 
 ### Testing
 
-`tests/crypto/pq/mlkem.cpp` embeds ACVP keyGen, encapsulation and
+`tests/crypto/kems/kat_mlkem.cpp` embeds ACVP keyGen, encapsulation and
 decapsulation records for all three parameter sets, plus the
 `encapsulationKeyCheck` ("noisy linear system values too large") and
 `decapsulationKeyCheck` ("modified H") negative records. FIPS 203 publishes no
@@ -1058,7 +1058,7 @@ both Debug and Release.
 
 ## Post-quantum: ML-DSA's ring arithmetic
 
-The start of Phase 5. `src/crypto/pq/mldsaring.hpp`/`.cpp` hold `MlDsaRing`:
+The start of Phase 5. `src/crypto/asyms/mldsaring.hpp`/`.cpp` hold `MlDsaRing`:
 R_q = Z_q[X]/(X^256 + 1) with q = 8380417, the NTT over it, and the two
 coefficient operations ML-DSA's signing loop depends on.
 
@@ -1123,3 +1123,43 @@ worth little:
   warns implementations usually do, fails 5.
 
 13 test cases, 108,974 assertions.
+
+## Consolidating ML-KEM into `crypto/kems`, and ML-DSA into `crypto/asyms`
+
+A layout change, no behaviour change. `crypto/pq/` is gone.
+
+`include/certpp/crypto/pq/mlkem.hpp` merged into
+`include/certpp/crypto/kems/mlkem.hpp`, so one public header now declares
+`SMlKemPoly`, `SMlKemParams`, `CMlKemSampler`, `CMlKem` and `MLKEM` — the
+algorithm and its `IKem` form together. The two `.cpp` files merged to match,
+since the convention is one `.cpp` per public header; `src/crypto/kems/mlkem.cpp`
+is now ~1050 lines, split by a banner comment between the algorithm and the
+wrapper. `mlkemsampler.cpp`, `mlkemring.*` and `mlkemcodec.*` moved alongside
+it under `src/crypto/kems/`.
+
+**ML-DSA went to `crypto/asyms/` rather than `crypto/kems/`.** The instruction
+was to move everything out of `src/crypto/pq/`, and filing `mldsaring` under
+`kems/` would have named a *signature* algorithm's ring after key
+encapsulation — so it went where Phase 5's `mldsa.hpp` is headed, which
+empties `crypto/pq/` just the same.
+
+Knock-on changes:
+
+- Private header guards renamed to match their new paths
+  (`__SRC_CRYPTO_KEMS_MLKEMRING_HPP__`, `__SRC_CRYPTO_ASYMS_MLDSARING_HPP__`).
+- Tests moved to mirror: `tests/crypto/kems/{mlkemring,mlkemcodec}.cpp` and
+  `tests/crypto/asyms/mldsaring.cpp`. The ACVP vector test collided with the
+  existing `IKem` test's name, so it became
+  `tests/crypto/kems/kat_mlkem.cpp` — matching the `kat_rsa`/`kat_dsa`/
+  `kat_ecdsa` naming already in `crypto/asyms/`.
+- `CMakeLists.txt`'s private-test-sources rule no longer works off one
+  directory, since those units now live in two. It builds a list from two
+  conditions instead: anything under `tests/crypto/kems/` gets ML-KEM's ring
+  and codec, and `crypto/asyms/mldsaring` alone gets ML-DSA's ring — scoped to
+  that one test rather than to `crypto/asyms/`, which holds two dozen others
+  that have no business compiling it in.
+
+Verified by assertion count rather than just a green tick, since a silently
+skipped test would also be green: all five affected executables report exactly
+the totals they did before the move (kat_mlkem 2464, mlkem 232, mlkemring
+1566, mlkemcodec 104056, mldsaring 108974), and the suite is 96/96.

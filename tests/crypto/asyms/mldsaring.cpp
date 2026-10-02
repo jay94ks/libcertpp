@@ -25,7 +25,7 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
-#include "crypto/pq/mldsaring.hpp"
+#include "crypto/asyms/mldsaring.hpp"
 
 using namespace certpp;
 using namespace certpp::crypto;

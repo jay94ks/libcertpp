@@ -3,8 +3,8 @@
 
 #include <certpp.hpp>
 
-// src/ is on this test's include path -- see CMakeLists.txt's note on tests/crypto/pq/.
-#include "crypto/pq/mlkemcodec.hpp"
+// src/ is on this test's include path -- see CMakeLists.txt's note on private test sources.
+#include "crypto/kems/mlkemcodec.hpp"
 
 using namespace certpp;
 using namespace certpp::crypto;

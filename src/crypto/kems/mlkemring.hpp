@@ -1,8 +1,8 @@
-#ifndef __SRC_CRYPTO_PQ_MLKEMRING_HPP__
-#define __SRC_CRYPTO_PQ_MLKEMRING_HPP__
+#ifndef __SRC_CRYPTO_KEMS_MLKEMRING_HPP__
+#define __SRC_CRYPTO_KEMS_MLKEMRING_HPP__
 
 #include <certpp/common.hpp>
-#include <certpp/crypto/pq/mlkem.hpp>
+#include <certpp/crypto/kems/mlkem.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -27,7 +27,7 @@ namespace crypto {
      * byte-granular ECDSA digest truncation for as long as its only tests verified their own
      * output. Hence the deliberate choices here: the twiddle tables are asserted against their
      * defining property rather than trusted as transcribed constants (see
-     * tests/crypto/pq/mlkemring.cpp, which re-derives every entry from 17^BitRev7(i)), and the
+     * tests/crypto/kems/mlkemring.cpp, which re-derives every entry from 17^BitRev7(i)), and the
      * NTT is checked against a schoolbook negacyclic multiply rather than only against its own
      * inverse.
      *

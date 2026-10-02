@@ -1,5 +1,5 @@
-#ifndef __SRC_CRYPTO_PQ_MLKEMCODEC_HPP__
-#define __SRC_CRYPTO_PQ_MLKEMCODEC_HPP__
+#ifndef __SRC_CRYPTO_KEMS_MLKEMCODEC_HPP__
+#define __SRC_CRYPTO_KEMS_MLKEMCODEC_HPP__
 
 #include <certpp/common.hpp>
 #include <certpp/io/span.hpp>

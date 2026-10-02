@@ -109,23 +109,29 @@ it happens to run from — `ctest`'s default working directory differs from
 running the `.exe` directly, and both differ depending on the caller's own
 current directory.
 
-One directory is an exception to "every test links the library and uses it
-through its public headers": a test under `tests/crypto/pq/` additionally
-gets a listed set of `src/crypto/pq/` sources compiled into its own
-executable, and `src/` on its include path. Those units (`mlkemring.cpp`,
-`mlkemcodec.cpp`) implement ML-KEM's lattice arithmetic and wire encoding,
-which have no public API and so carry no `CERTPP_API` — they aren't exported
-from the shared object and linking cannot reach them. Compiling a second copy
-into the test is safe *precisely because* they aren't exported, so it can
-never collide with the library's own.
+A few tests are an exception to "every test links the library and uses it
+through its public headers": they additionally get a listed set of `src/`
+sources compiled into their own executable, plus `src/` on the include path.
+Two groups qualify today:
 
-The list is written out in `CMakeLists.txt` rather than globbed, and
-`src/crypto/pq/mlkem.cpp`/`mlkemsampler.cpp` are deliberately left out of it:
-those implement the exported `CMlKem`/`CMlKemSampler`, so compiling them here
-too would define symbols the test already imports from `certpp`. Adding a new
-private unit to that list is therefore a manual step — which is the point,
-since the alternative fails at link time in a way that takes a while to read.
-Everything else in the library is tested through the public surface, as
+- a test under `tests/crypto/kems/` gets `src/crypto/kems/mlkemring.cpp` and
+  `mlkemcodec.cpp` — ML-KEM's lattice arithmetic and wire encoding;
+- `tests/crypto/asyms/mldsaring.cpp` gets `src/crypto/asyms/mldsaring.cpp`,
+  scoped to that one test rather than to `crypto/asyms/`, which holds two
+  dozen others with no business compiling ML-DSA's ring in.
+
+Those units have no public API and so carry no `CERTPP_API` — they aren't
+exported from the shared object, and linking cannot reach them. Compiling a
+second copy into the test is safe *precisely because* they aren't exported, so
+it can never collide with the library's own.
+
+The lists are written out in `CMakeLists.txt` rather than globbed, and
+`src/crypto/kems/mlkem.cpp`/`mlkemsampler.cpp` are deliberately left out:
+those implement the exported `CMlKem`/`CMlKemSampler`/`MLKEM`, so compiling
+them here too would define symbols the test already imports from `certpp`.
+Adding a new private unit to a list is therefore a manual step — which is the
+point, since the alternative fails at link time in a way that takes a while to
+read. Everything else in the library is tested through the public surface, as
 `DesCore`, `KeccakCore` and `CbcTransformer` are (via `ISymmetric`/`IHasher`).
 
 ## Examples

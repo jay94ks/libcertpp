@@ -1,7 +1,7 @@
 // ML-KEM through the IKem/IKemContext interface.
 //
 // The algorithm itself is pinned against NIST's ACVP vectors in
-// tests/crypto/pq/mlkem.cpp. This file covers only what the wrapper adds: the EKems dispatch,
+// tests/crypto/kems/kat_mlkem.cpp. This file covers only what the wrapper adds: the EKems dispatch,
 // key objects and their serialization, the size bookkeeping IKemContext exposes, and the fact
 // that encapsulate() draws fresh randomness rather than being a function of the key. There is
 // no known-answer test to be had here -- encapsulate() has no seed parameter, by design.

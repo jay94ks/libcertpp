@@ -14,12 +14,12 @@ appended at the end.
 | Shared `KeccakCore` (`src/crypto/hashers/keccakcore.hpp`) | **done** -- permutation + sponge absorb, shared by SHAKE128/SHAKE256 |
 | `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **done** -- designed ahead of the algorithm, now with ML-KEM behind it; `EKems` has its three members and `IKem::builtIn()` dispatches them. In `certpp.hpp` |
 | Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
-| ML-KEM ring arithmetic (`src/crypto/pq/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
-| ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/pq/mlkemcodec.hpp`; the samplers are now public as `CMlKemSampler` (`crypto/pq/mlkem.hpp`); pinned against an independent model by whole-array checksum |
+| ML-KEM ring arithmetic (`src/crypto/kems/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
+| ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/kems/mlkemcodec.hpp`; the samplers are now public as `CMlKemSampler` (`crypto/kems/mlkem.hpp`); pinned against an independent model by whole-array checksum |
 | SHA3-256 / SHA3-512 (ML-KEM's H and G) | **done** -- a prerequisite this plan had missed; the library had SHAKE but no fixed-output SHA-3 |
-| ML-KEM, the algorithm (`crypto/pq/mlkem.hpp`: `CMlKem`, `SMlKemParams`, `SMlKemPoly`) | **done** -- K-PKE plus the FO transform over raw spans, validated against ACVP for all three parameter sets including the implicit-rejection and key-check negative cases |
+| ML-KEM, the algorithm (`crypto/kems/mlkem.hpp`: `CMlKem`, `SMlKemParams`, `SMlKemPoly`) | **done** -- K-PKE plus the FO transform over raw spans, validated against ACVP for all three parameter sets including the implicit-rejection and key-check negative cases |
 | ML-KEM as an `IKem` (`crypto/kems/mlkem.hpp`, `EKEM_MLKEM512/768/1024`) | **done** -- `MLKEM` serves all three sets from one class; keys serialize as FIPS 203's own encodings, and this is the only layer that draws from `CRng` |
-| ML-DSA ring arithmetic (q=8380417) | **done** -- `src/crypto/pq/mldsaring.hpp`; complete 8-layer NTT (zeta's order is 512, unlike ML-KEM's 256, so the transform runs to completion and the NTT-domain multiply is pointwise), checked against FIPS 204 Appendix B's printed table and a schoolbook negacyclic multiply |
+| ML-DSA ring arithmetic (q=8380417) | **done** -- `src/crypto/asyms/mldsaring.hpp`; complete 8-layer NTT (zeta's order is 512, unlike ML-KEM's 256, so the transform runs to completion and the NTT-domain multiply is pointwise), checked against FIPS 204 Appendix B's printed table and a schoolbook negacyclic multiply |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
 
@@ -182,7 +182,7 @@ Both algorithms work over the same polynomial ring `R_q = Z_q[X]/(X^256+1)` (ML-
    it; `CBigNum` is arbitrary-precision over the integers (RSA/DSA-shaped, unbounded
    width), and `CGf2m` is GF(2^m) (binary-curve-shaped, XOR-based). Neither is a
    fixed-width, small-modulus (`< 2^23`), NTT-friendly ring element. A new `CPolyRing`-
-   shaped type (likely under `utils/` or a new `crypto/pq/` submodule, given it's
+   shaped type (likely under `utils/` or alongside the algorithm, given it's
    genuinely PQ-specific rather than a general-purpose number type) with forward/inverse
    NTT, pointwise multiplication, and Montgomery/Barrett reduction for the mod-q
    arithmetic is the central new primitive both algorithms are built on.
@@ -396,7 +396,7 @@ from Python's `hashlib`, three rate blocks plus seven bytes long.
 
 ### Phase 3 -- the shared ring arithmetic (the real work) -- **done for ML-KEM**
 
-A new private submodule, `src/crypto/pq/`, with no public headers yet -- nothing here
+A set of private units with no public headers yet -- nothing here
 belongs in the API until an algorithm needs to expose it, and per the conventions an
 implementation class under `src/` takes no type prefix:
 
@@ -420,12 +420,12 @@ implementation class under `src/` takes no type prefix:
   transitively -- a transposed twiddle order changes `ek` and `c` byte for byte -- so the bug is
   still caught; it simply won't be localized to a butterfly.
 - Centered binomial sampling and the rejection sampler over the Phase 2 XOF stream.
-  Both now exist as `MlKemSampler` (`src/crypto/pq/mlkemsampler.hpp`). `sampleNtt()` is the
+  Both now exist as `MlKemSampler` (`src/crypto/kems/mlkemsampler.cpp`). `sampleNtt()` is the
   first real consumer of `SHAKE128::squeeze()`, and it justifies Phase 2 concretely: it
   consumes 453-498 bytes of stream depending on the seed -- three-ish rate blocks, with no
   length knowable in advance.
 - `ByteEncode`/`ByteDecode` bit-packing (FIPS 203 Algorithms 5/6) and `Compress`/`Decompress`
-  (Algorithms 3/4), now `MlKemCodec` (`src/crypto/pq/mlkemcodec.hpp`). The compression
+  (Algorithms 3/4), now `MlKemCodec` (`src/crypto/kems/mlkemcodec.hpp`). The compression
   rounding was checked against the exact rational definition for *every* coefficient in
   [0, q) at every width ML-KEM uses, which settled a detail worth not guessing at: q is odd,
   so the usual `(x*2^d + q/2)/q` truncates `q/2` and leaves the round-half-up tie rule to
@@ -439,12 +439,12 @@ Validation gate before anything is built on top: forward-then-inverse NTT round 
 NTT-domain multiply against a schoolbook negacyclic reference, the ring's defining identity
 (`X^256 == -1`) asserted directly, and every twiddle re-derived from the root of unity
 independently of how the implementation builds it. **Done for ML-KEM's ring** -- see
-`tests/crypto/pq/mlkemring.cpp`, and note `CMakeLists.txt` compiles `src/crypto/pq/` straight
+`tests/crypto/kems/mlkemring.cpp`, and note `CMakeLists.txt` compiles those private units straight
 into those tests, since the lattice arithmetic has no public API and so is not exported.
 
 ### Phase 4 -- ML-KEM (`IKem`'s first implementation) -- **done**
 
-- `include/certpp/crypto/pq/mlkem.hpp` + `src/crypto/pq/mlkem.cpp` hold `CMlKem`: K-PKE
+- `include/certpp/crypto/kems/mlkem.hpp` + `src/crypto/kems/mlkem.cpp` hold `CMlKem`: K-PKE
   (Algorithms 13-15) and the FO transform over it (Algorithms 16-18), with **implicit
   rejection** -- a malformed ciphertext yields `J(z || c)`, a key-derived pseudorandom
   secret, and `decapsulate()` has no failure mode for a bad ciphertext at all. Plus
@@ -452,7 +452,7 @@ into those tests, since the lattice arithmetic has no public API and so is not e
   figures) and `CMlKemSampler`/`SMlKemPoly`, promoted out of `src/` because the raw-span
   form is useful on its own -- for interoperability testing, for a caller that already owns
   its buffers, and for anyone who wants K-PKE rather than the KEM.
-- Gate met: `tests/crypto/pq/mlkem.cpp` drives ACVP keyGen/encapsulation/decapsulation
+- Gate met: `tests/crypto/kems/kat_mlkem.cpp` drives ACVP keyGen/encapsulation/decapsulation
   vectors for all three parameter sets, including the `modified ciphertext` records (whose
   expected shared secret ACVP publishes, because implicit rejection is a defined output
   rather than an error path) and the `encapsulationKeyCheck`/`decapsulationKeyCheck`

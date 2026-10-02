@@ -1,5 +1,5 @@
-#ifndef __SRC_CRYPTO_PQ_MLDSARING_HPP__
-#define __SRC_CRYPTO_PQ_MLDSARING_HPP__
+#ifndef __SRC_CRYPTO_ASYMS_MLDSARING_HPP__
+#define __SRC_CRYPTO_ASYMS_MLDSARING_HPP__
 
 #include <certpp/common.hpp>
 

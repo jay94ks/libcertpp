@@ -1112,42 +1112,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   operates on the bound *private* key. `sizeOfCiphertext()`/
   `sizeOfSharedSecret()` follow the existing getter-public/setter-protected
   split `sizeOfSign()`/`sizeOfDigest()` use.
-- **`crypto/kems/mlkem.hpp` / `src/crypto/kems/mlkem.cpp`** define `MLKEM`,
-  `IKem`'s only implementation, serving all three ML-KEM parameter sets from
-  one class with the set as constructor state -- the arrangement `CEcdsa` has
-  across its curves. It implements nothing cryptographic itself: `CMlKem`
-  (below) is the algorithm, and this is the key objects, the size bookkeeping
-  `IKemContext` exposes, and the CSPRNG draws around it.
-
-  `keySizes()` accepts exactly one size per instance, and that size is the
-  parameter set's own number (512, 768 or 1024) rather than a modulus width
-  or a claimed security strength. ML-KEM has no size that scales -- the sets
-  differ in the module rank `k` and four other parameters, and those three
-  numbers are names. Passing the name keeps `generateKeyPair()` usable the
-  way every other algorithm in the library is, without inventing a figure
-  that looks like it means something it doesn't.
-
-  Keys serialize as FIPS 203's own encodings and nothing more: a public key
-  is the encapsulation key, a private key the decapsulation key. Since a
-  decapsulation key embeds its own encapsulation key at offset
-  `dkPkeBytes()`, `IKemPrivateKey::publicKey()` reads it out rather than
-  recomputing it, and `checkPrivateKey()` verifies the two agree (plus the
-  embedded `H(ek)`, plus that the `ek` is canonical) rather than assuming
-  so. `createPublicKey()`/`createPrivateKey()` apply the same checks, since
-  a key reaching them came from outside. The SubjectPublicKeyInfo wrapping a
-  certificate needs is Phase 6 of [`docs/pqc-review.md`](pqc-review.md), not
-  here.
-
-  This is also the only layer in the ML-KEM implementation that draws
-  randomness. `CMlKem::generateKeyPair()`/`encapsulate()` take their seeds
-  and message as parameters so they can be driven from a test vector;
-  `IKemContext::encapsulate()` has no such parameter, so `MLKEM` fills them
-  from `CRng` -- which also means there is no known-answer test to be had at
-  this layer, and `tests/crypto/kems/mlkem.cpp` covers what the wrapper adds
-  rather than the algorithm (asserting, among other things, that repeated
-  `encapsulate()` calls against one key differ, since a shared secret that
-  was a function of the key alone would be reused every session).
-- **`crypto/pq/mlkem.hpp` / `src/crypto/pq/mlkem.cpp`** implement ML-KEM
+- **`crypto/kems/mlkem.hpp` / `src/crypto/kems/mlkem.cpp`** implement ML-KEM
   (FIPS 203) and the K-PKE scheme underneath it, over raw byte spans. This is
   the algorithm itself, with no opinion about key objects or contexts, so it
   can be driven straight from a test vector; the `IKem`/`IKemContext` shape
@@ -1162,7 +1127,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
     `{k, eta1, eta2, du, dv}` plus `mlKem512()`/`mlKem768()`/`mlKem1024()`.
     Only those five figures are stored; `ekBytes()`/`dkBytes()`/
     `dkPkeBytes()`/`ciphertextBytes()`/`sharedSecretBytes()`/`seedBytes()`
-    all derive from them, and `tests/crypto/pq/mlkem.cpp` pins the derived
+    all derive from them, and `tests/crypto/kems/kat_mlkem.cpp` pins the derived
     results against the published table with `static_assert`. A mistyped key
     length is exactly the error that stays internally consistent -- an
     implementation using the wrong `ek` length throughout still round-trips
@@ -1212,9 +1177,45 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   Validated against NIST's ACVP vectors for all three parameter sets,
   including the `modified ciphertext` cases that exercise that rejection path
   and the `encapsulationKeyCheck`/`decapsulationKeyCheck` negative cases --
-  see `tests/crypto/pq/mlkem.cpp`. FIPS 203 publishes no worked examples, so
+  see `tests/crypto/kems/kat_mlkem.cpp`. FIPS 203 publishes no worked examples, so
   those vectors are the only external oracle available.
-- **`src/crypto/pq/mlkemring.hpp`/`.cpp`, `src/crypto/pq/mlkemcodec.hpp`/
+
+  The same header then declares **`MLKEM`**,
+  `IKem`'s only implementation, serving all three ML-KEM parameter sets from
+  one class with the set as constructor state -- the arrangement `CEcdsa` has
+  across its curves. It implements nothing cryptographic itself: `CMlKem`
+  above is the algorithm, and this is the key objects, the size bookkeeping
+  `IKemContext` exposes, and the CSPRNG draws around it.
+
+  `keySizes()` accepts exactly one size per instance, and that size is the
+  parameter set's own number (512, 768 or 1024) rather than a modulus width
+  or a claimed security strength. ML-KEM has no size that scales -- the sets
+  differ in the module rank `k` and four other parameters, and those three
+  numbers are names. Passing the name keeps `generateKeyPair()` usable the
+  way every other algorithm in the library is, without inventing a figure
+  that looks like it means something it doesn't.
+
+  Keys serialize as FIPS 203's own encodings and nothing more: a public key
+  is the encapsulation key, a private key the decapsulation key. Since a
+  decapsulation key embeds its own encapsulation key at offset
+  `dkPkeBytes()`, `IKemPrivateKey::publicKey()` reads it out rather than
+  recomputing it, and `checkPrivateKey()` verifies the two agree (plus the
+  embedded `H(ek)`, plus that the `ek` is canonical) rather than assuming
+  so. `createPublicKey()`/`createPrivateKey()` apply the same checks, since
+  a key reaching them came from outside. The SubjectPublicKeyInfo wrapping a
+  certificate needs is Phase 6 of [`docs/pqc-review.md`](pqc-review.md), not
+  here.
+
+  This is also the only layer in the ML-KEM implementation that draws
+  randomness. `CMlKem::generateKeyPair()`/`encapsulate()` take their seeds
+  and message as parameters so they can be driven from a test vector;
+  `IKemContext::encapsulate()` has no such parameter, so `MLKEM` fills them
+  from `CRng` -- which also means there is no known-answer test to be had at
+  this layer, and `tests/crypto/kems/mlkem.cpp` covers what the wrapper adds
+  rather than the algorithm (asserting, among other things, that repeated
+  `encapsulate()` calls against one key differ, since a shared secret that
+  was a function of the key alone would be reused every session).
+- **`src/crypto/kems/mlkemring.hpp`/`.cpp`, `src/crypto/kems/mlkemcodec.hpp`/
   `.cpp`** hold the arithmetic and wire encoding `CMlKem` is built from:
   `MlKemRing` (NTT, inverse NTT, base-case multiply over R_q, plus a
   schoolbook negacyclic multiply that exists only to check the others) and
@@ -1222,9 +1223,9 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   Both stay private to `src/` -- plain `PascalCase`, no `CERTPP_API` -- since
   nothing outside the ML-KEM implementation has a reason to reach them, and
   `SMlKemPoly` is the one type they share with the public header. Because
-  they aren't exported, a test under `tests/crypto/pq/` compiles them into its
-  own executable; see [`docs/build.md`](build.md).
-- **`src/crypto/pq/mldsaring.hpp`/`.cpp`** define `MlDsaRing`, arithmetic in
+  they aren't exported, a test under `tests/crypto/kems/` compiles them into
+  its own executable; see [`docs/build.md`](build.md).
+- **`src/crypto/asyms/mldsaring.hpp`/`.cpp`** define `MlDsaRing`, arithmetic in
   ML-DSA's ring R_q = Z_q[X]/(X^256 + 1) with q = 8380417 (FIPS 204 4) --
   the first piece of ML-DSA, and also private to `src/`. It is deliberately
   a separate unit from `MlKemRing` rather than a parameterization of it,
@@ -1252,7 +1253,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   implementations usually store the zetas array that way, which makes a
   representation mismatch there exactly the self-consistent-but-wrong
   failure mode this library has been bitten by before, so
-  `tests/crypto/pq/mldsaring.cpp` checks the table against Appendix B's
+  `tests/crypto/asyms/mldsaring.cpp` checks the table against Appendix B's
   printed values as well as against its defining property.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating

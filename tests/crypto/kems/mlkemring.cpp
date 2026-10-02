@@ -3,9 +3,9 @@
 
 #include <certpp.hpp>
 
-// src/ is on this test's include path -- see CMakeLists.txt's note on tests/crypto/pq/, which
+// src/ is on this test's include path -- see CMakeLists.txt's note on private test sources, which
 // compiles the lattice arithmetic directly because it is deliberately not exported.
-#include "crypto/pq/mlkemring.hpp"
+#include "crypto/kems/mlkemring.hpp"
 
 using namespace certpp;
 using namespace certpp::crypto;

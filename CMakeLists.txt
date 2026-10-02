@@ -107,28 +107,43 @@ if(CERTPP_BUILD_TESTS)
         add_executable(certpp_test_${CERTPP_TEST_NAME} ${CERTPP_TEST_SOURCE})
         target_link_libraries(certpp_test_${CERTPP_TEST_NAME} PRIVATE certpp::certpp doctest)
 
-        # A test under tests/crypto/pq/ exercises implementation units that are deliberately
-        # private to the library: the lattice arithmetic has no public API yet, so those classes
-        # carry no CERTPP_API and are not exported from the shared object. Linking cannot reach
-        # them, so such a test compiles src/crypto/pq/ directly into its own executable instead.
-        # That is safe precisely *because* the symbols aren't exported -- the test's copy can
-        # never collide with certpp's own. It also gets src/ on its include path, so it can use
-        # the same "crypto/pq/..." form the library's own sources do rather than a relative climb.
+        # Some tests exercise implementation units that are deliberately private to the library:
+        # the lattice arithmetic and wire encoding behind ML-KEM and ML-DSA have no public API, so
+        # those classes carry no CERTPP_API and are not exported from the shared object. Linking
+        # cannot reach them, so such a test compiles the units it needs directly into its own
+        # executable instead. That is safe precisely *because* the symbols aren't exported -- the
+        # test's copy can never collide with certpp's own. Each also gets src/ on its include path,
+        # so it can use the same "crypto/..." form the library's own sources do rather than a
+        # relative climb.
         #
         # Everything else is tested through the public surface, as DesCore/KeccakCore/
         # CbcTransformer are (via ISymmetric/IHasher). This is the exception for code that has no
         # public surface to be reached through yet, not a general licence to test internals.
-        if(CERTPP_TEST_REL MATCHES "^crypto/pq/")
-            # Listed rather than globbed, and deliberately *not* including mlkem.cpp or
-            # mlkemsampler.cpp: those implement the exported CMlKem/CMlKemSampler, so compiling
-            # them here as well would define symbols the test already imports from certpp. Only
-            # the units with no public header belong in this list, and a new one has to be added
-            # by hand -- which is the point, since the alternative fails confusingly at link time.
-            target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemring.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemcodec.cpp
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mldsaring.cpp
+        #
+        # The lists are written out rather than globbed, and deliberately exclude mlkem.cpp and
+        # mlkemsampler.cpp: those implement the exported CMlKem/CMlKemSampler/MLKEM, so compiling
+        # them here as well would define symbols the test already imports from certpp. Only units
+        # with no public header belong, and a new one has to be added by hand -- which is the
+        # point, since the alternative fails confusingly at link time.
+        set(CERTPP_TEST_PRIVATE_SOURCES "")
+
+        if(CERTPP_TEST_REL MATCHES "^crypto/kems/")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/kems/mlkemring.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/kems/mlkemcodec.cpp
             )
+        endif()
+
+        # Scoped to the one test rather than to crypto/asyms/, which holds two dozen others that
+        # have no business compiling ML-DSA's ring in.
+        if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsaring")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp
+            )
+        endif()
+
+        if(CERTPP_TEST_PRIVATE_SOURCES)
+            target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE ${CERTPP_TEST_PRIVATE_SOURCES})
             target_include_directories(certpp_test_${CERTPP_TEST_NAME} PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src
             )
