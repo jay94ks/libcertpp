@@ -1055,3 +1055,71 @@ over-eager clear would corrupt a value still in use, and RFC 8032's EdDSA
 vectors, CAVP's ECDSA/DSA vectors and the RSA KAT all reproduce exact expected
 bytes. All of them still pass, along with the rest of the 95-test suite in
 both Debug and Release.
+
+## Post-quantum: ML-DSA's ring arithmetic
+
+The start of Phase 5. `src/crypto/pq/mldsaring.hpp`/`.cpp` hold `MlDsaRing`:
+R_q = Z_q[X]/(X^256 + 1) with q = 8380417, the NTT over it, and the two
+coefficient operations ML-DSA's signing loop depends on.
+
+It is a separate unit from `MlKemRing`, not a parameterization of it, and the
+reasons go deeper than the constants:
+
+- **`int64_t` throughout.** q = 2^23 − 2^13 + 1, so a product of two
+  coefficients reaches about 7.0e13 — four orders of magnitude past
+  `int32_t`. In ML-KEM's ring the same product fits in `int32_t` comfortably,
+  so carrying that habit across would be a silent wraparound rather than a
+  style difference. It bites the twiddle-table builder too, where `ZETA * acc`
+  reaches ~1.5e10; `MlKemRing`'s equivalent uses `int32_t` there quite safely,
+  and copying it would have been wrong.
+- **The NTT is complete.** ζ = 1753 has order exactly **512**, not 256, so
+  X^256 + 1 splits all the way into 256 linear factors: eight layers, 256
+  independent evaluation points. ML-KEM's transform stops one layer short,
+  leaving 128 degree-1 blocks that need a base-case multiply and a second
+  twiddle table. So `multiplyNtt()` here is plain pointwise multiplication and
+  there is no `gammas()` at all.
+- **`bitRev8`, not `bitRev7`.**
+
+Also `centered()` (FIPS 204's `mod±`, the representative in (−q/2, q/2]) and
+`infinityNorm()`. The norm belongs to the ring rather than to a caller because
+ML-DSA's signing loop rejects on exactly that quantity — and it has to be
+taken over *centered* representatives, so an implementation that skipped the
+centering would see q−1 where the answer is 3, and would then either reject
+everything or reject nothing.
+
+### Validated before any C++ was written
+
+Same discipline as ML-KEM's ring, and it paid off the same way — the
+implementation was correct on its first run. A Python reference built from the
+specification text established, ahead of time:
+
+- ζ = 1753 has order exactly 512 and ζ^256 = −1 (so the transform runs to
+  completion);
+- all 255 of FIPS 204 Appendix B's printed zetas match ζ^BitRev8(k) mod q
+  — the table was extracted from the publication itself rather than
+  transcribed;
+- Algorithm 42's constant 8347681 is simply 256⁻¹ mod q, derived rather than
+  copied;
+- the NTT round-trips and its pointwise product agrees with a schoolbook
+  negacyclic convolution, over 200 random polynomial pairs;
+- and the transform agrees with dilithium-py 1.4.0 on 50 random polynomials.
+
+### The tests deliberately don't rest on round trips
+
+FIPS 204 fixes the NTT's exact representation, not just its end-to-end
+behaviour, so a transform that inverts itself while permuting coefficients
+differently from the standard is self-consistent and interoperates with
+nothing. The suite checks the table against Appendix B's printed values *and*
+re-derives it by square-and-multiply (where the implementation uses repeated
+multiplication), asserts X^256 = −1 directly, and checks the NTT-domain
+multiply against the schoolbook convolution.
+
+Two negative controls confirm it bites, since a test suite that cannot fail is
+worth little:
+
+- Making the transform **7 layers instead of 8** — ML-KEM's shape, which still
+  round-trips perfectly — fails 4 assertions across 4 test cases.
+- Storing the zetas **in Montgomery form**, which is what FIPS 204 Appendix A
+  warns implementations usually do, fails 5.
+
+13 test cases, 108,974 assertions.

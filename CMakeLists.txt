@@ -127,6 +127,7 @@ if(CERTPP_BUILD_TESTS)
             target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemring.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemcodec.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mldsaring.cpp
             )
             target_include_directories(certpp_test_${CERTPP_TEST_NAME} PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src

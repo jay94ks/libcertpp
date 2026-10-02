@@ -19,16 +19,18 @@ appended at the end.
 | SHA3-256 / SHA3-512 (ML-KEM's H and G) | **done** -- a prerequisite this plan had missed; the library had SHAKE but no fixed-output SHA-3 |
 | ML-KEM, the algorithm (`crypto/pq/mlkem.hpp`: `CMlKem`, `SMlKemParams`, `SMlKemPoly`) | **done** -- K-PKE plus the FO transform over raw spans, validated against ACVP for all three parameter sets including the implicit-rejection and key-check negative cases |
 | ML-KEM as an `IKem` (`crypto/kems/mlkem.hpp`, `EKEM_MLKEM512/768/1024`) | **done** -- `MLKEM` serves all three sets from one class; keys serialize as FIPS 203's own encodings, and this is the only layer that draws from `CRng` |
-| ML-DSA ring arithmetic (q=8380417) | not started |
+| ML-DSA ring arithmetic (q=8380417) | **done** -- `src/crypto/pq/mldsaring.hpp`; complete 8-layer NTT (zeta's order is 512, unlike ML-KEM's 256, so the transform runs to completion and the NTT-domain multiply is pointwise), checked against FIPS 204 Appendix B's printed table and a schoolbook negacyclic multiply |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
 
 So Phases 1-4 are complete: ML-KEM works, matches NIST's vectors for all three parameter
 sets, and is reachable both as the raw-span `CMlKem` (which is what let it be validated
 straight from a test vector) and as `IKem::builtIn(EKEM_MLKEM768)` like every other algorithm
-in the library. The next step is Phase 5, ML-DSA -- which needs its own ring arithmetic over
-q = 8380417 and shares nothing with ML-KEM's beyond the Keccak primitives and the general
-shape of an NTT.
+in the library. Phase 5 has started with its ring arithmetic, which indeed shares nothing with
+ML-KEM's beyond the Keccak primitives and the general shape of an NTT -- `MlDsaRing` is a
+separate unit, not a parameterization. What remains for ML-DSA is the rounding and hint
+machinery (Power2Round/Decompose/MakeHint/UseHint), the three rejection samplers, the
+bit-packing, and then sign/verify.
 
 ## Why this matters for libcertpp specifically
 

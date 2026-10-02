@@ -1224,6 +1224,36 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `SMlKemPoly` is the one type they share with the public header. Because
   they aren't exported, a test under `tests/crypto/pq/` compiles them into its
   own executable; see [`docs/build.md`](build.md).
+- **`src/crypto/pq/mldsaring.hpp`/`.cpp`** define `MlDsaRing`, arithmetic in
+  ML-DSA's ring R_q = Z_q[X]/(X^256 + 1) with q = 8380417 (FIPS 204 4) --
+  the first piece of ML-DSA, and also private to `src/`. It is deliberately
+  a separate unit from `MlKemRing` rather than a parameterization of it,
+  because three differences go deeper than the constants:
+  - q = 2^23 - 2^13 + 1, so a coefficient needs 23 bits and `int32_t`
+    storage, and a product of two coefficients reaches about 7.0e13 --
+    which overflows `int32_t` by four orders of magnitude, so every
+    intermediate runs in `int64_t`. In ML-KEM's ring the same product fits
+    in `int32_t` with room to spare; carrying that habit across would be a
+    silent-wraparound bug. It bites the twiddle-table builder too, where
+    `ZETA * acc` reaches about 1.5e10.
+  - `ZETA = 1753` has order exactly **512**, not 256, so X^256 + 1 splits
+    all the way into 256 linear factors and the NTT is **complete**: eight
+    layers, 256 independent evaluation points. ML-KEM's transform stops one
+    layer short, leaving 128 degree-1 blocks that need a base-case multiply
+    and a second twiddle table. So `multiplyNtt()` here is plain pointwise
+    multiplication, and there is no `gammas()` at all.
+  - The index permutation is `bitRev8`, over eight bits, against ML-KEM's
+    `bitRev7`.
+
+  Beyond the transform it provides `centered()` -- FIPS 204's `mod±`,
+  the representative in (-q/2, q/2] -- and `infinityNorm()`, which ML-DSA's
+  signing loop rejects on, so it belongs to the ring rather than to a
+  caller. Nothing is kept in Montgomery form; FIPS 204 Appendix A warns that
+  implementations usually store the zetas array that way, which makes a
+  representation mismatch there exactly the self-consistent-but-wrong
+  failure mode this library has been bitten by before, so
+  `tests/crypto/pq/mldsaring.cpp` checks the table against Appendix B's
+  printed values as well as against its defining property.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via
