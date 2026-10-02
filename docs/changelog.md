@@ -926,3 +926,70 @@ byte-for-byte the embedded one, and that the `ek` is canonical — rather than
 trusting any of the three, since a key reaching `createPrivateKey()` came from
 outside. Keys carry no ASN.1 wrapping at all; the SubjectPublicKeyInfo form a
 certificate needs is Phase 6.
+
+## `CSecure`: zeroization and constant-time compare/select
+
+Added `utils/secure.hpp` — `CSecure::zero()`, `equalsMask()`, `select()` — and
+used it to close two gaps in ML-KEM, one of which was worse than the one
+originally recorded.
+
+### The real finding: `memcmp` in the FO check
+
+The previous entry noted ML-KEM's missing zeroization as a known gap. Looking
+at `decapsulate()` again to fix that turned up something more serious a few
+lines away:
+
+```cpp
+const bool matches = std::memcmp(reencrypted, ciphertext.data, ciphertext.size) == 0;
+std::memcpy(sharedSecret.data, matches ? candidateSecret : rejectionSecret, 32);
+```
+
+`memcmp` stops at the first differing byte, so its running time reveals **how
+long a prefix of the re-encrypted ciphertext matched** — far more information
+than the single bit the Fujisaki-Okamoto transform exists to hide, and the
+shape of the KyberSlash family of attacks. The ternary then branches on the
+verdict, which *is* that single bit; FIPS 203 requires the implicit-reject
+flag never be exposed "in any form", and a branch exposes it.
+
+Both are now `CSecure::equalsMask` followed by `CSecure::select`: the
+comparison reads every byte whatever the outcome and yields `0xFF`/`0x00`, and
+the mask drives a byte-wise select, so nothing branches on anything secret.
+The ACVP decapsulation vectors — including all the `modified ciphertext`
+records, which are precisely the rejecting path — still pass byte-for-byte,
+which is what confirms the rewrite preserved the output on both paths.
+
+`equalsMask` returns a full mask rather than a bool on purpose, and the test
+asserts the value is `0xFF` rather than merely truthy: `select` ANDs with it,
+so a mask of `1` would silently keep only the low bit of each selected byte.
+It also folds its accumulated difference to a mask arithmetically instead of
+writing `diff == 0`, so correctness doesn't depend on the compiler choosing a
+flag set over a branch there.
+
+### Zeroization that survives the optimizer
+
+`CSecure::zero()` routes `memset` through a volatile function pointer. This was
+verified rather than assumed, by reading MSVC's `/O2` output for two otherwise
+identical functions: in the one using a plain `std::memset` the clear was
+**deleted entirely** — no store, no call — while the `CSecure::zero` call
+survived, and inside `zero` the compiler loads the pointer from memory and
+tail-jumps through it rather than folding it back to a direct `memset`.
+
+`decapsulate()` was restructured to a single exit so the clearing cannot be
+skipped by an error path, since that one is a normative FIPS 203 requirement.
+`kpkeKeyGen()`, `kpkeDecrypt()`, `encapsulate()` and `MLKEM`'s CSPRNG draws
+clear at their success exit without being restructured — their early returns
+all need a hasher or sampler to fail at a fixed, correct size, so none is
+reachable, and threading a status through those loops would cost more clarity
+than it buys. The difference is deliberate and noted in the code.
+
+### What this deliberately does not touch
+
+The inline mask arithmetic in RSA's EME-PKCS1-v1_5 unpadding and
+`CbcTransformer`'s PKCS#7 padding check stays as it is. Neither is "compare
+two buffers" or "choose between two buffers" — both interleave masking with a
+scan over the padding — so there is nothing in `CSecure` for them to call, and
+rewriting working, tested constant-time code for the appearance of
+consolidation would be a poor trade.
+
+Still outstanding: no RSA, DSA or EC private-key operation scrubs its
+intermediates. The primitive is now there for it.

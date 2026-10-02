@@ -4,6 +4,7 @@
 #include <certpp/crypto/hashers/sha3_256.hpp>
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 
 namespace certpp {
@@ -195,6 +196,19 @@ namespace crypto {
                 return false;
             }
         }
+
+        // --> sigma and everything sampled from it reconstruct the secret key, so they are cleared
+        // before this frame is reused. rho isn't: it goes into ekPke and is public. Unlike
+        // decapsulate(), this clears only on the success path -- the early returns above all mean a
+        // hasher or sampler failed at a fixed, correct size, so none is reachable, and threading a
+        // status through the loops to cover them would cost more clarity than it buys. decapsulate()
+        // is restructured for it because clearing there is a normative FIPS 203 requirement about
+        // the reject flag rather than defence in depth.
+        CSecure::zero(SByteSpan(seeded, sizeof(seeded)));
+        CSecure::zero(SByteSpan(sigma, sizeof(sigma)));
+        CSecure::zero(SByteSpan(prfOut, sizeof(prfOut)));
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(sHat), sizeof(sHat)));
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(eHat), sizeof(eHat)));
 
         return true;
     }
@@ -403,7 +417,15 @@ namespace crypto {
             return false;
         }
 
-        return MlKemCodec::byteEncode(1, v, message);
+        const bool encoded = MlKemCodec::byteEncode(1, v, message);
+
+        // accumulator held s-hat^T * NTT(u), which is derived from the decapsulation key; v held
+        // the recovered message before it was encoded out. The loop's own sHat copies go out of
+        // scope each iteration and are not reachable from here.
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&accumulator), sizeof(accumulator)));
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&v), sizeof(v)));
+
+        return encoded;
     }
 
     /* ML-KEM.KeyGen_internal (FIPS 203 Algorithm 16). */
@@ -478,9 +500,17 @@ namespace crypto {
             return false;
         }
 
-        return kpkeEncrypt(
+        const bool encrypted = kpkeEncrypt(
             params, ek, message, SReadOnlyByteSpan(randomness, sizeof(randomness)), ciphertext
         );
+
+        // combined's first half is the message, which determines the shared secret; randomness
+        // reproduces the ciphertext from it. H(ek) in the second half is public, but clearing the
+        // whole buffer is simpler than clearing half of it and no less correct.
+        CSecure::zero(SByteSpan(combined, sizeof(combined)));
+        CSecure::zero(SByteSpan(randomness, sizeof(randomness)));
+
+        return encrypted;
     }
 
     /* ML-KEM.Decaps_internal (FIPS 203 Algorithm 18). */
@@ -508,55 +538,85 @@ namespace crypto {
         const SReadOnlyByteSpan h(dk.data + 768 * k + 32, 32);
         const SReadOnlyByteSpan z(dk.data + 768 * k + 64, 32);
 
+        // --> Single exit from here on, with every secret cleared at the bottom. FIPS 203 requires
+        // the implicit-reject flag and the values it chose between to be destroyed before this
+        // returns, and an early `return false` in the middle would skip that -- so the steps chain
+        // through `ok` instead. Each of those failures needs a hasher to fail at a fixed, correct
+        // output size, i.e. never; the structure is for the guarantee, not the likelihood.
+        //
+        // ciphertext.size is params.ciphertextBytes() and params is one of the three valid sets, so
+        // it is at most maxCiphertextBytes() -- rejectionInput and reencrypted both fit.
         uint8_t recovered[32];
-        if (!kpkeDecrypt(params, dkPke, ciphertext, SByteSpan(recovered, sizeof(recovered)))) {
-            return false;
-        }
-
         uint8_t combined[64];
-        std::memcpy(combined, recovered, 32);
-        std::memcpy(combined + 32, h.data, 32);
-
         uint8_t candidateSecret[32];
         uint8_t randomness[32];
-        if (!hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
-                   SByteSpan(candidateSecret, sizeof(candidateSecret)),
-                   SByteSpan(randomness, sizeof(randomness))))
-        {
-            return false;
-        }
-
-        // The implicit-rejection secret, derived from the private key's own z and the ciphertext.
-        // ciphertext.size is params.ciphertextBytes() and params is one of the three valid sets, so
-        // it is at most maxCiphertextBytes() -- this buffer and `reencrypted` below both fit.
         uint8_t rejectionInput[32 + SMlKemParams::maxCiphertextBytes()];
-        std::memcpy(rejectionInput, z.data, 32);
-        std::memcpy(rejectionInput + 32, ciphertext.data, ciphertext.size);
-
         uint8_t rejectionSecret[32];
-        if (!hashJ(SReadOnlyByteSpan(rejectionInput, 32 + ciphertext.size),
-                   SByteSpan(rejectionSecret, sizeof(rejectionSecret))))
-        {
-            return false;
+        uint8_t reencrypted[SMlKemParams::maxCiphertextBytes()];
+        uint8_t matches = 0;
+
+        bool ok = kpkeDecrypt(params, dkPke, ciphertext, SByteSpan(recovered, sizeof(recovered)));
+
+        if (ok) {
+            std::memcpy(combined, recovered, 32);
+            std::memcpy(combined + 32, h.data, 32);
+
+            ok = hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
+                       SByteSpan(candidateSecret, sizeof(candidateSecret)),
+                       SByteSpan(randomness, sizeof(randomness)));
         }
 
-        // --> Re-encrypt and compare. A ciphertext that does not reproduce itself yields the
-        // rejection secret rather than an error: the caller must not be able to tell the two cases
-        // apart, which is precisely what makes the FO transform chosen-ciphertext secure. Reporting
-        // failure here would hand an attacker the decryption oracle the transform exists to deny.
-        uint8_t reencrypted[SMlKemParams::maxCiphertextBytes()];
-        if (!kpkeEncrypt(
+        if (ok) {
+            // The implicit-rejection secret, derived from the private key's own z and the
+            // ciphertext -- J(z || c), the value a tampered ciphertext resolves to.
+            std::memcpy(rejectionInput, z.data, 32);
+            std::memcpy(rejectionInput + 32, ciphertext.data, ciphertext.size);
+
+            ok = hashJ(SReadOnlyByteSpan(rejectionInput, 32 + ciphertext.size),
+                       SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
+        }
+
+        if (ok) {
+            // Re-encrypt and compare. A ciphertext that does not reproduce itself yields the
+            // rejection secret rather than an error: the caller must not be able to tell the two
+            // cases apart, which is what makes the FO transform chosen-ciphertext secure.
+            // Reporting failure here would hand an attacker the decryption oracle the transform
+            // exists to deny.
+            ok = kpkeEncrypt(
                 params, ek, SReadOnlyByteSpan(recovered, sizeof(recovered)),
                 SReadOnlyByteSpan(randomness, sizeof(randomness)),
-                SByteSpan(reencrypted, ciphertext.size)))
-        {
-            return false;
+                SByteSpan(reencrypted, ciphertext.size));
         }
 
-        const bool matches = std::memcmp(reencrypted, ciphertext.data, ciphertext.size) == 0;
+        if (ok) {
+            // Both halves of this are constant-time on purpose, and neither can be written the
+            // obvious way. memcmp() stops at the first mismatch, so its running time would reveal
+            // how long a prefix of the re-encryption matched -- far more than the one bit the
+            // transform is hiding. And `matches ? a : b` branches on the verdict, which *is* that
+            // one bit. So the comparison yields a mask, and the mask drives a byte-wise select.
+            matches = CSecure::equalsMask(
+                SReadOnlyByteSpan(reencrypted, ciphertext.size), ciphertext);
 
-        std::memcpy(sharedSecret.data, matches ? candidateSecret : rejectionSecret, 32);
-        return true;
+            ok = CSecure::select(
+                matches,
+                SReadOnlyByteSpan(candidateSecret, sizeof(candidateSecret)),
+                SReadOnlyByteSpan(rejectionSecret, sizeof(rejectionSecret)),
+                sharedSecret);
+        }
+
+        // The decrypted message and the re-derived randomness matter most of these: either one
+        // reconstructs the shared secret for a *valid* ciphertext, so leaving them in a stack frame
+        // the next call reuses would undo the point of deriving them freshly each time. Only z is
+        // cleared out of rejectionInput -- the ciphertext following it is public.
+        CSecure::zero(SByteSpan(&matches, sizeof(matches)));
+        CSecure::zero(SByteSpan(recovered, sizeof(recovered)));
+        CSecure::zero(SByteSpan(combined, sizeof(combined)));
+        CSecure::zero(SByteSpan(candidateSecret, sizeof(candidateSecret)));
+        CSecure::zero(SByteSpan(randomness, sizeof(randomness)));
+        CSecure::zero(SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
+        CSecure::zero(SByteSpan(rejectionInput, 32));
+
+        return ok;
     }
 
     /* True iff ek is the right length and its encoded t-hat is canonical. */

@@ -380,6 +380,30 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   hex-parsing helpers in `CBigNum`/`CGf2m` and several `crypto/asyms/`
   implementations; `CBigNum::fromHex()`/`CGf2m::fromHex()` are now thin
   wrappers over it.
+- **`utils/secure.hpp` / `src/utils/secure.cpp`** define `CSecure`: the three
+  operations on secret bytes that cannot be written the obvious way.
+  `zero()` clears a buffer through a volatile function pointer to `memset`,
+  so the call cannot be proven ineffective and therefore cannot be removed
+  -- a plain `memset` over a local nothing reads again is dead code, and
+  MSVC at `/O2` does delete it (checked by reading the generated assembly,
+  not assumed). `equalsMask()` compares two spans reading every byte
+  whatever the outcome, returning `0xFF`/`0x00` rather than a bool, because
+  `std::memcmp` stops at the first mismatch and so leaks the matching
+  prefix's length through its running time. `select()` copies one of two
+  spans according to such a mask, so a caller can act on a comparison
+  without branching on it. There is also a convenience `equals()` returning
+  bool, for the cases where that one bit genuinely isn't sensitive.
+
+  The first consumer, and the reason it exists, is ML-KEM's
+  `decapsulate()`: the Fujisaki-Okamoto re-encryption check is exactly a
+  comparison whose outcome must not be observable, and FIPS 203 separately
+  requires the reject flag be destroyed before returning. `CSecure` does
+  **not** subsume the inline mask arithmetic in RSA's EME-PKCS1-v1_5
+  unpadding or `CbcTransformer`'s PKCS#7 check -- neither is "compare two
+  buffers" or "choose between two buffers"; both interleave masking with a
+  scan over the padding, so there is nothing here for them to call. Still
+  unapplied: no RSA, DSA or EC private-key operation scrubs its
+  intermediates yet.
 - **`utils/bignum.hpp` / `src/utils/bignum.cpp`** define `CBigNum`, an
   arbitrary-precision non-negative integer (little-endian 32-bit limbs,
   schoolbook algorithms throughout -- correctness and simplicity over
@@ -1159,6 +1183,14 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   decryption oracle the transform exists to deny. That is why `decapsulate()`
   has no failure mode for a bad ciphertext at all, only for a
   structurally wrong-sized one.
+
+  "Cannot tell the two cases apart" has to hold for timing too, so the
+  comparison is `CSecure::equalsMask` and the choice between the two secrets
+  is `CSecure::select` -- a `std::memcmp` would leak how long a prefix of
+  the re-encryption matched, and a ternary on the verdict would leak the one
+  bit that verdict is. The function has a single exit so that
+  `CSecure::zero` cannot be skipped by an error path, which is FIPS 203's
+  requirement that the reject flag be destroyed before returning.
 
   Validated against NIST's ACVP vectors for all three parameter sets,
   including the `modified ciphertext` cases that exercise that rejection path

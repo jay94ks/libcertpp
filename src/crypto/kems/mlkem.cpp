@@ -1,6 +1,7 @@
 #include <certpp/crypto/kems/mlkem.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 #include <utility>
 
@@ -169,11 +170,17 @@ namespace crypto {
                     return ERET_UNKNOWN;
                 }
 
-                if (!CMlKem::encapsulate(
-                        params, pub->span(), SReadOnlyByteSpan(message, sizeof(message)),
-                        SByteSpan(ciphertext.data, params.ciphertextBytes()),
-                        SByteSpan(sharedSecret.data, params.sharedSecretBytes())))
-                {
+                const bool encapsulated = CMlKem::encapsulate(
+                    params, pub->span(), SReadOnlyByteSpan(message, sizeof(message)),
+                    SByteSpan(ciphertext.data, params.ciphertextBytes()),
+                    SByteSpan(sharedSecret.data, params.sharedSecretBytes()));
+
+                // The message determines the shared secret outright, so it is cleared either way
+                // -- including on the failure path, where the caller gets nothing and so has no
+                // reason for it to still be here.
+                CSecure::zero(SByteSpan(message, sizeof(message)));
+
+                if (!encapsulated) {
                     return ERET_UNKNOWN;
                 }
 
@@ -279,10 +286,15 @@ namespace crypto {
             return ERET_NOMEM;
         }
 
-        if (!CMlKem::generateKeyPair(
-                _params, SReadOnlyByteSpan(seeds, 32), SReadOnlyByteSpan(seeds + 32, 32),
-                ek.toSpan(), dk.toSpan()))
-        {
+        const bool generated = CMlKem::generateKeyPair(
+            _params, SReadOnlyByteSpan(seeds, 32), SReadOnlyByteSpan(seeds + 32, 32),
+            ek.toSpan(), dk.toSpan());
+
+        // d regenerates the entire key pair and z is the implicit-rejection secret; both have
+        // served their purpose here, and z lives on inside dk where it belongs.
+        CSecure::zero(SByteSpan(seeds, sizeof(seeds)));
+
+        if (!generated) {
             return ERET_UNKNOWN;
         }
 

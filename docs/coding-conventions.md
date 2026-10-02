@@ -207,10 +207,16 @@ new styles.
   explicit per-byte loops, but every one of them indexes a `uint8_t*` taken
   once at the top.
 - The bulk-call half does **not** apply to:
-  - Constant-time/branch-free code (`CbcTransformer`'s PKCS#7 padding
-    check, the EC/EdDSA scalar-multiplication ladders) — collapsing it into
-    a data-dependent-length `memcpy`/early-exit comparison would reintroduce
-    a timing side channel. These stay as explicit, unconditional loops.
+  - Constant-time/branch-free code (`CSecure::equalsMask`/`select`,
+    `CbcTransformer`'s PKCS#7 padding check, the EC/EdDSA scalar-
+    multiplication ladders) — collapsing it into a data-dependent-length
+    `memcpy`/early-exit comparison would reintroduce a timing side channel.
+    These stay as explicit, unconditional loops. Reach for `CSecure`
+    (`utils/secure.hpp`) before writing new mask arithmetic: comparing two
+    buffers, choosing between two buffers, and clearing one are already
+    there, and `std::memcmp` on anything secret-derived is a bug rather
+    than a style question — it stops at the first mismatch, so its running
+    time leaks the matching prefix's length.
   - Element-wise combines rather than fills or copies — a CBC
     `out[i] = in[i] ^ chain[i]` is neither a `memset` nor a `memcpy`, and
     splitting it into a copy followed by an in-place XOR pass would read

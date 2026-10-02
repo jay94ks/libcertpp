@@ -9,6 +9,7 @@
 
 #include <certpp/utils/djb.hpp>
 #include <certpp/utils/hex.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/base64.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/utils/gf2m.hpp>

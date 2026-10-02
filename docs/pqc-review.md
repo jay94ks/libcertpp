@@ -505,15 +505,18 @@ Both held up in practice. `eta` is only an output length in `PRF_eta`, **not** d
 separation, so `PRF_2` and `PRF_3` on identical input share a prefix -- the implementation
 passes `eta` as a length and nothing else.
 
-One requirement from FIPS 203 is **not** met, and is recorded here rather than left implicit:
-the standard requires the implicit-reject flag and the intermediate values around it to be
-destroyed before `Decaps_internal` returns. `CMlKem::decapsulate()` leaves its `matches`
-flag, the recovered message, and both candidate secrets on the stack, because this library
-has no zeroization primitive at all -- no RSA, DSA or EC private-key operation scrubs its
-intermediates either. That makes ML-KEM consistent with the rest of the codebase rather than
-newly deficient, but it is a real gap in all of them, and the fix belongs in one place
-(a `utils/` secure-zero that resists being optimized away) rather than being hand-rolled
-here. Worth doing before any of this is used for anything real.
+FIPS 203's requirement that the implicit-reject flag and the values around it be destroyed
+before `Decaps_internal` returns is met, via `CSecure::zero()` (`utils/secure.hpp`), which
+was added for it. `decapsulate()` has a single exit so the clearing cannot be skipped by an
+error path. The same pass found and fixed something worse than the missing zeroization: the
+re-encryption check was a `std::memcmp`, which stops at the first mismatch and so leaked the
+matching prefix's length through its running time, and the verdict then drove a ternary.
+Both are now `CSecure::equalsMask` + `CSecure::select`, so neither the comparison nor the
+choice branches on anything secret.
+
+Still outstanding, beyond ML-KEM: no RSA, DSA or EC private-key operation scrubs its
+intermediates. `CSecure::zero()` is now there to be used, and applying it across those is
+worth doing before any of this is used for anything real.
 
 ### Phase 5 -- ML-DSA (a new `IAsymmetric`)
 
