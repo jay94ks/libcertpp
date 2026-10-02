@@ -17,7 +17,8 @@ strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
 (hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
 and binary curves, Ed25519, Ed448, X25519 -- symmetric ones -- AES,
 DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS 203,
-`crypto/pq/mlkem.hpp`), all from scratch); and an `x509` module that
+`crypto/pq/mlkem.hpp` for the algorithm, `crypto/kems/mlkem.hpp` for its
+`IKem` form), all from scratch); and an `x509` module that
 both parses and builds DER/PEM X.509 `Certificate`s
 (`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
 request/response (RFC 6960), including ten concrete extension types

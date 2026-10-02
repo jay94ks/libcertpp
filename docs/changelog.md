@@ -877,3 +877,52 @@ scrubs its intermediates either. ML-KEM is therefore consistent with the rest
 of the codebase rather than newly deficient — but that is a real gap in all of
 them, and the fix belongs in one shared `utils/` secure-zero rather than
 hand-rolled here. Recorded in the plan.
+
+## Post-quantum: ML-KEM as an `IKem`
+
+The other half of Phase 4, which completes it. `crypto/kem.hpp` had been
+designed and committed ahead of any lattice crypto, with `EKems` empty and
+`IKem::builtIn()` returning null for everything; it now has ML-KEM behind it
+and joins the umbrella header.
+
+`MLKEM` (`crypto/kems/mlkem.hpp`) serves all three parameter sets from one
+class with the set as constructor state — the arrangement `CEcdsa` already has
+across its curves. It implements nothing cryptographic: `CMlKem` is the
+algorithm, and this is the key objects, the size bookkeeping `IKemContext`
+exposes, and the CSPRNG draws around it.
+
+Two decisions worth recording.
+
+`keySizes()` accepts the parameter set's own number — 512, 768 or 1024 — and
+not a modulus width or a claimed security strength. Every other algorithm in
+the library has a natural size parameter (RSA's modulus, X25519's 256-bit key)
+and ML-KEM has none: the three sets differ in the module rank `k` and four
+other parameters, and those numbers are names. Using the name keeps
+`generateKeyPair(keySize, …)` usable the way every other algorithm's is,
+without inventing a figure that reads as though it meant something. The
+alternative — 128/192/256 for the NIST security categories — would have looked
+more principled and been more misleading, since nothing in the implementation
+is parameterized by it.
+
+`MLKEM` is also the only layer in the ML-KEM implementation that touches the
+CSPRNG, and that is the point of the split. `CMlKem::generateKeyPair()` and
+`encapsulate()` take their seeds and message as parameters, which is exactly
+what let them be validated against ACVP; `IKemContext::encapsulate()` has no
+such parameter, so the wrapper fills them from `CRng`. The cost is that no
+known-answer test is possible at this layer, so `tests/crypto/kems/mlkem.cpp`
+tests what the wrapper adds instead: that `encapsulate()` called four times
+against one public key gives four different ciphertexts and four different
+secrets (a secret that was a function of the key alone would be reused every
+session, and each one still decapsulates correctly), that a ciphertext for one
+key opens under another only as a *different secret* rather than an error, and
+that a tampered ciphertext returns `ERET_OK` — the Fujisaki-Okamoto
+requirement, now checked at the interface boundary as well as inside `CMlKem`.
+
+A decapsulation key embeds its own encapsulation key, so
+`IKemPrivateKey::publicKey()` reads it out at offset `dkPkeBytes()` rather
+than recomputing it. `checkPrivateKey()` and `createPrivateKey()` then verify
+that the embedded `H(ek)` agrees with that `ek`, that the linked public key is
+byte-for-byte the embedded one, and that the `ek` is canonical — rather than
+trusting any of the three, since a key reaching `createPrivateKey()` came from
+outside. Keys carry no ASN.1 wrapping at all; the SubjectPublicKeyInfo form a
+certificate needs is Phase 6.

@@ -481,13 +481,21 @@ namespace crypto {
      * Diffie-Hellman-style key agreement (no deriveSharedSecret() between two independently
      * generated key pairs) -- it's IKem::encapsulate()/decapsulate(), see kem.hpp -- so it gets
      * its own key family here rather than reusing EAsymmetrics/IAsymmetricKeyBase, the same way
-     * ESymmetrics/ISymmetricKey above don't reuse them either. Currently empty (no concrete IKem
-     * exists yet -- see docs/pqc-review.md); the first entries will be ML-KEM's three parameter
-     * sets.
+     * ESymmetrics/ISymmetricKey above don't reuse them either.
+     *
+     * The three members are ML-KEM's parameter sets (FIPS 203 Table 2), all served by the one
+     * MLKEM class (crypto/kems/mlkem.hpp) -- the same arrangement CEcdsa has across its curves.
+     * A parameter set is not a key size that can be scaled: 512/768/1024 are names, and the
+     * SKeySize each accepts is that same number rather than a modulus width or a security
+     * strength. See docs/pqc-review.md.
      */
     enum EKems {
-        EKEM_MAX = 0,   /**< Marker for the maximum value of EKems -- currently also 0, since no
-                             concrete algorithm has been added yet. */
+        EKEM_MLKEM512 = 0,      /**< ML-KEM-512 (FIPS 203), NIST security category 1 */
+        EKEM_MLKEM768,          /**< ML-KEM-768 (FIPS 203), NIST security category 3 */
+        EKEM_MLKEM1024,         /**< ML-KEM-1024 (FIPS 203), NIST security category 5 */
+
+        /**< Marker for the maximum value of EKems. */
+        EKEM_MAX,
         EKEM_UNKNOWN = 0xffffu, /**< Unknown algorithm */
     };
 

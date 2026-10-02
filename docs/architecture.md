@@ -1048,14 +1048,12 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   it's still asymmetric.
 - **`crypto/kem.hpp` / `src/crypto/kem.cpp`** define `IKem`/`IKemContext`,
   the key-encapsulation counterpart of `asym.hpp`'s
-  `IAsymmetric`/`IAsymmetricContext` -- declared but not yet implemented by
-  anything: `EKems` has no concrete enumerators (`EKEM_MAX == 0`) and
-  `IKem::builtIn()` therefore returns null for every input, and the header
-  is deliberately left out of the umbrella `certpp.hpp` until there is an
-  algorithm behind it. It was added as the interface-design step of the
-  ML-KEM groundwork in [`docs/pqc-review.md`](pqc-review.md) ahead of any
-  actual lattice-crypto implementation work -- see that document's
-  implementation plan for what fills this in. It deliberately isn't just `IAsymmetric` reused:
+  `IAsymmetric`/`IAsymmetricContext`. `IKem::builtIn()` dispatches `EKems`'
+  three members -- `EKEM_MLKEM512`/`EKEM_MLKEM768`/`EKEM_MLKEM1024` -- to
+  `MLKEM` (`crypto/kems/mlkem.hpp`, below). The interface was designed and
+  committed ahead of any lattice-crypto implementation as the first step of
+  the ML-KEM work in [`docs/pqc-review.md`](pqc-review.md), which is why it
+  mirrors `IAsymmetric` as closely as it does. It deliberately isn't just `IAsymmetric` reused:
   a KEM's core operation produces an algorithm-chosen shared secret
   *together with* the ciphertext that encapsulates it, unlike
   `createEncrypter()`'s "encrypt this caller-supplied plaintext" shape, so
@@ -1073,6 +1071,41 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   operates on the bound *private* key. `sizeOfCiphertext()`/
   `sizeOfSharedSecret()` follow the existing getter-public/setter-protected
   split `sizeOfSign()`/`sizeOfDigest()` use.
+- **`crypto/kems/mlkem.hpp` / `src/crypto/kems/mlkem.cpp`** define `MLKEM`,
+  `IKem`'s only implementation, serving all three ML-KEM parameter sets from
+  one class with the set as constructor state -- the arrangement `CEcdsa` has
+  across its curves. It implements nothing cryptographic itself: `CMlKem`
+  (below) is the algorithm, and this is the key objects, the size bookkeeping
+  `IKemContext` exposes, and the CSPRNG draws around it.
+
+  `keySizes()` accepts exactly one size per instance, and that size is the
+  parameter set's own number (512, 768 or 1024) rather than a modulus width
+  or a claimed security strength. ML-KEM has no size that scales -- the sets
+  differ in the module rank `k` and four other parameters, and those three
+  numbers are names. Passing the name keeps `generateKeyPair()` usable the
+  way every other algorithm in the library is, without inventing a figure
+  that looks like it means something it doesn't.
+
+  Keys serialize as FIPS 203's own encodings and nothing more: a public key
+  is the encapsulation key, a private key the decapsulation key. Since a
+  decapsulation key embeds its own encapsulation key at offset
+  `dkPkeBytes()`, `IKemPrivateKey::publicKey()` reads it out rather than
+  recomputing it, and `checkPrivateKey()` verifies the two agree (plus the
+  embedded `H(ek)`, plus that the `ek` is canonical) rather than assuming
+  so. `createPublicKey()`/`createPrivateKey()` apply the same checks, since
+  a key reaching them came from outside. The SubjectPublicKeyInfo wrapping a
+  certificate needs is Phase 6 of [`docs/pqc-review.md`](pqc-review.md), not
+  here.
+
+  This is also the only layer in the ML-KEM implementation that draws
+  randomness. `CMlKem::generateKeyPair()`/`encapsulate()` take their seeds
+  and message as parameters so they can be driven from a test vector;
+  `IKemContext::encapsulate()` has no such parameter, so `MLKEM` fills them
+  from `CRng` -- which also means there is no known-answer test to be had at
+  this layer, and `tests/crypto/kems/mlkem.cpp` covers what the wrapper adds
+  rather than the algorithm (asserting, among other things, that repeated
+  `encapsulate()` calls against one key differ, since a shared secret that
+  was a function of the key alone would be reused every session).
 - **`crypto/pq/mlkem.hpp` / `src/crypto/pq/mlkem.cpp`** implement ML-KEM
   (FIPS 203) and the K-PKE scheme underneath it, over raw byte spans. This is
   the algorithm itself, with no opinion about key objects or contexts, so it

@@ -38,11 +38,10 @@ is used by the test suite only).
     for SHA-1/SHA-256, AES-NI for AES -- each with a portable fallback and
     a CMake option to force the portable path.
   - Post-quantum cryptography: ML-KEM (FIPS 203) for all three parameter
-    sets -- `CMlKem` in `crypto/pq/mlkem.hpp`, validated against NIST's
-    ACVP vectors. The `IKem`/`IKemContext` interface it will be exposed
-    through is drafted but not yet wired up, so ML-KEM is reachable only
-    through its own raw-span API for now. See
-    [`docs/pqc-review.md`](docs/pqc-review.md) for the plan and its state.
+    sets, validated against NIST's ACVP vectors -- reachable either as
+    `IKem::builtIn(EKEM_MLKEM768)` like every other algorithm here, or as
+    the raw-span `CMlKem` (which also exposes K-PKE and the samplers). See
+    [`docs/pqc-review.md`](docs/pqc-review.md) for what is planned next.
 - **`x509`** -- parses and builds/self-signs a DER X.509 `Certificate`
   (`CCert`/`CCertBuilder`), parses/builds a `CertificateList`/CRL, and
   parses/builds OCSP request/response (RFC 6960), including ten concrete

@@ -43,6 +43,7 @@
 #include <certpp/crypto/ec2curve.hpp>
 #include <certpp/crypto/transform.hpp>
 #include <certpp/crypto/asym.hpp>
+#include <certpp/crypto/kem.hpp>
 #include <certpp/crypto/pq/mlkem.hpp>
 #include <certpp/crypto/sym.hpp>
 #include <certpp/crypto/asyms/rsa.hpp>
@@ -52,6 +53,7 @@
 #include <certpp/crypto/asyms/ed25519.hpp>
 #include <certpp/crypto/asyms/ed448.hpp>
 #include <certpp/crypto/asyms/x25519.hpp>
+#include <certpp/crypto/kems/mlkem.hpp>
 #include <certpp/crypto/syms/aes.hpp>
 #include <certpp/crypto/syms/des.hpp>
 #include <certpp/crypto/syms/des3.hpp>
