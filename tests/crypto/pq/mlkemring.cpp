@@ -34,7 +34,7 @@ using namespace certpp::crypto;
 
 namespace {
 
-    using Poly = MlKemRing::Poly;
+    using Poly = SMlKemPoly;
 
     constexpr int32_t Q = MlKemRing::Q;
     constexpr size_t N = MlKemRing::N;

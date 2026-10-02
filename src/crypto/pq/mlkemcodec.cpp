@@ -4,7 +4,7 @@ namespace certpp {
 namespace crypto {
 
     /* Packs 256 d-bit coefficients into 32*d bytes. */
-    bool MlKemCodec::byteEncode(size_t d, const MlKemRing::Poly& poly, const SByteSpan& out) {
+    bool MlKemCodec::byteEncode(size_t d, const SMlKemPoly& poly, const SByteSpan& out) {
         if (d < 1 || d > 12) {
             return false;
         }
@@ -23,7 +23,7 @@ namespace crypto {
         // dst[b / 8] at position b % 8 -- little-endian within the byte. Coefficients run
         // contiguously, so for d of 10/11/12 one coefficient spans two or three bytes; writing
         // bit by bit keeps that straddling correct without any special cases.
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             const uint32_t value = uint32_t(poly.coeffs[i]);
 
             for (size_t j = 0; j < d; ++j) {
@@ -38,7 +38,7 @@ namespace crypto {
     }
 
     /* Unpacks 32*d bytes into 256 coefficients. */
-    bool MlKemCodec::byteDecode(size_t d, const SReadOnlyByteSpan& in, MlKemRing::Poly& out) {
+    bool MlKemCodec::byteDecode(size_t d, const SReadOnlyByteSpan& in, SMlKemPoly& out) {
         if (d < 1 || d > 12) {
             return false;
         }
@@ -50,7 +50,7 @@ namespace crypto {
 
         const uint8_t* src = in.data;
 
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             uint32_t value = 0;
 
             for (size_t j = 0; j < d; ++j) {
@@ -81,7 +81,7 @@ namespace crypto {
 
         const uint8_t* src = in.data;
 
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             uint32_t value = 0;
 
             for (size_t j = 0; j < 12; ++j) {
@@ -89,7 +89,7 @@ namespace crypto {
                 value |= ((src[bit >> 3] >> (bit & 7u)) & 1u) << j;
             }
 
-            if (value >= uint32_t(MlKemRing::Q)) {
+            if (value >= uint32_t(SMlKemPoly::MODULUS)) {
                 return false;
             }
         }
@@ -98,15 +98,15 @@ namespace crypto {
     }
 
     /* Rounds each coefficient down to d bits, in place. */
-    bool MlKemCodec::compress(size_t d, MlKemRing::Poly& poly) {
+    bool MlKemCodec::compress(size_t d, SMlKemPoly& poly) {
         if (d < 1 || d > 11) {
             return false;
         }
 
         const int64_t twoToD = int64_t(1) << d;
-        const int64_t q = int64_t(MlKemRing::Q);
+        const int64_t q = int64_t(SMlKemPoly::MODULUS);
 
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             const int64_t x = int64_t(poly.coeffs[i]);
 
             // --> round(x * 2^d / q) with ties upward, done in integers: (2*x*2^d + q) / (2*q).
@@ -123,14 +123,14 @@ namespace crypto {
     }
 
     /* Expands each d-bit coefficient back into [0, Q), in place. */
-    bool MlKemCodec::decompress(size_t d, MlKemRing::Poly& poly) {
+    bool MlKemCodec::decompress(size_t d, SMlKemPoly& poly) {
         if (d < 1 || d > 11) {
             return false;
         }
 
-        const int64_t q = int64_t(MlKemRing::Q);
+        const int64_t q = int64_t(SMlKemPoly::MODULUS);
 
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             const int64_t y = int64_t(poly.coeffs[i]);
 
             // round(y * q / 2^d), ties upward -- exact, since the denominator is a power of two.

@@ -21,8 +21,8 @@ is used by the test suite only).
   reader/writer wrappers, and `CDer`'s arbitrary-precision `INTEGER`/
   `SEQUENCE` DER helpers.
 - **`crypto`**:
-  - Hashing: MD5, SHA-1, SHA-224/256/384/512, SHAKE128, SHAKE256 -- all
-    from scratch.
+  - Hashing: MD5, SHA-1, SHA-224/256/384/512, SHA3-256, SHA3-512,
+    SHAKE128, SHAKE256 -- all from scratch.
   - A CSPRNG (`CRng`), backed directly by the OS (`BCryptGenRandom` on
     Windows, `getrandom(2)`/`/dev/urandom` on Linux, `/dev/urandom` on
     other POSIX platforms).
@@ -37,9 +37,12 @@ is used by the test suite only).
     ADX/BMI2 for big-number math, PCLMULQDQ for binary-field math, SHA-NI
     for SHA-1/SHA-256, AES-NI for AES -- each with a portable fallback and
     a CMake option to force the portable path.
-  - Post-quantum cryptography groundwork: a design review and a draft
-    `IKem`/`IKemContext` interface (not yet implemented) -- see
-    [`docs/pqc-review.md`](docs/pqc-review.md).
+  - Post-quantum cryptography: ML-KEM (FIPS 203) for all three parameter
+    sets -- `CMlKem` in `crypto/pq/mlkem.hpp`, validated against NIST's
+    ACVP vectors. The `IKem`/`IKemContext` interface it will be exposed
+    through is drafted but not yet wired up, so ML-KEM is reachable only
+    through its own raw-span API for now. See
+    [`docs/pqc-review.md`](docs/pqc-review.md) for the plan and its state.
 - **`x509`** -- parses and builds/self-signs a DER X.509 `Certificate`
   (`CCert`/`CCertBuilder`), parses/builds a `CertificateList`/CRL, and
   parses/builds OCSP request/response (RFC 6960), including ten concrete

@@ -20,8 +20,8 @@
 - **`asn1`** -- 태그 인코딩/디코딩, TLV 디코더/인코더, 순차 리더/라이터
   래퍼, 그리고 임의 정밀도 `INTEGER`/`SEQUENCE` DER 헬퍼인 `CDer`.
 - **`crypto`**:
-  - 해시: MD5, SHA-1, SHA-224/256/384/512, SHAKE128, SHAKE256 -- 모두
-    밑바닥부터 구현.
+  - 해시: MD5, SHA-1, SHA-224/256/384/512, SHA3-256, SHA3-512, SHAKE128,
+    SHAKE256 -- 모두 밑바닥부터 구현.
   - CSPRNG(`CRng`) -- OS가 제공하는 난수 생성기를 직접 사용 (Windows에서는
     `BCryptGenRandom`, Linux에서는 `getrandom(2)`/`/dev/urandom`, 그 외
     POSIX 플랫폼에서는 `/dev/urandom`).
@@ -36,9 +36,12 @@
     큰 수 연산용 ADX/BMI2, 이진체 연산용 PCLMULQDQ, SHA-1/SHA-256용
     SHA-NI, AES용 AES-NI -- 각각 소프트웨어 폴백과, 소프트웨어 경로를
     강제하는 CMake 옵션을 함께 제공합니다.
-  - 양자내성 암호화(PQC) 사전 작업: 설계 검토 문서와 (아직 구현되지 않은)
-    `IKem`/`IKemContext` 인터페이스 초안 -- 자세한 내용은
-    [`docs/pqc-review.md`](docs/pqc-review.md) 참고.
+  - 양자내성 암호화(PQC): 세 가지 매개변수 집합 전체에 대한
+    ML-KEM(FIPS 203) -- `crypto/pq/mlkem.hpp`의 `CMlKem`이며, NIST ACVP
+    벡터로 검증했습니다. 이를 노출할 `IKem`/`IKemContext` 인터페이스는
+    초안 상태로 아직 연결되지 않았으므로, 현재 ML-KEM은 자체 스팬 기반
+    API로만 사용할 수 있습니다. 계획과 진행 상황은
+    [`docs/pqc-review.md`](docs/pqc-review.md)(영문) 참고.
 - **`x509`** -- DER 인코딩된 X.509 `Certificate`를 파싱하고 빌드/자체
   서명(`CCert`/`CCertBuilder`)하며, `CertificateList`/CRL을 파싱·빌드하고,
   OCSP 요청/응답(RFC 6960)을 파싱·빌드합니다. 10종의 구체적인 확장 타입

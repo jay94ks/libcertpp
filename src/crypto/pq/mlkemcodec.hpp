@@ -38,7 +38,7 @@ namespace crypto {
          * @param out Destination, which must be exactly 32*d bytes.
          * @return true on success; false if d is out of range or out is the wrong size.
          */
-        static bool byteEncode(size_t d, const MlKemRing::Poly& poly, const SByteSpan& out);
+        static bool byteEncode(size_t d, const SMlKemPoly& poly, const SByteSpan& out);
 
         /**
          * Unpacks 32*d bytes into 256 coefficients (FIPS 203 Algorithm 6). For d < 12 each value
@@ -49,7 +49,7 @@ namespace crypto {
          * @param out Receives the unpacked coefficients.
          * @return true on success; false if d is out of range or in is the wrong size.
          */
-        static bool byteDecode(size_t d, const SReadOnlyByteSpan& in, MlKemRing::Poly& out);
+        static bool byteDecode(size_t d, const SReadOnlyByteSpan& in, SMlKemPoly& out);
 
         /**
          * Reports whether every 12-bit segment of a d=12 encoding is a valid field element, i.e.
@@ -70,7 +70,7 @@ namespace crypto {
          * @param poly Polynomial to compress in place.
          * @return true on success; false if d is out of range.
          */
-        static bool compress(size_t d, MlKemRing::Poly& poly);
+        static bool compress(size_t d, SMlKemPoly& poly);
 
         /**
          * Expands each d-bit coefficient back into [0, Q) in place (FIPS 203 Algorithm 4):
@@ -81,7 +81,7 @@ namespace crypto {
          * @param poly Polynomial to decompress in place.
          * @return true on success; false if d is out of range.
          */
-        static bool decompress(size_t d, MlKemRing::Poly& poly);
+        static bool decompress(size_t d, SMlKemPoly& poly);
     };
 
 } // namespace crypto

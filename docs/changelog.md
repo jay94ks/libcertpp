@@ -797,3 +797,83 @@ spec traps worth knowing before writing either algorithm — ML-KEM's `G(d||k)`
 parameter byte and transposed `SampleNTT` indices, ML-DSA's hint-decode
 rejection conditions and Appendix C loop bounds — are written into their
 phases rather than left to be rediscovered.
+
+## Post-quantum: ML-KEM itself (FIPS 203)
+
+The first half of [`pqc-review.md`](pqc-review.md)'s Phase 4 — the algorithm,
+validated against NIST's vectors. The `IKem` wrapper that makes it reachable
+through the library's own interface vocabulary is the other half, still to do.
+
+`crypto/pq/mlkem.hpp` publishes `CMlKem` (K-PKE, Algorithms 13–15, and the
+Fujisaki-Okamoto transform over it, Algorithms 16–18), `SMlKemParams`,
+`CMlKemSampler` and `SMlKemPoly`. The samplers and the parameter/polynomial
+types were private under `src/` while they were only substrate; they moved to
+a public header because the raw-span form turns out to be the useful one on
+its own — it can be driven straight from a test vector, which the
+`IKem`-shaped API cannot, and it is what a caller who already owns its buffers
+or wants K-PKE rather than the KEM would reach for.
+
+`decapsulate()` is where all the subtlety sits. It re-encrypts what it
+decrypted and compares against the ciphertext it was handed; on a mismatch it
+returns `J(z || c)`, derived from the private key's own rejection seed, rather
+than an error. So a malformed ciphertext produces a well-formed but unrelated
+shared secret and the caller cannot tell the two cases apart. Reporting failure
+there, or skipping the re-encryption, would hand back exactly the decryption
+oracle the transform exists to deny — which is why the function has no failure
+mode for a bad ciphertext at all, only for a structurally wrong-sized one.
+ACVP publishes an expected shared secret for its `modified ciphertext` records
+for the same reason: implicit rejection is a defined output, not an error path.
+
+### A hole the promotion opened
+
+Making `SMlKemParams` public made it a caller-supplied value, and `CMlKem`
+sizes its fixed-capacity buffers from `MAX_K` and `maxCiphertextBytes()`. A
+hand-built `SMlKemParams{9, …}` would therefore have overflowed every one of
+them. While the struct lived under `src/` this was fine — only the library's
+own code constructed it — and nothing about moving the header changes the
+arithmetic, which is exactly why it was easy to miss.
+
+`SMlKemParams::isValid()` now reports whether a set is one of FIPS 203's three,
+and all eight `CMlKem` entry points call it before deriving anything at all
+from `params`. Restricting to the three published sets rather than
+range-checking each field is both safer and more honest: there is no fourth
+set, and `k ≤ 4` alone would still admit `du`/`dv` wide enough to overrun the
+ciphertext buffer. The test case sizes every span correctly *for the bogus set*
+so the length checks cannot be what rejects them, and `maxCiphertextBytes()` is
+derived from `mlKem1024()` rather than written as 1568, which also removed the
+last two hand-written sizes from the implementation.
+
+### Testing
+
+`tests/crypto/pq/mlkem.cpp` embeds ACVP keyGen, encapsulation and
+decapsulation records for all three parameter sets, plus the
+`encapsulationKeyCheck` ("noisy linear system values too large") and
+`decapsulationKeyCheck` ("modified H") negative records. FIPS 203 publishes no
+worked examples and no intermediate values, so these vectors are the only
+external oracle that exists — and ML-KEM needs one badly, because at least
+three of its details (the `k` byte in `G(d || k)`, the transposed indices in
+`SampleNTT(ρ || j || i)`, `ByteDecode_12`'s reduction mod q) yield a scheme
+that is perfectly self-consistent when implemented wrongly and interoperates
+with nothing. No round-trip test can see any of them.
+
+FIPS 203 Table 2's sizes are pinned with `static_assert` rather than run-time
+checks, since `SMlKemParams` derives all of them at compile time. The keyGen
+vectors do double duty as K-PKE.KeyGen vectors: ML-KEM's key generation is
+K-PKE's with `H(ek)` and `z` appended, so the same record pins both.
+
+The whole thing was validated the way the ring arithmetic was — a standalone
+Python implementation written from the specification text first, which matched
+all 180 ACVP vectors byte-exactly before any C++ existed. As a negative
+control afterwards, changing `G(d || k)`'s domain-separation byte by one broke
+12 assertions across two test cases, confirming the vectors actually bite on
+the detail they exist to catch.
+
+### Noted but not fixed
+
+FIPS 203 requires the implicit-reject flag and the values around it to be
+destroyed before `Decaps_internal` returns. They are not: this library has no
+zeroization primitive at all, and no RSA, DSA or EC private-key operation
+scrubs its intermediates either. ML-KEM is therefore consistent with the rest
+of the codebase rather than newly deficient — but that is a real gap in all of
+them, and the fix belongs in one shared `utils/` secure-zero rather than
+hand-rolled here. Recorded in the plan.

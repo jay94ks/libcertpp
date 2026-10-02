@@ -1,4 +1,5 @@
-#include "mlkemsampler.hpp"
+#include <certpp/crypto/pq/mlkem.hpp>
+#include "mlkemring.hpp"
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <cstring>
 
@@ -6,9 +7,9 @@ namespace certpp {
 namespace crypto {
 
     /* Rejection-samples a uniform NTT-domain polynomial from SHAKE128(seed || i || j). */
-    bool MlKemSampler::sampleNtt(
+    bool CMlKemSampler::sampleNtt(
         const SReadOnlyByteSpan& seed, uint8_t firstIndex, uint8_t secondIndex,
-        MlKemRing::Poly& out
+        SMlKemPoly& out
     ) {
         if (seed.size != 32 || !seed.data) {
             return false;
@@ -30,7 +31,7 @@ namespace crypto {
         // is no length to ask finish() for. A bound here would be a correctness bug, not a
         // safeguard, so the loop runs until 256 coefficients are accepted.
         size_t accepted = 0;
-        while (accepted < MlKemRing::N) {
+        while (accepted < SMlKemPoly::COEFFICIENTS) {
             uint8_t chunk[3];
             if (!xof.squeeze(SByteSpan(chunk, sizeof(chunk)))) {
                 return false;
@@ -41,12 +42,12 @@ namespace crypto {
 
             // Order matters: d1 is offered before d2, and skipping a rejected d1 must not skip
             // the d2 that shares its three bytes.
-            if (d1 < uint32_t(MlKemRing::Q)) {
+            if (d1 < uint32_t(SMlKemPoly::MODULUS)) {
                 out.coeffs[accepted] = int16_t(d1);
                 ++accepted;
             }
 
-            if (d2 < uint32_t(MlKemRing::Q) && accepted < MlKemRing::N) {
+            if (d2 < uint32_t(SMlKemPoly::MODULUS) && accepted < SMlKemPoly::COEFFICIENTS) {
                 out.coeffs[accepted] = int16_t(d2);
                 ++accepted;
             }
@@ -56,8 +57,8 @@ namespace crypto {
     }
 
     /* Samples from the centered binomial distribution with parameter eta. */
-    bool MlKemSampler::samplePolyCbd(
-        size_t eta, const SReadOnlyByteSpan& prfOutput, MlKemRing::Poly& out
+    bool CMlKemSampler::samplePolyCbd(
+        size_t eta, const SReadOnlyByteSpan& prfOutput, SMlKemPoly& out
     ) {
         if (eta < 1 || eta > 3) {
             return false;
@@ -74,7 +75,7 @@ namespace crypto {
         // Coefficient i consumes bits [2*i*eta, 2*i*eta + 2*eta): the first eta are summed into x,
         // the next eta into y, and the coefficient is x - y -- so it lies in [-eta, eta] and is
         // centered on zero, which is the whole point of the distribution.
-        for (size_t i = 0; i < MlKemRing::N; ++i) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             const size_t base = 2 * i * eta;
 
             int32_t x = 0;

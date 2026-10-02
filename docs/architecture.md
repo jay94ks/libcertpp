@@ -1073,6 +1073,75 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   operates on the bound *private* key. `sizeOfCiphertext()`/
   `sizeOfSharedSecret()` follow the existing getter-public/setter-protected
   split `sizeOfSign()`/`sizeOfDigest()` use.
+- **`crypto/pq/mlkem.hpp` / `src/crypto/pq/mlkem.cpp`** implement ML-KEM
+  (FIPS 203) and the K-PKE scheme underneath it, over raw byte spans. This is
+  the algorithm itself, with no opinion about key objects or contexts, so it
+  can be driven straight from a test vector; the `IKem`/`IKemContext` shape
+  above is what most callers should prefer once it is wired up, and sits on
+  top of this. The header publishes four types:
+  - `SMlKemPoly`, one element of R_q = Z_q[X]/(X^256+1) as 256 `int16_t`
+    coefficients, carrying `COEFFICIENTS`/`MODULUS`/`ROOT_OF_UNITY`. The same
+    layout also holds NTT-domain values, which are 128 degree-1 blocks rather
+    than a polynomial; FIPS 203 doesn't distinguish the two in its data types
+    either, so which one an instance holds is the caller's to track.
+  - `SMlKemParams`, one of FIPS 203 Table 2's three parameter sets as
+    `{k, eta1, eta2, du, dv}` plus `mlKem512()`/`mlKem768()`/`mlKem1024()`.
+    Only those five figures are stored; `ekBytes()`/`dkBytes()`/
+    `dkPkeBytes()`/`ciphertextBytes()`/`sharedSecretBytes()`/`seedBytes()`
+    all derive from them, and `tests/crypto/pq/mlkem.cpp` pins the derived
+    results against the published table with `static_assert`. A mistyped key
+    length is exactly the error that stays internally consistent -- an
+    implementation using the wrong `ek` length throughout still round-trips
+    with itself -- so the sizes are made impossible to write down wrongly.
+    `isValid()` reports whether the set is one of the three, and `equals()`
+    compares two; every `CMlKem` entry point calls `isValid()` first and
+    refuses otherwise. That is a memory-safety requirement rather than
+    pedantry: `SMlKemParams` is public, so a caller can hand over a
+    hand-built set, while the implementation sizes its fixed-capacity buffers
+    from `MAX_K` and `maxCiphertextBytes()`.
+  - `CMlKemSampler`, FIPS 203's two samplers: `sampleNtt()` (Algorithm 7,
+    rejection-sampling a uniform NTT-domain polynomial from a SHAKE128
+    stream) and `samplePolyCbd()` (Algorithm 8, turning PRF output into the
+    small-coefficient noise Module-LWE needs). `sampleNtt()` appends its two
+    index bytes in the order given, because FIPS 203's matrix expansion calls
+    it as `SampleNTT(rho || j || i)` -- transposed relative to the natural
+    loop order, which the standard's own margin note flags.
+  - `CMlKem`, the scheme: `generateKeyPair()`/`encapsulate()`/
+    `decapsulate()` (Algorithms 16-18), `checkEncapsulationKey()`/
+    `checkDecapsulationKey()` (the FIPS 203 6.2 input checks), and
+    `kpkeKeyGen()`/`kpkeEncrypt()`/`kpkeDecrypt()` (Algorithms 13-15).
+    `encapsulate()` takes the 32-byte message explicitly rather than drawing
+    it, so it is reproducible from a vector -- which means a caller outside
+    the tests must pass fresh CSPRNG output, since reusing a message reuses
+    the shared secret.
+
+  The subtlety is all in `decapsulate()`. ML-KEM is the Fujisaki-Okamoto
+  transform over K-PKE, which is what lifts an IND-CPA scheme to IND-CCA2:
+  it re-encrypts what it decrypted and compares against the ciphertext it was
+  given, and on a mismatch returns `J(z || ciphertext)` -- a secret derived
+  from the private key's own rejection seed -- rather than an error. A
+  malformed ciphertext therefore yields a well-formed but unrelated shared
+  secret, and the caller cannot tell the two cases apart. Reporting failure
+  there, or skipping the re-encryption, would hand back exactly the
+  decryption oracle the transform exists to deny. That is why `decapsulate()`
+  has no failure mode for a bad ciphertext at all, only for a
+  structurally wrong-sized one.
+
+  Validated against NIST's ACVP vectors for all three parameter sets,
+  including the `modified ciphertext` cases that exercise that rejection path
+  and the `encapsulationKeyCheck`/`decapsulationKeyCheck` negative cases --
+  see `tests/crypto/pq/mlkem.cpp`. FIPS 203 publishes no worked examples, so
+  those vectors are the only external oracle available.
+- **`src/crypto/pq/mlkemring.hpp`/`.cpp`, `src/crypto/pq/mlkemcodec.hpp`/
+  `.cpp`** hold the arithmetic and wire encoding `CMlKem` is built from:
+  `MlKemRing` (NTT, inverse NTT, base-case multiply over R_q, plus a
+  schoolbook negacyclic multiply that exists only to check the others) and
+  `MlKemCodec` (ByteEncode/ByteDecode, Compress/Decompress, `isCanonical12`).
+  Both stay private to `src/` -- plain `PascalCase`, no `CERTPP_API` -- since
+  nothing outside the ML-KEM implementation has a reason to reach them, and
+  `SMlKemPoly` is the one type they share with the public header. Because
+  they aren't exported, a test under `tests/crypto/pq/` compiles them into its
+  own executable; see [`docs/build.md`](build.md).
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via

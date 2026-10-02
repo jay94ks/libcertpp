@@ -15,18 +15,21 @@ appended at the end.
 | `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared**; `IKem::builtIn()` defined in `src/crypto/kem.cpp` and returns null, since `EKems` has no concrete members yet. Deliberately not in `certpp.hpp` until an algorithm is behind it |
 | Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
 | ML-KEM ring arithmetic (`src/crypto/pq/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
-| ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/pq/mlkemcodec.hpp`, `mlkemsampler.hpp`; pinned against an independent model by whole-array checksum |
+| ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/pq/mlkemcodec.hpp`; the samplers are now public as `CMlKemSampler` (`crypto/pq/mlkem.hpp`); pinned against an independent model by whole-array checksum |
 | SHA3-256 / SHA3-512 (ML-KEM's H and G) | **done** -- a prerequisite this plan had missed; the library had SHAKE but no fixed-output SHA-3 |
+| ML-KEM, the algorithm (`crypto/pq/mlkem.hpp`: `CMlKem`, `SMlKemParams`, `SMlKemPoly`) | **done** -- K-PKE plus the FO transform over raw spans, validated against ACVP for all three parameter sets including the implicit-rejection and key-check negative cases |
+| ML-KEM as an `IKem` (`crypto/kems/mlkem.hpp`, `EKEM_MLKEM512/768/1024`) | not started -- the rest of Phase 4; `EKems` still has no concrete members, so `IKem::builtIn()` still returns null |
 | ML-DSA ring arithmetic (q=8380417) | not started |
-| ML-KEM | not started |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
 
-So Phases 1-3 are complete for ML-KEM and the next step is ML-KEM itself (Phase 4): K-PKE,
-then the Fujisaki-Okamoto transform over it. One thing the "declared" row above still
-implies: `EKems` has no concrete enumerators yet (`EKEM_MAX = 0`), so `IKem::builtIn()` has
-nothing to dispatch to and correctly returns null for every input. Phase 4 gives it its first
-member, and is also where `crypto/kem.hpp` joins the umbrella header.
+So Phases 1-3 are complete, and Phase 4 is half done: the algorithm exists and matches NIST's
+vectors, but nothing in the library's own interface vocabulary reaches it yet. `CMlKem` is
+driven by raw byte spans, which is what let it be validated straight from a test vector;
+`EKems` still has no concrete enumerators (`EKEM_MAX = 0`), so `IKem::builtIn()` has nothing
+to dispatch to and correctly returns null for every input. The remainder of Phase 4 wraps
+`CMlKem` in `IKem`/`IKemContext`, gives `EKems` its first three members, and is where
+`crypto/kem.hpp` joins the umbrella header -- `crypto/pq/mlkem.hpp` is already in it.
 
 ## Why this matters for libcertpp specifically
 
@@ -438,23 +441,51 @@ independently of how the implementation builds it. **Done for ML-KEM's ring** --
 `tests/crypto/pq/mlkemring.cpp`, and note `CMakeLists.txt` compiles `src/crypto/pq/` straight
 into those tests, since the lattice arithmetic has no public API and so is not exported.
 
-### Phase 4 -- ML-KEM (`IKem`'s first implementation)
+### Phase 4 -- ML-KEM (`IKem`'s first implementation) -- **algorithm done, interface remaining**
+
+The algorithm is finished and validated; what is left is the library-interface layer on
+top of it.
+
+Done:
+
+- `include/certpp/crypto/pq/mlkem.hpp` + `src/crypto/pq/mlkem.cpp` hold `CMlKem`: K-PKE
+  (Algorithms 13-15) and the FO transform over it (Algorithms 16-18), with **implicit
+  rejection** -- a malformed ciphertext yields `J(z || c)`, a key-derived pseudorandom
+  secret, and `decapsulate()` has no failure mode for a bad ciphertext at all. Plus
+  `SMlKemParams` (the three parameter sets, with every size derived from the five tabulated
+  figures) and `CMlKemSampler`/`SMlKemPoly`, promoted out of `src/` because the raw-span
+  form is useful on its own -- for interoperability testing, for a caller that already owns
+  its buffers, and for anyone who wants K-PKE rather than the KEM.
+- Gate met: `tests/crypto/pq/mlkem.cpp` drives ACVP keyGen/encapsulation/decapsulation
+  vectors for all three parameter sets, including the `modified ciphertext` records (whose
+  expected shared secret ACVP publishes, because implicit rejection is a defined output
+  rather than an error path) and the `encapsulationKeyCheck`/`decapsulationKeyCheck`
+  negative records. A separate round-trip case flips one ciphertext bit and asserts
+  decapsulation still succeeds, returns a different secret, and returns the *same* different
+  secret when asked twice.
+- `SMlKemParams::isValid()`, which every `CMlKem` entry point calls first. Publishing the
+  parameter struct means a caller can hand over a set the standard never defined, and the
+  implementation sizes fixed-capacity buffers from `MAX_K`/`maxCiphertextBytes()` -- so
+  anything but the three FIPS 203 sets has to be refused before a single size is derived
+  from it. A test case checks all eight entry points reject one, with every span sized
+  correctly *for the bogus set* so the length checks cannot be what rejects them.
+
+Remaining:
 
 - `include/certpp/crypto/kems/mlkem.hpp` + `src/crypto/kems/mlkem.cpp`, mirroring how
   `crypto/asyms/` holds one file per `IAsymmetric`. `EKems` gains `EKEM_MLKEM512`,
-  `EKEM_MLKEM768`, `EKEM_MLKEM1024`; `IKem::builtIn()` dispatches them.
-- K-PKE (the underlying public-key encryption) first, then the FO transform on top:
-  keygen, encapsulate, decapsulate with **implicit rejection** -- a malformed ciphertext
-  must yield a key-derived pseudorandom shared secret, indistinguishable in both value and
-  timing from success. Private `MlKemPublicKey`/`MlKemPrivateKey` implement
-  `IKemPublicKey`/`IKemPrivateKey`.
+  `EKEM_MLKEM768`, `EKEM_MLKEM1024`; `IKem::builtIn()` dispatches them. Private
+  `MlKemPublicKey`/`MlKemPrivateKey` implement `IKemPublicKey`/`IKemPrivateKey`, over
+  `CMlKem` rather than reimplementing anything.
+- This is also where the CSPRNG enters. `CMlKem::generateKeyPair()`/`encapsulate()` take
+  their seeds and message as parameters, which is what makes them reproducible from a
+  vector; `IKemContext::encapsulate()` has no such parameter, so the wrapper draws from
+  `CRng` and is the only layer that does.
 - Keys serialize as FIPS 203's own byte encodings. The SubjectPublicKeyInfo wrapping for
   certificates is Phase 6, not here.
-- Gate: ACVP keygen/encapDecap vectors for all three parameter sets, plus a
-  wrong-ciphertext test asserting decapsulation returns a *different but well-formed*
-  secret rather than an error.
+- `crypto/kem.hpp` joins `certpp.hpp` once `EKems` has members behind it.
 
-Three details here are easy to get wrong and expensive to discover late:
+Three details here were easy to get wrong and expensive to discover late:
 
 - **`G(d || k)`, not `G(d)`** (Alg. 13 step 1): the parameter-set byte `k` in {2,3,4} is
   appended as byte 33. This was added *after* FIPS 203's initial public draft, so round-3
@@ -469,10 +500,19 @@ Three details here are easy to get wrong and expensive to discover late:
   `reason: "noisy linear system values too large"`. `decapsulationKeyCheck` failures instead
   use `reason: "modified H"`, the embedded `SHA3-256(ek)` field.
 
-Also worth noting while implementing: `eta` is only an output length in `PRF_eta`, **not**
-domain separation, so `PRF_2` and `PRF_3` on identical input share a prefix. And FIPS 203
-requires the implicit-reject flag to be destroyed before `Decaps_internal` returns, and never
-exposed in any form.
+Both held up in practice. `eta` is only an output length in `PRF_eta`, **not** domain
+separation, so `PRF_2` and `PRF_3` on identical input share a prefix -- the implementation
+passes `eta` as a length and nothing else.
+
+One requirement from FIPS 203 is **not** met, and is recorded here rather than left implicit:
+the standard requires the implicit-reject flag and the intermediate values around it to be
+destroyed before `Decaps_internal` returns. `CMlKem::decapsulate()` leaves its `matches`
+flag, the recovered message, and both candidate secrets on the stack, because this library
+has no zeroization primitive at all -- no RSA, DSA or EC private-key operation scrubs its
+intermediates either. That makes ML-KEM consistent with the rest of the codebase rather than
+newly deficient, but it is a real gap in all of them, and the fix belongs in one place
+(a `utils/` secure-zero that resists being optimized away) rather than being hand-rolled
+here. Worth doing before any of this is used for anything real.
 
 ### Phase 5 -- ML-DSA (a new `IAsymmetric`)
 

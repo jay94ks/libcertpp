@@ -119,10 +119,15 @@ if(CERTPP_BUILD_TESTS)
         # CbcTransformer are (via ISymmetric/IHasher). This is the exception for code that has no
         # public surface to be reached through yet, not a general licence to test internals.
         if(CERTPP_TEST_REL MATCHES "^crypto/pq/")
-            file(GLOB CERTPP_PQ_SOURCES CONFIGURE_DEPENDS
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/*.cpp
+            # Listed rather than globbed, and deliberately *not* including mlkem.cpp or
+            # mlkemsampler.cpp: those implement the exported CMlKem/CMlKemSampler, so compiling
+            # them here as well would define symbols the test already imports from certpp. Only
+            # the units with no public header belong in this list, and a new one has to be added
+            # by hand -- which is the point, since the alternative fails confusingly at link time.
+            target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemring.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/pq/mlkemcodec.cpp
             )
-            target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE ${CERTPP_PQ_SOURCES})
             target_include_directories(certpp_test_${CERTPP_TEST_NAME} PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/src
             )

@@ -2,6 +2,7 @@
 #define __SRC_CRYPTO_PQ_MLKEMRING_HPP__
 
 #include <certpp/common.hpp>
+#include <certpp/crypto/pq/mlkem.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -40,18 +41,18 @@ namespace crypto {
      */
     class MlKemRing {
     public:
-        static constexpr size_t N = 256;      // --> coefficients per polynomial
-        static constexpr int32_t Q = 3329;    // --> the prime modulus
-        static constexpr int32_t ZETA = 17;   // --> a primitive 256th root of unity mod Q
+        // --> Mirrors of SMlKemPoly's own constants, so this class reads as self-contained
+        // arithmetic rather than constantly reaching through the public type.
+        static constexpr size_t N = SMlKemPoly::COEFFICIENTS;
+        static constexpr int32_t Q = SMlKemPoly::MODULUS;
+        static constexpr int32_t ZETA = SMlKemPoly::ROOT_OF_UNITY;
 
         /**
-         * One element of R_q: 256 coefficients, each held reduced in [0, Q). Also used to carry
-         * NTT-domain values, which are 128 degree-1 blocks rather than a polynomial -- the layout
-         * is identical, so the distinction is the caller's to track (as it is in FIPS 203 itself).
+         * The ring element this arithmetic operates on. An alias rather than a separate type: the
+         * polynomial representation is public (CMlKemSampler produces one), while the arithmetic
+         * over it stays private here.
          */
-        struct Poly {
-            int16_t coeffs[N];
-        };
+        using Poly = SMlKemPoly;
 
     public:
         /**

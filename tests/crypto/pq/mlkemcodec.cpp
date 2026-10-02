@@ -5,7 +5,6 @@
 
 // src/ is on this test's include path -- see CMakeLists.txt's note on tests/crypto/pq/.
 #include "crypto/pq/mlkemcodec.hpp"
-#include "crypto/pq/mlkemsampler.hpp"
 
 using namespace certpp;
 using namespace certpp::crypto;
@@ -21,7 +20,7 @@ using namespace certpp::crypto;
 
 namespace {
 
-    using Poly = MlKemRing::Poly;
+    using Poly = SMlKemPoly;
     constexpr int32_t Q = MlKemRing::Q;
     constexpr size_t N = MlKemRing::N;
 
@@ -234,7 +233,7 @@ TEST_CASE("MlKemCodec::compress()/decompress(): error stays inside the rounding 
 /* SampleNTT is the first consumer of SHAKE128::squeeze(), and the amount of stream it needs is
  * seed-dependent -- 474, 453 and 498 bytes for the three cases below. Pinned against the Python
  * model, by checksum over the whole array plus explicit endpoints. */
-TEST_CASE("MlKemSampler::sampleNtt(): matches the reference model") {
+TEST_CASE("CMlKemSampler::sampleNtt(): matches the reference model") {
     uint8_t seed[32];
     fillSeed(seed);
     const SReadOnlyByteSpan seedSpan(seed, sizeof(seed));
@@ -259,7 +258,7 @@ TEST_CASE("MlKemSampler::sampleNtt(): matches the reference model") {
         CAPTURE(c.j);
 
         Poly out;
-        REQUIRE(MlKemSampler::sampleNtt(seedSpan, c.i, c.j, out));
+        REQUIRE(CMlKemSampler::sampleNtt(seedSpan, c.i, c.j, out));
 
         for (size_t k = 0; k < N; ++k) {
             REQUIRE(out.coeffs[k] >= 0);
@@ -276,19 +275,19 @@ TEST_CASE("MlKemSampler::sampleNtt(): matches the reference model") {
 /* The index bytes are appended in the order given, and that order is part of the wire format --
  * FIPS 203's matrix expansion deliberately passes them transposed. Swapping them must change the
  * result, or a transposed call would be undetectable. */
-TEST_CASE("MlKemSampler::sampleNtt(): the index order is significant, and it is deterministic") {
+TEST_CASE("CMlKemSampler::sampleNtt(): the index order is significant, and it is deterministic") {
     uint8_t seed[32];
     fillSeed(seed);
     const SReadOnlyByteSpan seedSpan(seed, sizeof(seed));
 
     Poly a;
     Poly b;
-    REQUIRE(MlKemSampler::sampleNtt(seedSpan, 1, 2, a));
-    REQUIRE(MlKemSampler::sampleNtt(seedSpan, 2, 1, b));
+    REQUIRE(CMlKemSampler::sampleNtt(seedSpan, 1, 2, a));
+    REQUIRE(CMlKemSampler::sampleNtt(seedSpan, 2, 1, b));
     CHECK(crc32Of(a) != crc32Of(b));
 
     Poly again;
-    REQUIRE(MlKemSampler::sampleNtt(seedSpan, 1, 2, again));
+    REQUIRE(CMlKemSampler::sampleNtt(seedSpan, 1, 2, again));
     CHECK(crc32Of(again) == crc32Of(a));
 
     // A different seed must give a different polynomial too.
@@ -297,22 +296,22 @@ TEST_CASE("MlKemSampler::sampleNtt(): the index order is significant, and it is 
     other[31] ^= 0x01;
 
     Poly shifted;
-    REQUIRE(MlKemSampler::sampleNtt(SReadOnlyByteSpan(other, sizeof(other)), 1, 2, shifted));
+    REQUIRE(CMlKemSampler::sampleNtt(SReadOnlyByteSpan(other, sizeof(other)), 1, 2, shifted));
     CHECK(crc32Of(shifted) != crc32Of(a));
 }
 
-TEST_CASE("MlKemSampler::sampleNtt(): rejects a seed that isn't 32 bytes") {
+TEST_CASE("CMlKemSampler::sampleNtt(): rejects a seed that isn't 32 bytes") {
     uint8_t shortSeed[31] = { 0 };
     Poly out;
-    CHECK_FALSE(MlKemSampler::sampleNtt(SReadOnlyByteSpan(shortSeed, sizeof(shortSeed)), 0, 0, out));
-    CHECK_FALSE(MlKemSampler::sampleNtt(SReadOnlyByteSpan(nullptr, 32), 0, 0, out));
+    CHECK_FALSE(CMlKemSampler::sampleNtt(SReadOnlyByteSpan(shortSeed, sizeof(shortSeed)), 0, 0, out));
+    CHECK_FALSE(CMlKemSampler::sampleNtt(SReadOnlyByteSpan(nullptr, 32), 0, 0, out));
 }
 
 /* SamplePolyCBD's PRF input here is SHAKE256(eta || seed), which is not how ML-KEM derives it --
  * ML-KEM uses PRF_eta(s, b). It does not matter for this test: the point is to pin the
  * bit-unpacking and the x - y arithmetic against the model, using a PRF output both sides can
  * reproduce. */
-TEST_CASE("MlKemSampler::samplePolyCbd(): matches the reference model and stays in range") {
+TEST_CASE("CMlKemSampler::samplePolyCbd(): matches the reference model and stays in range") {
     uint8_t seed[32];
     fillSeed(seed);
 
@@ -342,7 +341,7 @@ TEST_CASE("MlKemSampler::samplePolyCbd(): matches the reference model and stays 
         CHECK(std::memcmp(prfOut.toPtr(), expectedPrefix.begin(), expectedPrefix.size()) == 0);
 
         Poly out;
-        REQUIRE(MlKemSampler::samplePolyCbd(c.eta, prfOut.toSpan(), out));
+        REQUIRE(CMlKemSampler::samplePolyCbd(c.eta, prfOut.toSpan(), out));
 
         // Every coefficient must be a centered value in [-eta, eta], reduced into [0, Q).
         for (size_t i = 0; i < N; ++i) {
@@ -358,15 +357,15 @@ TEST_CASE("MlKemSampler::samplePolyCbd(): matches the reference model and stays 
     }
 }
 
-TEST_CASE("MlKemSampler::samplePolyCbd(): rejects a wrong-sized PRF output or eta") {
+TEST_CASE("CMlKemSampler::samplePolyCbd(): rejects a wrong-sized PRF output or eta") {
     CBuffer buf(128);
     Poly out;
 
-    CHECK(MlKemSampler::samplePolyCbd(2, buf.toSpan(), out));   // 64*2 == 128
+    CHECK(CMlKemSampler::samplePolyCbd(2, buf.toSpan(), out));   // 64*2 == 128
 
     CBuffer wrong(127);
-    CHECK_FALSE(MlKemSampler::samplePolyCbd(2, wrong.toSpan(), out));
-    CHECK_FALSE(MlKemSampler::samplePolyCbd(3, buf.toSpan(), out));  // needs 192
-    CHECK_FALSE(MlKemSampler::samplePolyCbd(0, buf.toSpan(), out));
-    CHECK_FALSE(MlKemSampler::samplePolyCbd(4, buf.toSpan(), out));
+    CHECK_FALSE(CMlKemSampler::samplePolyCbd(2, wrong.toSpan(), out));
+    CHECK_FALSE(CMlKemSampler::samplePolyCbd(3, buf.toSpan(), out));  // needs 192
+    CHECK_FALSE(CMlKemSampler::samplePolyCbd(0, buf.toSpan(), out));
+    CHECK_FALSE(CMlKemSampler::samplePolyCbd(4, buf.toSpan(), out));
 }

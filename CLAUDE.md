@@ -15,17 +15,19 @@ BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
 (hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
-and binary curves, Ed25519, Ed448, X25519 -- and symmetric ones -- AES,
-DES, TripleDES, ChaCha20 -- all from scratch); and an `x509` module that
+and binary curves, Ed25519, Ed448, X25519 -- symmetric ones -- AES,
+DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS 203,
+`crypto/pq/mlkem.hpp`), all from scratch); and an `x509` module that
 both parses and builds DER/PEM X.509 `Certificate`s
 (`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
 request/response (RFC 6960), including ten concrete extension types
 (BasicConstraints, KeyUsage, ExtendedKeyUsage, SubjectAlternativeName,
 SubjectKeyIdentifier, AuthorityKeyIdentifier, CRLDistributionPoints,
 AuthorityInformationAccess, CertificatePolicies, NameConstraints) under
-`x509/exts/`, each with a parse/build pair. What it deliberately does
-*not* have is certificate/CRL signature verification, chain building or
-path validation, and CSR (PKCS#10) support. See
+`x509/exts/`, each with a parse/build pair, and single-link signature
+verification (`CCert::verifyBy()`, `CCrlReader::verifyBy()`). What it
+deliberately does *not* have is chain building or path validation, and
+CSR (PKCS#10) support. See
 [`docs/architecture.md`](docs/architecture.md) for the full module
 breakdown.
 

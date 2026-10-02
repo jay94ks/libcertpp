@@ -109,6 +109,25 @@ it happens to run from — `ctest`'s default working directory differs from
 running the `.exe` directly, and both differ depending on the caller's own
 current directory.
 
+One directory is an exception to "every test links the library and uses it
+through its public headers": a test under `tests/crypto/pq/` additionally
+gets a listed set of `src/crypto/pq/` sources compiled into its own
+executable, and `src/` on its include path. Those units (`mlkemring.cpp`,
+`mlkemcodec.cpp`) implement ML-KEM's lattice arithmetic and wire encoding,
+which have no public API and so carry no `CERTPP_API` — they aren't exported
+from the shared object and linking cannot reach them. Compiling a second copy
+into the test is safe *precisely because* they aren't exported, so it can
+never collide with the library's own.
+
+The list is written out in `CMakeLists.txt` rather than globbed, and
+`src/crypto/pq/mlkem.cpp`/`mlkemsampler.cpp` are deliberately left out of it:
+those implement the exported `CMlKem`/`CMlKemSampler`, so compiling them here
+too would define symbols the test already imports from `certpp`. Adding a new
+private unit to that list is therefore a manual step — which is the point,
+since the alternative fails at link time in a way that takes a while to read.
+Everything else in the library is tested through the public surface, as
+`DesCore`, `KeccakCore` and `CbcTransformer` are (via `ISymmetric`/`IHasher`).
+
 ## Examples
 
 [`examples/`](../examples/) holds a small, runnable CA-hierarchy walkthrough
