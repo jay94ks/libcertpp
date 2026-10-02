@@ -15,16 +15,17 @@ appended at the end.
 | `IKem`/`IKemContext` (`crypto/kem.hpp`) + KEM key family (`crypto/keys.hpp`) | **declared**; `IKem::builtIn()` defined in `src/crypto/kem.cpp` and returns null, since `EKems` has no concrete members yet. Deliberately not in `certpp.hpp` until an algorithm is behind it |
 | Incremental SHAKE squeezing (`SHAKE128`/`SHAKE256::squeeze()`) | **done** -- chunk-invariant streaming output, tested against `hashlib` across every chunk size and rate boundary |
 | ML-KEM ring arithmetic (`src/crypto/pq/mlkemring.hpp`) | **done** -- NTT/inverse NTT/base-case multiply over R_q, q=3329; twiddle tables derived from ZETA and asserted entry by entry, NTT-domain multiply checked against a schoolbook negacyclic multiply |
-| ML-KEM samplers + ByteEncode/ByteDecode | not started (validated in a Python model; see Phase 3) |
+| ML-KEM samplers + ByteEncode/ByteDecode/Compress | **done** -- `src/crypto/pq/mlkemcodec.hpp`, `mlkemsampler.hpp`; pinned against an independent model by whole-array checksum |
 | ML-DSA ring arithmetic (q=8380417) | not started |
 | ML-KEM | not started |
 | ML-DSA | not started |
 | X.509 OID/algorithm wiring for PQ | not started |
 
-So the groundwork is finished and the next step is the ring arithmetic. One thing the
-"declared" row above still implies: `EKems` has no concrete enumerators yet
-(`EKEM_MAX = 0`), so `IKem::builtIn()` has nothing to dispatch to and correctly returns
-null for every input. Phase 4 gives it its first member.
+So Phases 1-3 are complete for ML-KEM and the next step is ML-KEM itself (Phase 4): K-PKE,
+then the Fujisaki-Okamoto transform over it. One thing the "declared" row above still
+implies: `EKems` has no concrete enumerators yet (`EKEM_MAX = 0`), so `IKem::builtIn()` has
+nothing to dispatch to and correctly returns null for every input. Phase 4 gives it its first
+member, and is also where `crypto/kem.hpp` joins the umbrella header.
 
 ## Why this matters for libcertpp specifically
 
@@ -382,7 +383,7 @@ just after each rate boundary (168 for SHAKE128, 136 for SHAKE256) -- that bound
 the sponge permutes, so a cursor off-by-one would show up nowhere else. Expected streams come
 from Python's `hashlib`, three rate blocks plus seven bytes long.
 
-### Phase 3 -- the shared ring arithmetic (the real work) -- **ML-KEM's ring done**
+### Phase 3 -- the shared ring arithmetic (the real work) -- **done for ML-KEM**
 
 A new private submodule, `src/crypto/pq/`, with no public headers yet -- nothing here
 belongs in the API until an algorithm needs to expose it, and per the conventions an
@@ -408,7 +409,20 @@ implementation class under `src/` takes no type prefix:
   transitively -- a transposed twiddle order changes `ek` and `c` byte for byte -- so the bug is
   still caught; it simply won't be localized to a butterfly.
 - Centered binomial sampling and the rejection sampler over the Phase 2 XOF stream.
-- `ByteEncode`/`ByteDecode` bit-packing (FIPS 203 Algorithms 5/6).
+  Both now exist as `MlKemSampler` (`src/crypto/pq/mlkemsampler.hpp`). `sampleNtt()` is the
+  first real consumer of `SHAKE128::squeeze()`, and it justifies Phase 2 concretely: it
+  consumes 453-498 bytes of stream depending on the seed -- three-ish rate blocks, with no
+  length knowable in advance.
+- `ByteEncode`/`ByteDecode` bit-packing (FIPS 203 Algorithms 5/6) and `Compress`/`Decompress`
+  (Algorithms 3/4), now `MlKemCodec` (`src/crypto/pq/mlkemcodec.hpp`). The compression
+  rounding was checked against the exact rational definition for *every* coefficient in
+  [0, q) at every width ML-KEM uses, which settled a detail worth not guessing at: q is odd,
+  so the usual `(x*2^d + q/2)/q` truncates `q/2` and leaves the round-half-up tie rule to
+  luck. Both that form and the provably-correct `(2*x*2^d + q)/(2*q)` do agree everywhere --
+  but only one of them is right by construction, and that is the one implemented.
+  `isCanonical12()` exposes the deliberate non-injectivity of `ByteDecode_12` as its own
+  query, since ML-KEM's encapsulation-key validity check is exactly "does this decode with no
+  12-bit segment at or above q".
 
 Validation gate before anything is built on top: forward-then-inverse NTT round trip, the
 NTT-domain multiply against a schoolbook negacyclic reference, the ring's defining identity
