@@ -156,6 +156,14 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsasampler")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsacodec.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsasampler.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_PRIVATE_SOURCES)
             target_sources(certpp_test_${CERTPP_TEST_NAME} PRIVATE ${CERTPP_TEST_PRIVATE_SOURCES})
             target_include_directories(certpp_test_${CERTPP_TEST_NAME} PRIVATE

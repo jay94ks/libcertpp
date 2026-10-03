@@ -1311,6 +1311,20 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   monotonicity over the whole array instead rejects valid signatures. A
   rejected decode leaves the caller's polynomials untouched rather than
   half-written.
+- **`src/crypto/asyms/mldsasampler.hpp`/`.cpp`** define `MlDsaSampler`, FIPS
+  204 7.3's pseudorandom sampling: `sampleInBall`, `rejNttPoly`,
+  `rejBoundedPoly` and the `expandA`/`expandS`/`expandMask` procedures over
+  them. All three samplers consume a seed-dependent amount of stream, so they
+  read through `squeeze()` rather than `finish()` -- which is why incremental
+  squeezing was a hard prerequisite rather than a convenience.
+
+  Two things here are easy to get wrong and invisible without an external
+  vector. The XOFs are not interchangeable: `rejNttPoly`/`expandA` use
+  SHAKE128 (the standard's `G`), everything else SHAKE256 (`H`). And
+  **`expandA`'s seed is transposed** -- `rho || s || r` for entry `A[r][s]`,
+  the column byte before the row byte, exactly as ML-KEM's
+  `SampleNTT(rho || j || i)` is. Both produce a scheme that is perfectly
+  self-consistent and interoperates with nothing.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via

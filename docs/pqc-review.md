@@ -19,6 +19,7 @@ appended at the end.
 | SHA3-256 / SHA3-512 (ML-KEM's H and G) | **done** -- a prerequisite this plan had missed; the library had SHAKE but no fixed-output SHA-3 |
 | ML-KEM, the algorithm (`crypto/kems/mlkem.hpp`: `CMlKem`, `SMlKemParams`, `SMlKemPoly`) | **done** -- K-PKE plus the FO transform over raw spans, validated against ACVP for all three parameter sets including the implicit-rejection and key-check negative cases |
 | ML-KEM as an `IKem` (`crypto/kems/mlkem.hpp`, `EKEM_MLKEM512/768/1024`) | **done** -- `MLKEM` serves all three sets from one class; keys serialize as FIPS 203's own encodings, and this is the only layer that draws from `CRng` |
+| ML-DSA samplers (`src/crypto/asyms/mldsasampler.hpp`) | **done** -- SampleInBall/RejNTTPoly/RejBoundedPoly plus ExpandA/ExpandS/ExpandMask; pinned against known answers cross-checked with dilithium-py, including ExpandA's transposed seed order |
 | ML-DSA bit packing + hint encoding (`src/crypto/asyms/mldsacodec.hpp`) | **done** -- SimpleBitPack/BitPack and their inverses, HintBitPack/HintBitUnpack with all three rejection conditions; the ranges decoding cannot guarantee are documented and `inRange()` provided for them |
 | ML-DSA rounding/hints (`src/crypto/asyms/mldsarounding.hpp`) | **done** -- Power2Round/Decompose/HighBits/LowBits/MakeHint/UseHint; the inversion identity checked at the bucket boundaries and across Decompose's `(q-1)` band, which is a band of width gamma2 rather than the single point it reads as |
 | ML-DSA ring arithmetic (q=8380417) | **done** -- `src/crypto/asyms/mldsaring.hpp`; complete 8-layer NTT (zeta's order is 512, unlike ML-KEM's 256, so the transform runs to completion and the NTT-domain multiply is pointwise), checked against FIPS 204 Appendix B's printed table and a schoolbook negacyclic multiply |
@@ -31,10 +32,9 @@ straight from a test vector) and as `IKem::builtIn(EKEM_MLKEM768)` like every ot
 in the library. Phase 5 has started with its ring arithmetic, which indeed shares nothing with
 ML-KEM's beyond the Keccak primitives and the general shape of an NTT -- `MlDsaRing` is a
 separate unit, not a parameterization. Its rounding and hint machinery is in, and so is the bit packing -- including
-`HintBitUnpack` with all three of its rejection conditions. What remains for ML-DSA is the
-three rejection samplers, the key/signature encoders that sit on top of the bit packing
-(`pkEncode`/`skEncode`/`sigEncode` and their inverses, which need the full parameter table),
-and then sign/verify.
+`HintBitUnpack` with all three of its rejection conditions. The three rejection samplers and the Expand* procedures are in too. What remains for ML-DSA
+is the key/signature encoders that sit on top of the bit packing (`pkEncode`/`skEncode`/
+`sigEncode` and their inverses, which need the full parameter table), and then sign/verify.
 
 ## Why this matters for libcertpp specifically
 
