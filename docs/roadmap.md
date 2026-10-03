@@ -121,6 +121,55 @@ anything.
   projective coordinates for `CEcCurve`/`CEc2Curve`, plus a fixed-base
   comb table for signing. This is what prime-curve ECDH needs before it
   can honestly claim constant-time behaviour.
+- **Signature speed: a division per modular multiply.** Reported
+  downstream, where a certificate handshake spends about 20 ms of CPU per
+  side and one core manages roughly 30 handshakes a second. Measured here
+  (Release, loaded 4-core i7-11370H, min of 3x20): Ed25519 sign 7.4 ms /
+  verify 35.1 ms, ECDSA P-256 sign 7.9 ms / verify 17.9 ms, P-384 verify
+  40.7 ms. Optimized implementations verify Ed25519 in 50--100 us.
+
+  The cause is one line: `CBigNum::mulMod()` is `mul()` then `mod()`, and
+  `mod()` calls `divMod()` -- a 138-line schoolbook long division, run once
+  per field multiplication. It is reached from 113 `mulMod` and 51 `mod()`
+  call sites across `eccurve.cpp` (42), `ed25519.cpp` (33), `ed448.cpp`
+  (30), `ecdsa.cpp` and `gost3410.cpp`.
+
+  The control that proves it: **X25519 derives a shared secret in 246 us**
+  on the same curve in the same build, because it is the one algorithm
+  already moved onto `Fe25519`, which has no division. Ed25519 uses
+  `Fe25519` zero times and `CBigNum` 118 times; X25519 uses it 32 times.
+  A 142x gap between two implementations of the same curve.
+
+  **Precomputation is the lever, but not everywhere -- some of it is
+  already done.** Worth separating, because "precompute more points" is
+  the intuitive answer and is the wrong one here:
+
+  1. *Already present.* Both `Edwards25519::scalarMulBase()` and
+     `CEcCurve::scalarMulBase()` build a lazy fixed-base window table and
+     reuse it for the life of the process, and Ed25519 already keeps
+     extended `(X, Y, Z, T)` coordinates with an inversion-free
+     `pointAddProj()` and a precomputed `2*d`. Adding more point tables
+     does not help: every point addition still pays ~8 divisions, so the
+     table only changes how many of those additions there are.
+  2. *The actual win -- per-modulus reduction constants.* Montgomery
+     (`n' = -m^-1 mod 2^64`, `R^2 mod m`) or Barrett
+     (`mu = floor(2^2k / m)`), computed once per modulus, turns each
+     reduction into multiplications. This is what removes `divMod` from
+     the inner loop, and unlike a per-curve field it covers all 29 prime
+     curves, Ed448, GOST and DSA at once. The obstacle is API shape rather
+     than arithmetic: `mulMod(other, modulus)` has nowhere to cache
+     anything, so the modulus needs to become a type that owns its
+     constants.
+  3. *Still open, and workload-specific.* Verification multiplies a
+     **variable** base -- the public key -- so no fixed-base table helps
+     it. But `verifyBy()` reuses one issuer key across every certificate
+     that issuer signed, so caching a window table per public key would
+     pay for exactly the chain-checking workload that prompted the report.
+     The downstream consumer already caches at a coarser level, per
+     credential.
+
+  Ed25519 gets `Fe25519` because that field already exists and is
+  validated; everything else wants (2).
 
 ## Not planned
 
