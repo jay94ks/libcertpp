@@ -126,6 +126,59 @@ namespace crypto {
             }
         };
 
+        /* RFC 7748-appropriate validity checks on a derived u-coordinate. Shared by
+         * checkPrivateKey() and generateKeyPair(): the latter has already derived the value and
+         * would otherwise pay for a second ladder to have it recomputed.
+         *
+         * X25519 is a Montgomery curve, u-coordinate only (no y, no point-at-infinity
+         * representation) and cofactor 8 -- unlike CEcdsa/CEcdsa2/Ed25519/Ed448 cofactor-1
+         * curves -- so ECDSA/EdDSA four checks do not translate literally. These are their RFC
+         * 7748 analogues. There is deliberately no "curve equation" check: X25519 accepts
+         * u-coordinates from either the Montgomery form of edwards25519 OR its quadratic twist
+         * (RFC 7748 4.1 twist security -- neither has small subgroups beyond the explicit
+         * cofactor), so restricting to the main curve would reject spec-valid inputs. */
+        ERetCode validatePublicValue(const uint8_t encoded[32]) {
+            // 1. Field range. Fe25519::toBytes() emits the canonical representative in [0, p),
+            // so a value derived here cannot be out of range -- what used to be a u >= p test is
+            // now a structural property of the encoding. Bit 255 is checked instead, being the
+            // one thing a 32-byte encoding could still carry.
+            if ((encoded[31] & 0x80u) != 0) {
+                return ERET_KEY_PARAM;
+            }
+
+            // 2. "Point at infinity" analogue: RFC 7748 6.1 own "reject an all-zero output"
+            // rule, applied here to key generation instead of the ECDH shared secret.
+            uint8_t accumulator = 0;
+            for (size_t i = 0; i < 32; ++i) {
+                accumulator = uint8_t(accumulator | encoded[i]);
+            }
+            if (accumulator == 0) {
+                return ERET_KEY_PARAM;
+            }
+
+            // 3. "Correct subgroup" analogue: reject a public key of order dividing the cofactor
+            // (8) -- a low-order or twist-torsion point -- computed directly rather than against
+            // a hardcoded list: 8*u reduces to the identity exactly when u itself has order
+            // dividing 8. This calls ladder() rather than scalarMult() deliberately, since the
+            // scalar is the public constant 8 and must NOT be clamped; clamping would turn it
+            // into a different scalar entirely.
+            uint8_t eight[32] = { 0 };
+            eight[0] = 8;
+
+            uint8_t eightU[32];
+            Curve25519::ladder(eight, encoded, eightU);
+
+            accumulator = 0;
+            for (size_t i = 0; i < 32; ++i) {
+                accumulator = uint8_t(accumulator | eightU[i]);
+            }
+            if (accumulator == 0) {
+                return ERET_KEY_PARAM;
+            }
+
+            return ERET_OK;
+        }
+
         class X25519PublicKey : public IPublicKey {
         private:
             uint8_t _encoded[32];
@@ -302,16 +355,25 @@ namespace crypto {
             return ERET_UNKNOWN;
         }
 
-        IPublicKeyPtr pub = publicKeyFromRaw(raw);
-        if (!pub) {
-            return ERET_UNKNOWN;
-        }
+        uint8_t base[32];
+        Curve25519::basePointU(base);
 
-        auto priv = std::make_shared<X25519PrivateKey>(raw, pub);
+        // --> One derivation, not two. This used to derive the public key and then call
+        // checkPrivateKey(), which derived it a second time purely to compare against the value
+        // just computed. Validating the derived value directly runs exactly the same three
+        // checks -- validatePublicValue() is the code checkPrivateKey() delegates to -- while
+        // dropping a derivation whose only purpose was to compare a value against itself.
+        uint8_t encoded[32];
+        Curve25519::scalarMult(raw, base, encoded);
 
-        if (checkPrivateKey(priv) != ERET_OK) {
+        if (validatePublicValue(encoded) != ERET_OK) {
             return ERET_AGAIN;
         }
+
+        auto pub = std::make_shared<X25519PublicKey>(encoded);
+        auto priv = std::make_shared<X25519PrivateKey>(raw, pub);
+
+        CSecure::zero(SByteSpan(raw, sizeof(raw)));
 
         out = SKeyPair(pub, priv);
         return ERET_OK;
@@ -346,45 +408,7 @@ namespace crypto {
             return ERET_KEY_ERROR;
         }
 
-        // 1. Field range. Fe25519::toBytes() emits the canonical representative in [0, p), so a
-        // value derived here cannot be out of range any more -- what used to be a `u >= p` test
-        // is now a structural property of the encoding. Bit 255 is checked instead, since that
-        // is the one thing a 32-byte encoding could still carry.
-        if ((derivedEncoded[31] & 0x80u) != 0) {
-            return ERET_KEY_PARAM;
-        }
-
-        // 2. "Point at infinity" analogue: RFC 7748 6.1's own "reject an all-zero output" rule,
-        // applied here to key generation instead of the ECDH shared secret.
-        uint8_t accumulator = 0;
-        for (size_t i = 0; i < 32; ++i) {
-            accumulator = uint8_t(accumulator | derivedEncoded[i]);
-        }
-        if (accumulator == 0) {
-            return ERET_KEY_PARAM;
-        }
-
-        // 3. "Correct subgroup" analogue: reject a public key of order dividing the cofactor (8)
-        // -- a low-order/twist-torsion point -- computed directly rather than via a hardcoded
-        // constant list: 8*u reduces to the identity (u = 0) exactly when u itself has order
-        // dividing 8. This calls ladder() rather than scalarMult() deliberately: the scalar is
-        // the small public constant 8 and must NOT be clamped, since clamping would turn it into
-        // a different scalar entirely.
-        uint8_t eight[32] = { 0 };
-        eight[0] = 8;
-
-        uint8_t eightU[32];
-        Curve25519::ladder(eight, derivedEncoded, eightU);
-
-        accumulator = 0;
-        for (size_t i = 0; i < 32; ++i) {
-            accumulator = uint8_t(accumulator | eightU[i]);
-        }
-        if (accumulator == 0) {
-            return ERET_KEY_PARAM;
-        }
-
-        return ERET_OK;
+        return validatePublicValue(derivedEncoded);
     }
 
     IPublicKeyPtr X25519::createPublicKey(const SReadOnlyByteSpan& keyData) const {

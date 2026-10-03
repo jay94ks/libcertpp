@@ -1714,3 +1714,84 @@ partial product inside a 10x10 loop that the compiler is unlikely to unroll,
 and `generateKeyPair` runs three ladders (one to derive the public key, then
 `checkPrivateKey` recomputing it plus the cofactor check) where it already has
 the first result in hand.
+
+## Performance pass, driven by a downstream report with numbers
+
+cppskit's libcskcwk reported concrete figures and targets for the link-
+encryption path. This records what moved, what did not, and the one place the
+target turns out to be unreachable without work the report did not anticipate.
+
+| | reported | now | target |
+|---|---|---|---|
+| X25519 `generateKeyPair` | 4.7 ms | **333 µs** | ≤100 µs |
+| X25519 `deriveSharedSecret` | 2.0 ms | **167 µs** | ≤100 µs |
+| AEAD seal, 64 KiB | ~300 MiB/s | 331 MiB/s | ≥1.5 GiB/s |
+| AEAD seal, 64 B | 507 ns | ~440 ns | ≤150 ns |
+
+### Where the AEAD time actually goes
+
+Isolated by subtraction, at 64 KiB: Poly1305 60.6 µs, ChaCha20 128.4 µs. So
+the report's diagnosis was right that ChaCha20 dominates — but the arithmetic
+has a consequence it did not reach:
+
+- ChaCha20: **487 MiB/s**, about 5.9 cycles/byte.
+- Poly1305: **1032 MiB/s**, about 2.8 cycles/byte.
+
+2.8 cycles/byte is roughly what a scalar 26-bit-limb Poly1305 should cost, so
+the MAC is already near its ceiling for this representation — and since the two
+compose as `1/total = 1/cipher + 1/mac`, **Poly1305 alone caps the AEAD at
+1032 MiB/s no matter how fast the cipher gets.** Reaching 1.5 GiB/s needs
+*both*: with the MAC at 3 GiB/s the cipher must reach 3 GiB/s; with the MAC at
+2 GiB/s the cipher must reach 6. That means SIMD on both sides, or Poly1305 in
+64-bit limbs via `_umul128`. Worth knowing before anyone spends a week on
+ChaCha20 alone and lands at 1 GiB/s.
+
+### What was done
+
+**ChaCha20: prepared state, word-wise XOR.** The block function took the key
+and nonce per call, so it re-parsed eleven little-endian words for every 64
+bytes; `ChaCha20Core::SState` now hoists that to once per message.
+`xorStream()` combines whole blocks 32 bits at a time instead of byte by byte,
+and the `ISymmetric` transformer routes its block-aligned bulk through it while
+keeping its cross-call cursor for the edges. Measured: 286 → 331 MiB/s.
+
+That is a smaller gain than the change suggests, and the reason is the useful
+part: neither the state setup nor the byte-wise XOR was dominant — **the twenty
+rounds are**, at ~376 cycles per block. Further cipher gains need SIMD, not
+bookkeeping.
+
+**Fe25519: unrolled multiply.** The 10x10 loop carried two branches per
+partial product (the odd/odd doubling and the wrap). Pre-scaling the operands
+folds both constants out, leaving pure multiply-accumulate — and the expression
+was *generated* from the same rule the Python reference validated, rather than
+hand-typed, so the 100 terms cannot drift from it. Measured: derive 287 → 167 µs.
+
+**X25519 keygen: one derivation instead of two.** `generateKeyPair` derived the
+public key, then called `checkPrivateKey()`, which derived it again purely to
+compare against the value just computed. The three validity checks moved into a
+shared `validatePublicValue()` that both paths call, so nothing is weakened —
+the comparison that was dropped was between a value and itself. Measured:
+540 → 333 µs, consistent with three ladders becoming two.
+
+### What was tried and reverted
+
+`carryPass()` was unrolled with literal shift amounts, on the theory that
+`widthOf(i)`'s modulo was costing something across the ~50,000 calls a ladder
+makes. It made **no** difference, inside a run-to-run spread of about 11% —
+`widthOf()` is `constexpr` and the bound is fixed, so the compiler was already
+doing it. The loop is back, with the negative result recorded in a comment so
+nobody repeats it.
+
+A dedicated squaring was *not* written, deliberately. It would halve the
+partial products of the four squarings per ladder iteration — perhaps 30% — but
+it is a second 100-term expression with its own doubling rules interacting with
+the radix's, and the ladder would still agree with itself if it were wrong.
+Left until the gain can be attributed rather than assumed.
+
+### What remains for 100 µs
+
+derive is 1.7x off. The dominant remaining cost is that a 2^25.5 radix needs
+**100** limb multiplies, where a 2^51 radix needs 25 — that is the real 4x, and
+it is why 64-bit implementations use it. It needs 128-bit products, which MSVC
+can do via `_umul128` even without `__int128`. With that plus a squaring,
+100 µs is comfortably reachable; without it, it is not.

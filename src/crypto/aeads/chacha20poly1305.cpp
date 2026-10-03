@@ -28,25 +28,15 @@ namespace crypto {
             const uint8_t nonce[ChaCha20Core::NONCE_BYTES],
             const uint8_t* in, uint8_t* out, size_t length
         ) {
-            uint8_t keystream[ChaCha20Core::BLOCK_BYTES];
-            uint32_t counter = 1;
-            size_t offset = 0;
+            // The state is built once for the whole payload rather than per block, and the XOR
+            // runs 32 bits at a time -- see ChaCha20Core::xorStream. This used to re-parse the
+            // key and nonce for every 64 bytes and combine byte by byte.
+            ChaCha20Core::SState state;
+            ChaCha20Core::initState(state, key, nonce);
 
-            while (offset < length) {
-                ChaCha20Core::block(key, counter, nonce, keystream);
-                ++counter;
+            ChaCha20Core::xorStream(state, 1, in, out, length);
 
-                const size_t take = (length - offset < ChaCha20Core::BLOCK_BYTES)
-                    ? (length - offset) : ChaCha20Core::BLOCK_BYTES;
-
-                for (size_t i = 0; i < take; ++i) {
-                    out[offset + i] = uint8_t(in[offset + i] ^ keystream[i]);
-                }
-
-                offset += take;
-            }
-
-            CSecure::zero(SByteSpan(keystream, sizeof(keystream)));
+            CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&state), sizeof(state)));
         }
 
         /* The AEAD's MAC input (RFC 8439 2.8): aad, padded to a block; the ciphertext, padded to

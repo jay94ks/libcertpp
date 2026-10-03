@@ -22,8 +22,10 @@ namespace crypto {
          * padding or block-alignment is needed since this is a pure stream cipher. */
         class ChaCha20Transformer : public ISymmetricTransformer {
         private:
-            uint8_t _key[CHACHA20_KEY_BYTES];
-            uint8_t _nonce[CHACHA20_NONCE_BYTES];
+            // --> The prepared state rather than the raw key and nonce, so a block costs the
+            // twenty rounds and nothing else. Re-parsing eleven little-endian words per 64 bytes
+            // of output, which is what holding the raw key here used to mean, is pure waste.
+            ChaCha20Core::SState _state;
             uint32_t _counter;
             uint8_t _keystream[CHACHA20_BLOCK_BYTES];
             size_t _keystreamPos; // --> CHACHA20_BLOCK_BYTES once the current block is exhausted.
@@ -35,8 +37,7 @@ namespace crypto {
             )
                 : ISymmetricTransformer(ctx), _counter(0), _keystreamPos(CHACHA20_BLOCK_BYTES)
             {
-                std::memcpy(_key, key, CHACHA20_KEY_BYTES);
-                std::memcpy(_nonce, nonce, CHACHA20_NONCE_BYTES);
+                ChaCha20Core::initState(_state, key, nonce);
             }
 
             ERetCode transform(const SReadOnlyByteSpan& input, SByteSpan& output) override {
@@ -44,14 +45,41 @@ namespace crypto {
                     return ERET_NOSPC;
                 }
 
-                for (size_t i = 0; i < input.size; ++i) {
-                    if (_keystreamPos == CHACHA20_BLOCK_BYTES) {
-                        ChaCha20Core::block(_key, _counter, _nonce, _keystream);
-                        ++_counter;
-                        _keystreamPos = 0;
-                    }
+                size_t offset = 0;
 
-                    output.data[i] = static_cast<uint8_t>(input.data[i] ^ _keystream[_keystreamPos++]);
+                // Finish whatever is left of the current block first, byte by byte: this
+                // transformer is a stream, so a call can begin mid-block and the cursor has to
+                // be honoured before any word-wise work can start.
+                while (offset < input.size && _keystreamPos != CHACHA20_BLOCK_BYTES) {
+                    output.data[offset] =
+                        static_cast<uint8_t>(input.data[offset] ^ _keystream[_keystreamPos++]);
+                    ++offset;
+                }
+
+                // Now block-aligned, so the bulk goes through the word-wise path.
+                const size_t whole =
+                    ((input.size - offset) / CHACHA20_BLOCK_BYTES) * CHACHA20_BLOCK_BYTES;
+
+                if (whole != 0) {
+                    ChaCha20Core::xorStream(
+                        _state, _counter, input.data + offset, output.data + offset, whole);
+
+                    _counter += uint32_t(whole / CHACHA20_BLOCK_BYTES);
+                    offset += whole;
+                }
+
+                // And a trailing remainder starts a fresh block, whose unused tail is kept for
+                // the next call.
+                if (offset < input.size) {
+                    ChaCha20Core::block(_state, _counter, _keystream);
+                    ++_counter;
+                    _keystreamPos = 0;
+
+                    while (offset < input.size) {
+                        output.data[offset] =
+                            static_cast<uint8_t>(input.data[offset] ^ _keystream[_keystreamPos++]);
+                        ++offset;
+                    }
                 }
 
                 output = SByteSpan(output.data, input.size);

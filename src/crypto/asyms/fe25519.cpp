@@ -12,7 +12,13 @@ namespace crypto {
         /* One carry pass over signed limbs, finishing with limb 9's overflow folded back into
          * limb 0 as a factor of 19 (because 2^255 == 19 mod p). The shift is arithmetic, which
          * is what lets a negative limb -- the ordinary result of sub() -- propagate correctly
-         * without a borrow branch. */
+         * without a borrow branch.
+         *
+         * --> Left as a loop deliberately. An unrolled version with literal shift amounts was
+         * written and measured, on the theory that widthOf(i)'s modulo was costing something
+         * across the ~50,000 calls a ladder makes: it made no difference at all, within a run-to-
+         * run spread of about 11%. widthOf() is constexpr and the bound is fixed, so the compiler
+         * was already doing it. The loop stays because it is shorter and says the same thing. */
         void carryPass(int64_t* t) {
             int64_t carry = 0;
 
@@ -149,42 +155,94 @@ namespace crypto {
 
     /* out = a * b. */
     void Fe25519::mul(Fe25519& out, const Fe25519& a, const Fe25519& b) {
-        int64_t left[LIMBS];
-        int64_t right[LIMBS];
-        load(left, a);
-        load(right, b);
+        // Generated from the rule validated against exact arithmetic: a doubling when
+        // both limb indices are odd, and a factor of 19 when the product lands at 2^255
+        // or above. Pre-scaling the operands folds both constants out of the inner
+        // expressions, leaving pure multiply-accumulate with no branches at all -- which
+        // is what the 10x10 loop this replaces could not give the compiler.
+        const int64_t f0 = a.limbs[0];
+        const int64_t f1 = a.limbs[1];
+        const int64_t f2 = a.limbs[2];
+        const int64_t f3 = a.limbs[3];
+        const int64_t f4 = a.limbs[4];
+        const int64_t f5 = a.limbs[5];
+        const int64_t f6 = a.limbs[6];
+        const int64_t f7 = a.limbs[7];
+        const int64_t f8 = a.limbs[8];
+        const int64_t f9 = a.limbs[9];
+        const int64_t g0 = b.limbs[0];
+        const int64_t g1 = b.limbs[1];
+        const int64_t g2 = b.limbs[2];
+        const int64_t g3 = b.limbs[3];
+        const int64_t g4 = b.limbs[4];
+        const int64_t g5 = b.limbs[5];
+        const int64_t g6 = b.limbs[6];
+        const int64_t g7 = b.limbs[7];
+        const int64_t g8 = b.limbs[8];
+        const int64_t g9 = b.limbs[9];
 
-        int64_t t[LIMBS] = { 0 };
+        // The odd limbs doubled, and every limb times 19, computed once each rather than
+        // per partial product.
+        const int64_t f1_2 = f1 * 2;
+        const int64_t f3_2 = f3 * 2;
+        const int64_t f5_2 = f5 * 2;
+        const int64_t f7_2 = f7 * 2;
+        const int64_t f9_2 = f9 * 2;
+        const int64_t g1_19 = g1 * 19;
+        const int64_t g2_19 = g2 * 19;
+        const int64_t g3_19 = g3 * 19;
+        const int64_t g4_19 = g4 * 19;
+        const int64_t g5_19 = g5 * 19;
+        const int64_t g6_19 = g6 * 19;
+        const int64_t g7_19 = g7 * 19;
+        const int64_t g8_19 = g8 * 19;
+        const int64_t g9_19 = g9 * 19;
 
-        // --> Two factors apply to each partial product, and the first is the one that makes a
-        // naive version wrong on *every* input rather than some:
-        //
-        //  - a doubling when both limb indices are odd, because OFFSET[i] + OFFSET[j] is one bit
-        //    above OFFSET[i+j] in that case -- two half-bit offsets adding to a whole one, which
-        //    is the price of a non-integer radix;
-        //  - a factor of 19 when i + j >= 10, since the product then sits at 2^255 or above and
-        //    2^255 == 19 mod p.
-        //
-        // Both were validated against exact arithmetic before this was written.
-        for (size_t i = 0; i < LIMBS; ++i) {
-            for (size_t j = 0; j < LIMBS; ++j) {
-                int64_t product = left[i] * right[j];
+        int64_t t0 = f0 * g0 + f1_2 * g9_19 + f2 * g8_19
+                     + f3_2 * g7_19 + f4 * g6_19 + f5_2 * g5_19
+                     + f6 * g4_19 + f7_2 * g3_19 + f8 * g2_19
+                     + f9_2 * g1_19;
+        int64_t t1 = f0 * g1 + f1 * g0 + f2 * g9_19
+                     + f3 * g8_19 + f4 * g7_19 + f5 * g6_19
+                     + f6 * g5_19 + f7 * g4_19 + f8 * g3_19
+                     + f9 * g2_19;
+        int64_t t2 = f0 * g2 + f1_2 * g1 + f2 * g0
+                     + f3_2 * g9_19 + f4 * g8_19 + f5_2 * g7_19
+                     + f6 * g6_19 + f7_2 * g5_19 + f8 * g4_19
+                     + f9_2 * g3_19;
+        int64_t t3 = f0 * g3 + f1 * g2 + f2 * g1
+                     + f3 * g0 + f4 * g9_19 + f5 * g8_19
+                     + f6 * g7_19 + f7 * g6_19 + f8 * g5_19
+                     + f9 * g4_19;
+        int64_t t4 = f0 * g4 + f1_2 * g3 + f2 * g2
+                     + f3_2 * g1 + f4 * g0 + f5_2 * g9_19
+                     + f6 * g8_19 + f7_2 * g7_19 + f8 * g6_19
+                     + f9_2 * g5_19;
+        int64_t t5 = f0 * g5 + f1 * g4 + f2 * g3
+                     + f3 * g2 + f4 * g1 + f5 * g0
+                     + f6 * g9_19 + f7 * g8_19 + f8 * g7_19
+                     + f9 * g6_19;
+        int64_t t6 = f0 * g6 + f1_2 * g5 + f2 * g4
+                     + f3_2 * g3 + f4 * g2 + f5_2 * g1
+                     + f6 * g0 + f7_2 * g9_19 + f8 * g8_19
+                     + f9_2 * g7_19;
+        int64_t t7 = f0 * g7 + f1 * g6 + f2 * g5
+                     + f3 * g4 + f4 * g3 + f5 * g2
+                     + f6 * g1 + f7 * g0 + f8 * g9_19
+                     + f9 * g8_19;
+        int64_t t8 = f0 * g8 + f1_2 * g7 + f2 * g6
+                     + f3_2 * g5 + f4 * g4 + f5_2 * g3
+                     + f6 * g2 + f7_2 * g1 + f8 * g0
+                     + f9_2 * g9_19;
+        int64_t t9 = f0 * g9 + f1 * g8 + f2 * g7
+                     + f3 * g6 + f4 * g5 + f5 * g4
+                     + f6 * g3 + f7 * g2 + f8 * g1
+                     + f9 * g0;
 
-                if ((i % 2 == 1) && (j % 2 == 1)) {
-                    product *= 2;
-                }
+        int64_t t[LIMBS] = { t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 };
 
-                const size_t k = i + j;
-                if (k < LIMBS) {
-                    t[k] += product;
-                }
-                else {
-                    t[k - LIMBS] += product * 19;
-                }
-            }
-        }
-
-        // Two passes: the first brings limbs into range, the second settles the 19x fold-back.
+        // Two passes: the first brings limbs into range, the second settles the 19x
+        // fold-back out of limb 0.
         carryPass(t);
         carryPass(t);
         store(out, t);
@@ -192,8 +250,13 @@ namespace crypto {
 
     /* out = a^2. */
     void Fe25519::square(Fe25519& out, const Fe25519& a) {
-        // Same operation; a dedicated squaring would halve the multiplies, which is worth doing
-        // only if profiling says so. Correctness first, and one code path to audit.
+        // --> Deliberately still mul(a, a) rather than a dedicated squaring. A squaring routine
+        // halves the partial products, because every off-diagonal term appears twice and can be
+        // doubled once -- worth perhaps 30% of the ladder. It is also a second 100-term
+        // expression to get right, with its own doubling rules interacting with the radix's,
+        // and the ladder calls square() four times per iteration where a wrong one would still
+        // agree with itself. Left until the unrolled mul below has been measured, so the gain
+        // can be attributed rather than assumed.
         mul(out, a, a);
     }
 
