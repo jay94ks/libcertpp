@@ -1408,3 +1408,37 @@ with a temporary, the exact construct that used to fail.
 Issue 3 cannot be reproduced on Windows, where `uint64_t` *is* `unsigned long
 long`, so it rests on the type analysis plus the existing `mul()` cross-check
 test against an independent reference multiply, which exercises that path.
+
+## Post-quantum: ML-DSA's parameter sets
+
+`MlDsaParams` (`src/crypto/asyms/mldsaparams.hpp`) holds FIPS 204 Table 1 and
+derives every length from it, the way `SMlKemParams` does — and for the same
+reason, that a mistyped key or signature length stays internally consistent
+and surfaces only against an external vector.
+
+The derived figures are `static_assert`ed against FIPS 204 Table 2, so a
+mismatch fails the build rather than a test run. All nine match: public keys
+1312/1952/2592, private keys 2560/4032/4896, signatures 2420/3309/4627. The
+test additionally re-derives each size a *second* way — by summing the parts a
+key or signature is actually made of — rather than restating the formula it is
+checking.
+
+Two entries in the table do not behave the way a reader expects, and both are
+asserted explicitly because an assumption either way would be silent:
+
+- **η is not monotone in security level**: 2, 4, then back to **2** for
+  ML-DSA-87. Reading it as rising gives ML-DSA-87 the wrong private-key range
+  *and* the wrong `sk` length. There is a `static_assert(P87.eta < P65.eta)`
+  purely to make that explicit to the next reader.
+- **γ₁ is shared between two sets**: 2^17 for ML-DSA-44, 2^19 for *both*
+  ML-DSA-65 and ML-DSA-87, so it cannot tell the latter two apart.
+
+`maxSignatureBytes()` is 4627, derived from ML-DSA-87 rather than written
+down — the final standard's figure, where 4595 was the initial public draft's
+and still circulates.
+
+The test also cross-checks the table against the units already built:
+`highBitsRange()` must agree with `MlDsaRounding::highBitsRange(gamma2)`
+computed from γ₂ alone (two independent routes to one number), every set's
+`k`/`l`/`tau` must fit the samplers' own maxima, and `omega` must fit the
+single byte `HintBitPack` writes it into.
