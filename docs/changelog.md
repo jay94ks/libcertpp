@@ -1163,3 +1163,58 @@ Verified by assertion count rather than just a green tick, since a silently
 skipped test would also be green: all five affected executables report exactly
 the totals they did before the move (kat_mlkem 2464, mlkem 232, mlkemring
 1566, mlkemcodec 104056, mldsaring 108974), and the suite is 96/96.
+
+## Post-quantum: ML-DSA's rounding and hint machinery
+
+FIPS 204 7.4, as `MlDsaRounding` (`src/crypto/asyms/mldsarounding.hpp`):
+`power2Round`, `decompose`, `highBits`/`lowBits`, `makeHint` and `useHint`,
+scalar and per-polynomial. Private to `src/`, like the ring beside it.
+
+The hint mechanism is the reason any of it exists. A signature carries one bit
+per coefficient rather than w1 itself, and the verifier reconstructs
+`HighBits(w − c·s2 + c·t0)` from its own approximation plus those bits — which
+works only if `useHint()` inverts `makeHint()` exactly, and only while the
+perturbation stays within γ₂, a bound the signing loop has to enforce before
+calling it. The Python pass confirmed the bound is load-bearing rather than
+decorative: outside it, the identity fails about two thirds of the time.
+
+### A wrong assumption the validation caught
+
+I had written, in a comment, that `decompose()`'s `(q−1)` carve-out "bites
+nowhere else" than `r == q − 1`. The data said otherwise, and this is worth
+recording because the mistake is an inviting one.
+
+FIPS 204 Algorithm 36 branches on `r+ − r0 == q − 1`. That reads like a test
+for the single value `q − 1`, and simplifying it to `r == q − 1` is the obvious
+tidy-up. It is wrong: the condition holds across the whole top band of width
+γ₂ — **95,232 values (1.14% of q)** at γ₂ = (q−1)/88, and **261,888 (3.1%)** at
+(q−1)/32. Every coefficient in that band must land in bucket 0; the point
+comparison would put 95,231 of them one bucket too high. Nothing but an
+external vector or a bucket-range assertion would notice, since the result
+stays self-consistent.
+
+A second trap, documented in the header: `mod±` here is **not**
+`MlDsaRing::centered()`. That one reduces modulo q, which is odd, so its split
+sits at (q−1)/2. These reduce modulo 2^d and 2γ₂, both even, where the range is
+(−m/2, m/2] and m/2 itself stays positive. Same definition (FIPS 204 2.3),
+different modulus, different edge — so the unit carries its own `modPm()`
+rather than reaching for the ring's. An off-by-one there misfiles one
+coefficient value in every 2γ₂.
+
+### Validated first, then tested against the traps
+
+All five operations agreed with dilithium-py 1.4.0 over 100,000 values per
+parameter set, and the inversion identity over 200,000 random (r, z) pairs per
+set, before any C++ was written — which is again why it was right on the first
+run.
+
+The test does not rely on random sampling for the fragile cases. It enumerates
+every bucket boundary against z = ±γ₂ and ±1, walks the carve-out band, and
+checks the `r0 == 0` tie explicitly (it counts as "not positive", so a set hint
+steps *down*; splitting it the other way breaks exactly the coefficients
+sitting on a boundary). Two negative controls confirm the suite bites:
+
+- Simplifying the carve-out to `rp == q − 1` fails 4 assertions across 4 cases.
+- Flipping the `r0 == 0` tie to step up fails 5 across 2.
+
+9 test cases, 1,849,585 assertions.

@@ -1255,6 +1255,34 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   failure mode this library has been bitten by before, so
   `tests/crypto/asyms/mldsaring.cpp` checks the table against Appendix B's
   printed values as well as against its defining property.
+- **`src/crypto/asyms/mldsarounding.hpp`/`.cpp`** define `MlDsaRounding`,
+  FIPS 204 7.4's rounding and hint machinery: `power2Round`, `decompose`,
+  `highBits`/`lowBits`, `makeHint` and `useHint`, scalar and per-polynomial.
+  Also private to `src/`.
+
+  The hint mechanism is why this exists. A signature carries one bit per
+  coefficient rather than w1 itself, and the verifier reconstructs
+  `HighBits(w - c*s2 + c*t0)` from its own approximation plus those bits --
+  which works only if `useHint()` inverts `makeHint()` exactly, and only
+  while the perturbation stays within gamma2, a bound the signing loop is
+  responsible for enforcing. The test checks that identity over random pairs
+  and, separately, at the bucket boundaries and across the carve-out band,
+  where random sampling would essentially never land.
+
+  Two traps are documented in the header rather than left to be
+  rediscovered:
+  - **`decompose()`'s `(q-1)` carve-out is a band, not a point.** Algorithm
+    36 branches on `r+ - r0 == q - 1`, which reads like "the single value
+    r == q-1" and is not: the condition holds across the whole top band of
+    width gamma2 -- 95232 values (1.14% of q) at gamma2 = (q-1)/88, 261888
+    (3.1%) at (q-1)/32. The obvious simplification to a point comparison is
+    wrong for 95231 inputs in the first case, and only an external vector
+    would catch it.
+  - **`mod±` here is not `MlDsaRing::centered()`.** That reduces modulo q,
+    which is odd, so its split sits at (q-1)/2; these reduce modulo 2^d and
+    2*gamma2, both even, where the range is (-m/2, m/2] and m/2 itself stays
+    positive. Same definition, different modulus, different edge -- hence a
+    separate `modPm()`.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via
