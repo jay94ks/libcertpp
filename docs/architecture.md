@@ -1325,6 +1325,52 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   the column byte before the row byte, exactly as ML-KEM's
   `SampleNTT(rho || j || i)` is. Both produce a scheme that is perfectly
   self-consistent and interoperates with nothing.
+- **`crypto/hmac.hpp` / `src/crypto/hmac.cpp`** define `CHmac`, RFC 2104 over
+  any fixed-output hasher here, with `IHasher`'s streaming shape plus a
+  one-shot `compute()` and a constant-time `verify()`. Not an `IHasher`: HMAC
+  is keyed, and `IHasher::create()` has nowhere to put a key. Re-keying an
+  instance reuses the underlying hasher, so HKDF's expand loop does not
+  allocate per block. The RFC 2104 block sizes live here rather than on
+  `IHasher` (which exposes only `byteWidth()`), because putting them on the
+  interface would mean changing its constructor and all ten implementations;
+  the trade is that a hasher added later is unsupported until
+  `blockBytesOf()` is extended, which fails loudly at `reset()` rather than
+  computing a wrong tag. SHAKE is refused -- RFC 2104 is defined over a
+  fixed-output hash.
+- **`crypto/hkdf.hpp` / `src/crypto/hkdf.cpp`** define `CHkdf`, RFC 5869's
+  extract-then-expand KDF, as `extract()`/`expand()`/`derive()`. A concrete
+  utility rather than one implementation of an `IKdf` family, following
+  `CRng`'s precedent: HKDF's two-step shape does not generalize to a
+  password-based KDF without an interface that fits neither well.
+- **`crypto/poly1305.hpp` / `src/crypto/poly1305.cpp`** define `CPoly1305`,
+  RFC 8439 2.5's one-time authenticator. `finish()` *consumes* the state
+  rather than being a repeatable query like `IHasher::finish()`, because
+  Poly1305 is one-time by construction -- two messages under one key let an
+  attacker solve for `r` and forge at will -- so leaving the instance usable
+  would invite the misuse that breaks it. It deliberately shares no interface
+  with `CHmac`: HMAC is keyed and reusable, this is neither, and letting them
+  be swapped would make that difference invisible at the call site.
+  `padToBlock()` is a named operation because RFC 8439 2.8's `pad16` closes a
+  partial block rather than extending the message, which pushing zeros cannot
+  express.
+- **`crypto/aeads/chacha20poly1305.hpp` /
+  `src/crypto/aeads/chacha20poly1305.cpp`** define `CChaCha20Poly1305`, RFC
+  8439 2.8. One instance is a keyed context -- construct per key, call
+  `seal()`/`open()` per record with only the nonce changing -- and neither
+  operation allocates. `out` may alias `in`, which is what lets a receiver
+  decrypt a record where it already sits.
+
+  `open()` verifies the tag *before* writing any plaintext. The tag covers the
+  ciphertext, so it can be checked while the input is intact -- and because
+  `out` may alias `in`, a decrypt-then-verify order would overwrite the
+  caller's only copy of the ciphertext with unauthenticated plaintext before
+  noticing the forgery. The comparison goes through `CSecure::equalsMask`, not
+  `memcmp`.
+- **`src/crypto/syms/chacha20core.hpp`/`.cpp`** define `ChaCha20Core`, the
+  block function, extracted from the stream cipher so the AEAD can share it --
+  the arrangement `DesCore` and `KeccakCore` already have. The AEAD needs it at
+  two counters `ISymmetric` cannot express: 0 for the Poly1305 key derivation,
+  and 1 onward for the payload.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via

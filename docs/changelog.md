@@ -1510,3 +1510,85 @@ RFC 4231's seven cases across SHA-1/256/384/512 and all six of RFC 5869's
 Appendix A cases now pass, each checked through the one-shot path, the
 streaming path at four different chunk sizes, and a single-bit tamper at every
 tag position.
+
+## ChaCha20-Poly1305 AEAD, for downstream link encryption
+
+The other half of libcskcwk's request. With HMAC/HKDF already in, this
+completes what it needs to encrypt node-to-node mesh records: X25519 for the
+agreement, HKDF to split the shared secret per direction, and an authenticated
+cipher per record.
+
+- `CPoly1305` (`crypto/poly1305.hpp`) — RFC 8439 2.5.
+- `CChaCha20Poly1305` (`crypto/aeads/chacha20poly1305.hpp`) — RFC 8439 2.8.
+- `ChaCha20Core` extracted from `crypto/syms/chacha20.cpp` into its own private
+  unit, the way `DesCore` and `KeccakCore` already were.
+
+### Why the core had to be extracted
+
+The AEAD needs the ChaCha20 block function at two *different* counters, and
+`ISymmetric` cannot express either: counter 0, whose first 32 bytes are the
+one-time Poly1305 key (RFC 8439 2.6), and counter 1 onward for the payload,
+because block 0 is spent on that key. The stream cipher always starts at 0, so
+reusing it through the public interface was not an option and duplicating the
+block function would have been worse.
+
+### What the API guarantees, and why
+
+The request asked for in-place operation, a reusable context, and a
+constant-time `open`. All three are in, and one of them has a consequence
+worth spelling out:
+
+**`open()` verifies before it writes a single plaintext byte.** The tag covers
+the ciphertext, so it can be checked while the input is still intact — and
+because `out` may alias `in`, the obvious decrypt-then-verify order would
+overwrite the caller's only copy of the ciphertext with unauthenticated
+plaintext *before* noticing the forgery. A failed `open()` therefore leaves the
+buffer exactly as it was, which the test asserts for every single-bit tag
+change (128 of them) and every single-byte ciphertext change.
+
+The tag comparison goes through `CSecure::equalsMask`, not `memcmp`: a
+comparison that stops at the first difference reveals how much of a forged tag
+was right, which is enough to construct one byte by byte.
+
+`CPoly1305::finish()` deliberately *consumes* the state rather than being a
+repeatable query like `IHasher::finish()`. Poly1305 is a one-time MAC — two
+messages under one key let an attacker solve for `r` and forge at will — so
+leaving the instance usable would invite exactly the misuse that breaks it. It
+also does not implement any shared MAC interface alongside HMAC: HMAC is keyed
+and reusable, this is neither, and letting the two be swapped behind one
+interface would make that difference invisible at the call site.
+
+`padToBlock()` exists as its own operation because RFC 8439 2.8's `pad16`
+closes a partial block rather than extending the message. Pushing zeros
+instead would be indistinguishable from the field itself ending in zeros, and
+keeping the AEAD's four fields from running into one another is the entire
+point of the padding.
+
+### Verified against the RFC at every published step
+
+A round trip proves almost nothing here: each of the likely errors is
+self-consistent. So the test checks RFC 8439 2.5.2 (Poly1305), 2.6.2 (the
+one-time key derivation) and 2.8.2 (the full AEAD) — the intermediate vector
+included, not just the end-to-end one.
+
+Four negative controls, each confirming the vectors bite:
+
+| change | result |
+|---|---|
+| keystream from counter 0 instead of 1 | 3 assertions fail |
+| MAC length-footer fields swapped | 2 fail |
+| `pad16` between aad and ciphertext omitted | 2 fail |
+| Poly1305's `r` clamping weakened by one mask | 4 fail |
+
+Every one of those produces output that seals and opens perfectly against
+itself; only the RFC's bytes catch them.
+
+The suite also includes an integration case shaped like cskcwk's actual
+protocol — one context per direction over HKDF-derived keys, a 4-byte prefix
+plus 64-bit counter nonce, eight records sealed in place — asserting that every
+record's ciphertext and tag differ, that a record replayed under the wrong
+counter is rejected, and that the opposite direction's key cannot open it.
+
+All six new/changed units were additionally checked with Clang under
+`-fno-ms-compatibility`, so they do not repeat the portability breakage fixed
+in `d297767`.
