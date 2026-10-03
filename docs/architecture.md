@@ -73,6 +73,7 @@ include/
     utils/
       djb.hpp                  # CDjb: DJB hash (plain/case-folded), SDjbValue
       hex.hpp                   # CHex: hex-string-to-bytes decoder (optional "0x"/"0X" prefix), shared by CBigNum::fromHex()/CGf2m::fromHex()
+      secure.hpp                 # CSecure: zeroization the compiler may not elide, plus constant-time equals()/equalsMask()/select() -- the operations whose running time must not depend on their inputs
       base64.hpp                 # CBase64: base64 codec, both a streaming push()/finish() transform and static one-shot encode()/decode(); EBase64Mode
       bignum.hpp                 # CBigNum: arbitrary-precision non-negative integer (RSA/DSA/EC/Ed25519 math)
       montgomery.hpp              # CMontgomery: one odd modulus + its precomputed Montgomery constants; division-free mul/add/sub/dbl/neg/modExp for the EC field arithmetic
@@ -108,7 +109,9 @@ include/
         streebog256.hpp             # Streebog256: GOST R 34.11-2012 with a 256-bit hash code (RFC 6986) -- its own IV, not a cut of the 512-bit digest
         streebog512.hpp             # Streebog512: GOST R 34.11-2012 with a 512-bit hash code (RFC 6986)
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
-      kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- header-only design, not yet implemented/wired
+      kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- encapsulate()/decapsulate() in place of sign/verify/encrypt/decrypt, because a KEM produces a ciphertext and a fresh secret together rather than encrypting a plaintext the caller chose
+      kems/                        # concrete IKem implementations, one file each (mirrors asyms/)
+        mlkem.hpp                     # CMlKem/SMlKemParams/SMlKemPoly/CMlKemSampler: ML-KEM (FIPS 203, post-quantum) over raw spans, K-PKE plus the FO transform with implicit rejection; and MLKEM, the same three parameter sets as an IKem
       rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
       eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass point arithmetic (affine coordinates); EEcKnownCurves + CEcCurve::knownCurves() name the built-in P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool (RFC 5639, 14 curves) and GOST R 34.10-2012 (9 parameter sets, 2 of them cofactor-4) domain parameters
       ec2curve.hpp                 # CEc2Curve/SEc2Point: binary-curve point arithmetic over CGf2m (affine coordinates); EEc2KnownCurves + CEc2Curve::knownCurves() name the 10 built-in B-163/K-163 .. B-571/K-571 domain parameters
@@ -130,11 +133,15 @@ include/
         des.hpp                         # DES: FIPS 46-3 keygen (64-bit) + CBC/PKCS#7 encrypt/decrypt -- legacy/interop only
         des3.hpp                         # TripleDES: two-/three-key EDE keygen + CBC/PKCS#7 encrypt/decrypt, built on DES's own block core
         chacha20.hpp                      # ChaCha20: RFC 8439 stream cipher, keygen + encrypt/decrypt (the same XOR operation either way)
+      hmac.hpp                     # CHmac: HMAC (RFC 2104) over any IHasher, with a constant-time verify() -- comparing a tag with memcmp leaks the matching prefix length and so makes a forgery oracle
+      blake2smac.hpp                # CBlake2sMac: BLAKE2s's own keyed mode (RFC 7693 2.6), which is NOT HMAC-BLAKE2s -- the key goes into the parameter block, not through HMAC's two-pass construction
+      siphash.hpp                   # CSipHash: SipHash-2-4, a keyed PRF for short inputs -- RFC 9018's DNS server cookies, and hash-table keying. Not a general-purpose MAC
       poly1305.hpp                 # CPoly1305: RFC 8439 one-time MAC, streaming push()/finish() + a one-shot compute()
       hkdf.hpp                      # CHkdf: HKDF (RFC 5869) extract/expand/derive over any hash CHmac supports -- for input that already has full entropy, and deliberately cheap
       pbkdf2.hpp                     # CPbkdf2: PBKDF2 (RFC 8018 5.2) derive() -- for a password, and deliberately not cheap; NOT interchangeable with CHkdf
       aeads/                       # AEADs: one seal()/open() pair each, not part of the ISymmetric surface (which has nowhere to put AAD or a tag)
         chacha20poly1305.hpp           # CChaCha20Poly1305: RFC 8439 2.8, 256-bit key, 96-bit nonce, 128-bit tag
+        xchacha20poly1305.hpp            # CXChaCha20Poly1305: draft-irtf-cfrg-xchacha, 256-bit key, 192-bit nonce -- long enough to choose at random, unlike the 96-bit one
         aesgcm.hpp                      # CAesGcm: NIST SP 800-38D, 128/192/256-bit key, 96-bit IV, 96..128-bit tag
     x509/
       ext.hpp                    # IExtension: concrete base for a decoded extension (oid()/value()), IExtensionPtr, IExtension::create() OID-dispatch factory
@@ -156,11 +163,9 @@ include/
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
       csr.hpp                            # CCertRequest/CCertRequestBuilder: parse (verifying the self-signature) / build + self-sign a PKCS#10 CertificationRequest; SCertRequestAttribute: one Attribute, PKCS#9 extensionRequest decoded into extensions
-      chain.hpp                          # SCertEntry/CCertCollection: certificates (+ optional keys, PKCS#9 attributes) with issuer-linkage lookups and buildChain(); IChainFormat: container-format interface, EChainFormats, builtIn()/detect()
+      chain.hpp                          # SCertEntry/CCertCollection: certificates + optional keys + the PKCS#9 attributes that pair them, with issuer-linkage lookups and buildChain() (NOT path validation); IChainFormat: container-format interface, EChainFormats, builtIn()/detect()
       chain/                              # one IChainFormat implementation per container format, the same arrangement exts/ has for extension types
         pem.hpp                            # CPemChainFormat: concatenated RFC 7468 PEM blocks -- and the whole of this library's PEM handling (CCert::importPem()/exportPem() delegate to it). No password, no encryption
-      chain.hpp                          # SCertEntry/CCertCollection: certificates + optional keys + the PKCS#9 attributes that pair them, with issuer-linkage lookups (NOT path validation); IChainFormat/EChainFormats: the container-format interface
-      chain/                              # concrete IChainFormat implementations, one file each -- the same arrangement exts/ has
         pfx.hpp                             # CPfxFormat: PKCS#12/PFX (RFC 7292), PBES2/AES-256-CBC + PBKDF2 encryption, MacData HMAC integrity
     dnssec/
       name.hpp                       # CDnsName: presentation <-> canonical wire-format domain names (RFC 4034 6.2 case folding); compression pointers deliberately rejected
@@ -178,6 +183,7 @@ src/
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
     montgomery.cpp                # CMontgomery: the -m^-1 mod 2^32 Newton iteration, R^2 mod m, and the CIOS Montgomery multiply over CBigNum's raw limbs
+    secure.cpp                    # CSecure: the zeroization the optimizer is not allowed to delete, and the constant-time compare/select primitives -- volatile writes and mask arithmetic, with no branch on a secret anywhere in the file
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
     buffer.cpp                # CBuffer::store()/resize()
@@ -222,7 +228,12 @@ src/
       streebog256.cpp                   # Streebog-256: own IV ((00000001)^64), own context/padding, emits MSB_256 of the final state
       streebog512.cpp                   # Streebog-512: own IV (0^512), own context/padding, emits the whole final state
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
-    kem.cpp                    # IKem::builtIn(): returns null for every EKems value, since no KEM is implemented yet
+    kem.cpp                    # IKem::builtIn(): dispatches EKems to a concrete kems/ implementation
+    kems/                       # concrete IKem implementations, one file each
+      mlkemring.hpp / .cpp          # MlKemRing: private, R_q = Z_q[X]/(X^256 + 1) with q = 3329; NTT/inverse NTT/base-case multiply, twiddles derived from ZETA rather than transcribed
+      mlkemcodec.hpp / .cpp          # MlKemCodec: private, FIPS 203's ByteEncode/ByteDecode and Compress/Decompress, plus isCanonical12() -- ByteDecode_12 reduces mod q and so is not injective, which IS the encapsulation-key validity check
+      mlkemsampler.cpp                # MlKemSampler: private, SampleNTT (the first consumer of SHAKE128::squeeze()) and the centered binomial sampler
+      mlkem.cpp                        # CMlKem (K-PKE + the FO transform with implicit rejection, over raw spans) and MLKEM (the same three sets as an IKem); the only ML-KEM layer that draws from CRng
     rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
     transform.cpp               # empty stub -- ITransformer is a pure-virtual interface, nothing out-of-line
     sym.cpp                      # ISymmetric::builtIn() factory dispatch
@@ -240,11 +251,14 @@ src/
       chacha20.cpp                      # ChaCha20: from-scratch quarter-round/block function + keystream XOR transformer
       chacha20core.hpp                   # ChaCha20Core: private, shared ChaCha20 block function, used by chacha20.cpp/aeads/chacha20poly1305.cpp
       chacha20core.cpp
+    hmac.cpp                     # CHmac implementation: the ipad/opad two-pass construction over any IHasher, with verify() going through CSecure::equals()
+    blake2smac.cpp                # CBlake2sMac implementation: drives Blake2sCore with the key in the parameter block and the key block absorbed first
     poly1305.cpp                 # CPoly1305 implementation (130-bit accumulator over 26-bit limbs)
     aeads/
       chacha20poly1305.cpp           # CChaCha20Poly1305: ChaCha20Core + CPoly1305, RFC 8439 2.8's framing
       ghash.hpp                       # Ghash: private GHASH + GCM's GF(2^128) multiply (bit-reflected; PCLMULQDQ path behind CERTPP_DISABLE_HWACCEL_SIMD), used only by aesgcm.cpp
       ghash.cpp
+      xchacha20poly1305.cpp             # CXChaCha20Poly1305: HChaCha20 derives a subkey from the first 16 nonce bytes, then ChaCha20-Poly1305 over the remaining 8 -- which is why the 192-bit nonce costs nothing but a subkey derivation
       aesgcm.cpp                       # CAesGcm: AesCore (counter mode) + Ghash, SP 800-38D 7.1's framing
     eccurve.cpp                  # CEcCurve/SEcPoint implementation, plus CEcCurve::_knownCurves' definition (the P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool and GOST R 34.10-2012 domain parameters, in EEcKnownCurves order -- the GOST ones parsed out of RFC 4357/7091/7836/9215 and machine-checked on-curve/order-checked before hardcoding)
     ec2curve.cpp                 # CEc2Curve/SEc2Point implementation, plus CEc2Curve::_knownCurves' definition (the 10 B-*/K-* domain parameters, in EEc2KnownCurves order -- each independently verified on-curve and order-checked before hardcoding, see this module's doc comment)
@@ -282,11 +296,9 @@ src/
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
     csr.cpp                            # CCertRequest/CCertRequestBuilder implementation (RFC 2986), built entirely on CCert's own encodeName()/encodeAlgorithmIdentifier()/encode+decodeSubjectPublicKeyInfo()/encodeExtensions()/parseExtensions()/signTbs()/verifySignedBlob() (friend access); own X.690 11.6 SET-OF ordering for the Attributes SET
-    chain.cpp                          # CCertCollection implementation (lookups, buildChain(), verifyLinks(), checkKeyPairing()) + IChainFormat::detect()/builtIn(), the one place that knows which container formats exist
-    chain/
-      pem.cpp                           # CPemChainFormat implementation: encapsulation-boundary scanning, labels, base64 framing, PKCS#9 "Bag Attributes", and the SEC1/PKCS#8/RFC 8410 private-key block encodings
-    chain.cpp                          # SCertEntry/CCertCollection implementation; IChainFormat::detect() and builtIn(), the one place that knows which formats exist
+    chain.cpp                          # SCertEntry/CCertCollection implementation (lookups, buildChain(), verifyLinks(), checkKeyPairing()) + IChainFormat::detect()/builtIn(), the one place that knows which container formats exist
     chain/                              # one .cpp per chain/ header
+      pem.cpp                           # CPemChainFormat implementation: encapsulation-boundary scanning, labels, base64 framing, PKCS#9 "Bag Attributes", and the SEC1/PKCS#8/RFC 8410 private-key block encodings
       pfx.cpp                             # CPfxFormat implementation; file-local PBES2 parse/build, the RFC 7292 Appendix B KDF (MAC key only), and the UTF-8 <-> BMPString password/friendlyName conversions
   dnssec/
     name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
@@ -302,6 +314,7 @@ tests/
     bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
     divmod.cpp                  # CBigNum::divMod() differentially fuzzed against a bit-serial reference built from the public API, plus constructed inputs for Algorithm D's add-back branch (unreachable by random testing)
     montgomery.cpp               # CMontgomery differentially fuzzed against the CBigNum operations it is the fast path for, over every modulus the library ships (the 29 curves' p and n, edwards448's p and L) plus random odd moduli from 1 to 32 limbs
+    secure.cpp                   # CSecure test cases: equals()/equalsMask()/select() over every differing-byte position and length, and that zero() leaves nothing behind in a buffer still in scope
     gf2m.cpp                     # CGf2m field-axiom/known-answer-vector/encode-decode test cases, one known-answer vector per field size, independently cross-derived via a standalone Python implementation
   io/
     array.cpp                 # TArray<T> test cases
@@ -362,10 +375,17 @@ tests/
       sha3.cpp                            # SHA3-256/SHA3-512 test cases (FIPS 202 published examples, rate-boundary lengths, million-'a' stress, chunk-invariance, and that SHA-3 differs from SHAKE at the same output length)
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
+      shake_squeeze.cpp                   # SHAKE128/SHAKE256 squeeze() test cases: chunk-invariance across every chunk size from 1 byte up, including splits landing on, just before and just after each rate boundary -- the only place a cursor off-by-one would show
       blake2s.cpp                         # BLAKE2s test cases (RFC 7693 Appendix B, the 256-entry unkeyed reference KAT, every digest length 1-32, block-boundary lengths, chunk-invariance)
       streebog.cpp                         # Streebog-256/-512 test cases (RFC 6986's two example messages, the published empty-message digests, chunk-invariance, that the 256-bit digest is not a cut of the 512-bit one, and RFC 9385's HMAC SKEYSEED -- the only available vector whose hash input is an exact multiple of the 64-byte block)
       streebogcore.cpp                     # StreebogCore test cases: Pi' is a bijection, Tau satisfies the Tau(8w+t) == w+8t identity the fast table is built on, the combined LPS table agrees with the literal three-pass spec reading, and the mod-2^512 accumulators carry correctly
+    kems/
+      mlkemring.cpp                 # MlKemRing: the twiddle table re-derived from ZETA, forward-then-inverse NTT round trip, the NTT-domain multiply against a schoolbook negacyclic reference, and X^256 == -1 asserted directly
+      mlkemcodec.cpp                 # MlKemCodec: ByteEncode/ByteDecode round trips at every width, and the compression rounding checked against the exact rational definition for every coefficient in [0, q)
+      kat_mlkem.cpp                   # ML-KEM keyGen/encap/decap against NIST ACVP for all three parameter sets, including the modified-ciphertext records (implicit rejection is a defined output, so ACVP publishes its expected secret) and both key-check negative groups
+      mlkem.cpp                        # MLKEM as an IKem: that repeated encapsulate() calls differ, that a tampered ciphertext returns ERET_OK with a different secret, and that a parameter set the standard never defined is refused by all eight entry points
     rng.cpp                       # CRng::fill() test cases
+    hmac.cpp                      # CHmac test cases (RFC 4231's SHA-224/256/384/512 vectors and RFC 2202's SHA-1 ones, the over-long-key hashing rule, and that verify() accepts only the exact tag)
     hkdf.cpp                       # CHkdf test cases (RFC 5869 Appendix A's SHA-256 A.1-A.3 and SHA-1 A.4-A.6, plus that an absent salt equals a HashLen zero salt)
     pbkdf2.cpp                      # CPbkdf2 test cases (RFC 6070's HMAC-SHA1 vectors, RFC 7914 s11's HMAC-SHA256 ones, the iterations-is-0 and output-length refusals; says why the 16777216-iteration case is left out)
     siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
@@ -376,6 +396,7 @@ tests/
       chacha20.cpp                    # ChaCha20 test cases (RFC 8439 Appendix A.1 block function, chunked keystream)
     aeads/
       chacha20poly1305.cpp          # CPoly1305 + CChaCha20Poly1305 test cases (RFC 8439 2.5.2/2.6.2/2.8.2)
+      xchacha20poly1305.cpp          # CXChaCha20Poly1305 test cases (draft-irtf-cfrg-xchacha A.3's vector, the HChaCha20 subkey against A.1, and that a 192-bit nonce whose last 8 bytes repeat does not repeat the keystream)
       aesgcm.cpp                     # CAesGcm test cases (the GCM spec's Appendix B 96-bit-IV cases 1-4/7-10/13-16, aliasing, tag truncation, tamper, error paths)
       ghash.cpp                       # Ghash test cases (field identities in GCM's bit order, multiply-by-x against the shift, chunking, portable-vs-PCLMULQDQ differential)
     eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)

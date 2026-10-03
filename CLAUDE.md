@@ -107,8 +107,12 @@ named `<name>.ko.md` — `README.md`/`README.ko.md`,
   inline — the existing files use a trailing `(영문)` for that.
 - **Translate the prose, not the identifiers.** Type names, function
   names, enumerators, file paths, CMake options, RFC numbers and shell
-  commands stay exactly as they are. The same goes for anything inside a
-  code fence: translate the comments around a block, never the code in it.
+  commands stay exactly as they are. Inside a code fence, the **comments are
+  translated and the code is not** — `README.ko.md` and `specs/recipes.ko.md`
+  both do this, and a Korean reader needs those comments more than the
+  surrounding prose. The same applies to a file-tree listing's `#`
+  annotations, which are prose that happens to sit in a fence: the paths and
+  identifiers stay, the descriptions are translated.
 - **Gloss a technical term on first use and then use the English term.**
   The established pattern is `큰 수(big-number)`, `이진체(binary-field)`,
   `임의 정밀도 정수` — Korean gloss in parentheses after the English term,
