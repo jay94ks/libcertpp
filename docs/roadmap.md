@@ -24,7 +24,7 @@ gets answered one way or the other, so it is recorded rather than dropped.
 | AES-GCM, and AES-CBC with no padding | SP 800-38D; SP 800-38A + RFC 7296 | IKEv2 |
 | ECDH on P-256 / P-384 | RFC 5903 | IKEv2 |
 | MD4 | RFC 1320 | EAP-MSCHAPv2's NT-hash |
-| GOST R 34.10-2012 signatures, GOST R 34.11-2012 (Streebog) hash | RFC 7091, RFC 6986 | Russian-profile certificates and DNSSEC |
+| GOST R 34.10-2012 / Streebog **X.509 and DNSSEC wiring** (the algorithms themselves are done) | RFC 9215, RFC 9558 | Russian-profile certificates and DNSSEC |
 | DNSKEY / RRSIG conversion utility | RFC 4034 Appendix A, with RFC 5702 / 6605 / 8080 for the per-algorithm key and signature encodings | DNSSEC |
 
 ### Notes that affect the implementations
@@ -57,11 +57,21 @@ gets answered one way or the other, so it is recorded rather than dropped.
 - **MD4 is broken** and is here only to interoperate with EAP-MSCHAPv2. It
   is documented the way MD5 already is: legacy interop only, never for new
   signatures.
+- **GOST's algorithms are implemented; only the encodings are left.**
+  `Streebog256`/`Streebog512` and `CGost3410` (nine parameter sets) are in
+  `crypto/`, validated against RFC 6986/7091/9215/9385 -- see
+  [`docs/changelog.md`](changelog.md). What remains is OIDs and wire
+  formats: the `id-tc26-signwithdigest-*` signature OIDs with an omitted
+  `parameters` field, the `SubjectPublicKeyInfo` whose `parameters` carries
+  the parameter-set OID and whose key bits are a BIT STRING *encapsulating
+  an OCTET STRING*, and the signature value as a raw `s || r` blob rather
+  than a DER `SEQUENCE { r, s }` -- so `CCert::verifyBy()` cannot assume the
+  ECDSA shape for these.
 - **GOST's DNSSEC story is split.** RFC 5933 registered the 2001 signature
   algorithm, and RFC 8624 says not to use it; the 2012 algorithms have
-  their own later registration. Which DNSSEC algorithm numbers to support
-  needs confirming against the current IANA registry before the DNSKEY
-  utility commits to any of them.
+  their own later registration (RFC 9558). Which DNSSEC algorithm numbers to
+  support needs confirming against the current IANA registry before the
+  DNSKEY utility commits to any of them.
 
 ## Constant-time and performance
 

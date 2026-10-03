@@ -14,11 +14,13 @@ memory-backed implementation); an `asn1` module
 BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
-(hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
-and binary curves, Ed25519, Ed448, X25519 -- symmetric ones -- AES,
-DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS 203,
-`crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and its
-`IKem` form), all from scratch); and an `x509` module that
+(hashing -- including GOST R 34.11-2012 ("Streebog") at both digest
+lengths (RFC 6986) -- a CSPRNG, asymmetric algorithms -- RSA, DSA,
+ECDSA over prime and binary curves, Ed25519, Ed448, X25519, and GOST R
+34.10-2012 over its nine named parameter sets (RFC 7091) -- symmetric
+ones -- AES, DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS
+203, `crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and
+its `IKem` form), all from scratch); and an `x509` module that
 both parses and builds DER/PEM X.509 `Certificate`s
 (`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
 request/response (RFC 6960), including ten concrete extension types

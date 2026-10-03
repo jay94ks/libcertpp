@@ -9,6 +9,8 @@
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/crypto/hashers/streebog256.hpp>
+#include <certpp/crypto/hashers/streebog512.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -50,6 +52,14 @@ namespace crypto {
 
             case EHASH_SHAKE256:
                 out = std::make_shared<SHAKE256>();
+                return ERET_OK;
+
+            case EHASH_STREEBOG256:
+                out = std::make_shared<Streebog256>();
+                return ERET_OK;
+
+            case EHASH_STREEBOG512:
+                out = std::make_shared<Streebog512>();
                 return ERET_OK;
 
             default:

@@ -12,9 +12,10 @@ namespace crypto {
 
     /**
      * The asymmetric algorithms this library implements (see crypto/asyms/ for each concrete
-     * IAsymmetric): RSA, DSA, Ed25519/Ed448 (EdDSA), X25519 (Diffie-Hellman key agreement), and
-     * every prime-field/binary-field elliptic curve CEcdsa/CEcdsa2 supports. Lives here (rather
-     * than asym.hpp, where it's used far more -- IAsymmetric::builtIn(), etc.) because
+     * IAsymmetric): RSA, DSA, Ed25519/Ed448 (EdDSA), X25519 (Diffie-Hellman key agreement),
+     * GOST R 34.10-2012 over each of its parameter sets, and every prime-field/binary-field
+     * elliptic curve CEcdsa/CEcdsa2 supports. Lives here (rather than asym.hpp, where it's
+     * used far more -- IAsymmetric::builtIn(), etc.) because
      * IKeyBase::algorithm() needs it too, and asym.hpp already includes this header (not the
      * other way around).
      */
@@ -54,6 +55,15 @@ namespace crypto {
         EASYM_K409,            /**< K-409 algorithm */
         EASYM_B571,            /**< B-571 algorithm */
         EASYM_K571,            /**< K-571 algorithm */
+        EASYM_GOST256TEST,     /**< GOST R 34.10-2012 over id-GostR3410-2001-TestParamSet; testing only */
+        EASYM_GOST256A,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-256-paramSetA */
+        EASYM_GOST256B,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-256-paramSetB */
+        EASYM_GOST256C,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-256-paramSetC */
+        EASYM_GOST256D,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-256-paramSetD */
+        EASYM_GOST512TEST,     /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-512-paramSetTest; testing only */
+        EASYM_GOST512A,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-12-512-paramSetA */
+        EASYM_GOST512B,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-12-512-paramSetB */
+        EASYM_GOST512C,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-512-paramSetC */
 
         /**< Marker for the maximum value of EAsymmetrics. */
         EASYM_MAX,

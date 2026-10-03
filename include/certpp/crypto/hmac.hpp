@@ -67,8 +67,9 @@ namespace crypto {
         /**
          * The block size RFC 2104 uses for a given hash, in bytes.
          * @param hasherType The hash algorithm.
-         * @return 64 for MD5/SHA-1/SHA-224/SHA-256, 128 for SHA-384/SHA-512, the sponge rate for
-         * SHA3-256 (136) and SHA3-512 (72), and 0 for anything HMAC is not defined over.
+         * @return 64 for MD5/SHA-1/SHA-224/SHA-256 and for both Streebog lengths, 128 for
+         * SHA-384/SHA-512, the sponge rate for SHA3-256 (136) and SHA3-512 (72), and 0 for
+         * anything HMAC is not defined over.
          */
         static size_t blockBytesOf(EHashers hasherType);
 

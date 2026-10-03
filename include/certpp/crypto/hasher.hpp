@@ -26,6 +26,8 @@ namespace crypto {
         EHASH_SHA3_512,    /**< SHA3-512 hash algorithm (FIPS 202) */
         EHASH_SHAKE128,    /**< SHAKE-128 hash algorithm */
         EHASH_SHAKE256,    /**< SHAKE-256 hash algorithm */
+        EHASH_STREEBOG256, /**< GOST R 34.11-2012 ("Streebog") with a 256-bit hash code (RFC 6986) */
+        EHASH_STREEBOG512, /**< GOST R 34.11-2012 ("Streebog") with a 512-bit hash code (RFC 6986) */
 
         /** Marker for the maximum value of EHashers. */
         EHASH_MAX

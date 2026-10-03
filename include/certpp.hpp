@@ -38,6 +38,8 @@
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/crypto/hashers/streebog256.hpp>
+#include <certpp/crypto/hashers/streebog512.hpp>
 #include <certpp/crypto/hmac.hpp>
 #include <certpp/crypto/hkdf.hpp>
 #include <certpp/crypto/keys.hpp>
@@ -55,6 +57,7 @@
 #include <certpp/crypto/asyms/ed25519.hpp>
 #include <certpp/crypto/asyms/ed448.hpp>
 #include <certpp/crypto/asyms/x25519.hpp>
+#include <certpp/crypto/asyms/gost3410.hpp>
 #include <certpp/crypto/kems/mlkem.hpp>
 #include <certpp/crypto/syms/aes.hpp>
 #include <certpp/crypto/syms/des.hpp>

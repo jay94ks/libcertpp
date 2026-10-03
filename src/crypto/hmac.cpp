@@ -10,8 +10,8 @@ namespace crypto {
         constexpr uint8_t IPAD = 0x36;
         constexpr uint8_t OPAD = 0x5C;
 
-        /* The largest digest any hash HMAC is defined over here produces: SHA-512 and SHA3-512
-         * both at 64 bytes. Named so the stack buffers below state what bounds them. */
+        /* The largest digest any hash HMAC is defined over here produces: SHA-512, SHA3-512 and
+         * Streebog-512 all at 64 bytes. Named so the stack buffers below state what bounds them. */
         constexpr size_t MAX_DIGEST_BYTES = 64;
 
     } // namespace
@@ -46,6 +46,13 @@ namespace crypto {
 
             case EHASH_SHA3_512:
                 return 72;
+
+            // --> Streebog's compression function takes a 512-bit block, and RFC 7836
+            // sections 4.1.1/4.1.2 fix B = 64 for both digest lengths -- unlike SHA-2, the
+            // 512-bit variant does not get a wider block.
+            case EHASH_STREEBOG256:
+            case EHASH_STREEBOG512:
+                return 64;
 
             // SHAKE is an XOF with a caller-chosen output length; RFC 2104 is defined over a
             // fixed-output hash, so HMAC-SHAKE is not a thing and is refused rather than guessed.
