@@ -86,5 +86,8 @@
 #include <certpp/x509/cert.hpp>
 #include <certpp/x509/crl.hpp>
 #include <certpp/x509/ocsp.hpp>
+#include <certpp/dnssec/name.hpp>
+#include <certpp/dnssec/records.hpp>
+#include <certpp/dnssec/keys.hpp>
 
 #endif

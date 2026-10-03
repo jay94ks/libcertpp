@@ -18,36 +18,18 @@ gets answered one way or the other, so it is recorded rather than dropped.
 
 | Algorithm | Standard | For |
 | --------- | -------- | --- |
-| SipHash-2-4 | Aumasson--Bernstein; RFC 9018 names it for DNS server cookies | DNS server cookies |
-| BLAKE2s -- hash, keyed MAC, and HMAC-BLAKE2s | RFC 7693 | WireGuard |
-| XChaCha20-Poly1305 (and HChaCha20) | draft-irtf-cfrg-xchacha | WireGuard |
-| AES-GCM, and AES-CBC with no padding | SP 800-38D; SP 800-38A + RFC 7296 | IKEv2 |
-| ECDH on P-256 / P-384 | RFC 5903 | IKEv2 |
-| MD4 | RFC 1320 | EAP-MSCHAPv2's NT-hash |
 | GOST R 34.10-2012 signatures, GOST R 34.11-2012 (Streebog) hash | RFC 7091, RFC 6986 | Russian-profile certificates and DNSSEC |
-| DNSKEY / RRSIG conversion utility | RFC 4034 Appendix A, with RFC 5702 / 6605 / 8080 for the per-algorithm key and signature encodings | DNSSEC |
+
+Landed, and now described in [`docs/architecture.md`](architecture.md):
+SipHash-2-4 (RFC 9018's DNS server-cookie PRF), BLAKE2s in all three forms
+(RFC 7693, for WireGuard), XChaCha20-Poly1305 with HChaCha20
+(draft-irtf-cfrg-xchacha), AES-GCM and an unpadded CBC mode (SP 800-38D and
+SP 800-38A, for IKEv2), ECDH over the prime curves (RFC 5903, also IKEv2),
+MD4 (RFC 1320, for EAP-MSCHAPv2's NT hash), and the DNSKEY/RRSIG conversion
+utility (RFC 4034, with RFC 5702/6605/8080 for the per-algorithm encodings).
 
 ### Notes that affect the implementations
 
-- **BLAKE2s needs all three forms.** WireGuard uses the native keyed MAC
-  (RFC 7693 2.9, where the key is absorbed as a padded first block) *and*
-  HMAC-BLAKE2s (the generic RFC 2104 construction) in different places.
-  They are different functions and one does not substitute for the other.
-  `CHmac` switches over `EHashers` for its block-size mapping, so a new
-  hasher that is not added there will silently misbehave under HMAC.
-- **HChaCha20 has no feed-forward.** Unlike ChaCha20's block function it
-  does not add the original state back. Reusing the block function verbatim
-  gives a subkey that is self-consistent and incompatible with every other
-  implementation.
-- **GCM's field is bit-reflected.** `CGf2m` already does GF(2^m) with a
-  PCLMULQDQ-accelerated multiply, but GCM's representation reverses bit
-  order within each byte relative to the usual polynomial-basis convention.
-  Reusing a conventional multiply unmodified produces results that are
-  self-consistent and wrong. Whether GHASH should extend `CGf2m` or live
-  separately is a real design question, not a formality.
-- **Unpadded CBC must not change padded CBC.** The existing
-  `CbcTransformer` and the SP 800-38A vectors that cover it are not to be
-  disturbed; unpadded mode is a selectable mode, not a new default.
 - **Prime-curve ECDH is not constant-time today**, though not for the
   reason it first appears. `CEcCurve::scalarMul()` is *not* a naive
   `if (k.testBit(i)) add` -- it is already a branch-free-*shaped* ladder
@@ -73,9 +55,6 @@ gets answered one way or the other, so it is recorded rather than dropped.
   stated plainly in `deriveSharedSecret()`'s doc comment, naming the
   IKEv2 ephemeral handshake as the case where it matters and pointing
   callers at X25519 where the protocol allows a choice.
-- **MD4 is broken** and is here only to interoperate with EAP-MSCHAPv2. It
-  is documented the way MD5 already is: legacy interop only, never for new
-  signatures.
 - **GOST's DNSSEC story is split.** RFC 5933 registered the 2001 signature
   algorithm, and RFC 8624 says not to use it; the 2012 algorithms have
   their own later registration. Which DNSSEC algorithm numbers to support
@@ -105,6 +84,12 @@ anything.
   wider limbs. At 3.92 GHz the 1.5 GiB/s target is 2.43 cycles/byte for
   cipher and MAC together, which is near the edge of what AVX2 can do --
   worth stating in cycles/byte so it can be judged against other hardware.
+
+  One caveat on that negative result: the machine was under load for those
+  runs. The `_addcarry_u64` version measured 40% down across three
+  consecutive runs, which is well outside this machine's noise, but the
+  first version's "no faster" was a much smaller margin and deserves
+  re-measuring on a quiet machine before the conclusion is leaned on.
 - **Small-record fixed cost.** Target 150 ns for a 64 B `seal()`, currently
   around 420 ns. Most of it is two scalar ChaCha20 block functions: one for
   the Poly1305 one-time key at counter 0, one for the payload. Generating
