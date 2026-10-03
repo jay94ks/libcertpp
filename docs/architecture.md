@@ -13,7 +13,8 @@ sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
 
 `crypto` has: an `IHasher` interface with from-scratch MD4/MD5/SHA-1/SHA-224/
-SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256 implementations; a CSPRNG utility
+SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s
+implementations; a CSPRNG utility
 (`CRng`); an `IAsymmetric` interface with seven concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
 decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
@@ -89,6 +90,7 @@ include/
         sha3_512.hpp                 # SHA3-512 (FIPS 202): same, 64-byte output, 72-byte rate
         shake128.hpp                # SHAKE128, the 128-bit-security sibling of SHAKE256 -- same shape, shares KeccakCore
         shake256.hpp                # SHAKE256, the Keccak/SHA-3-family XOF (FIPS 202); output length fixed per instance via the constructor, not the algorithm
+        blake2s.hpp                 # BLAKE2s (RFC 7693), unkeyed; little-endian HAIFA construction, digest length 1-32 bound into the parameter block
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
       kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- header-only design, not yet implemented/wired
       rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
@@ -176,6 +178,9 @@ src/
       sha3_512.cpp                       # SHA3-512: drives Sha3Core at RATE=72
       shake128.cpp                     # SHAKE128: drives KeccakCore at RATE=168
       shake256.cpp                    # SHAKE256: drives KeccakCore at RATE=136
+      blake2score.hpp                  # Blake2sCore: private, the whole BLAKE2s state machine (parameter block, compression, buffering, finalization), shared by blake2s.cpp and blake2smac.cpp
+      blake2score.cpp
+      blake2s.cpp                       # BLAKE2s: drives Blake2sCore unkeyed, at the constructor's digest length
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
     kem.cpp                    # IKem::builtIn(): returns null for every EKems value, since no KEM is implemented yet
     rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
@@ -275,6 +280,7 @@ tests/
       sha3.cpp                            # SHA3-256/SHA3-512 test cases (FIPS 202 published examples, rate-boundary lengths, million-'a' stress, chunk-invariance, and that SHA-3 differs from SHAKE at the same output length)
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
+      blake2s.cpp                         # BLAKE2s test cases (RFC 7693 Appendix B, the 256-entry unkeyed reference KAT, every digest length 1-32, block-boundary lengths, chunk-invariance)
     rng.cpp                       # CRng::fill() test cases
     siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
     syms/
@@ -1348,11 +1354,41 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   instance reuses the underlying hasher, so HKDF's expand loop does not
   allocate per block. The RFC 2104 block sizes live here rather than on
   `IHasher` (which exposes only `byteWidth()`), because putting them on the
-  interface would mean changing its constructor and all ten implementations;
+  interface would mean changing its constructor and all of its implementations;
   the trade is that a hasher added later is unsupported until
   `blockBytesOf()` is extended, which fails loudly at `reset()` rather than
   computing a wrong tag. SHAKE is refused -- RFC 2104 is defined over a
-  fixed-output hash.
+  fixed-output hash. BLAKE2s's entry there is 64 bytes, the same block SHA-256
+  uses; HMAC over BLAKE2s is well defined and distinct from BLAKE2's own keyed
+  mode (`CBlake2sMac`).
+- **`crypto/hashers/blake2s.hpp` / `src/crypto/hashers/blake2s.cpp`** define
+  `BLAKE2s`, RFC 7693, as `EHASH_BLAKE2S`. Added for WireGuard's handshake
+  (its `HASH()`, `MAC()` and HKDF all use it) but an ordinary member of the
+  `EHashers` family. It is little-endian throughout where the SHA-2 family is
+  big-endian, and a HAIFA rather than Merkle-Damgard construction: no
+  length-padding block, the byte counter and a finalization flag go straight
+  into the last compression, so a block is held back until a later byte proves
+  it is not the last. The digest length (1-32) is bound into the parameter
+  block, which makes `BLAKE2s(16)` a different function from the leading 16
+  bytes of `BLAKE2s(32)` -- the constructor folds an out-of-range length onto
+  32 rather than producing an instance the parameter block cannot describe.
+  The state machine lives in `src/crypto/hashers/blake2score.hpp`
+  (`Blake2sCore`) and is shared with `CBlake2sMac`, following `Sha3Core`'s
+  pattern of free-standing operations over raw arrays so each public class
+  declares its own context in its own header.
+- **`crypto/blake2smac.hpp` / `src/crypto/blake2smac.cpp`** define
+  `CBlake2sMac`, BLAKE2's *native* keyed mode (RFC 7693 2.9/3.3), which is
+  what WireGuard's `MAC()` is. The key is one zero-padded first block and its
+  length is in the parameter block; there is no ipad/opad and no second pass.
+  This is **not** HMAC-BLAKE2s, which is `CHmac` with `EHASH_BLAKE2S` and is
+  what WireGuard's HKDF uses -- the two produce different tags from the same
+  inputs, so confusing them fails interoperability silently. It is a separate
+  class rather than a keyed `reset()` on `BLAKE2s` because `IHasher::reset()`
+  takes no arguments: a keyed hasher would either lose its key on a
+  polymorphic reset or masquerade as a plain hash behind an `IHasherPtr`, the
+  same reasoning that keeps `CPoly1305` out of the hasher hierarchy. Unlike
+  `CPoly1305` the key is reusable across messages, and `finish()` is a
+  repeatable query.
 - **`crypto/hkdf.hpp` / `src/crypto/hkdf.cpp`** define `CHkdf`, RFC 5869's
   extract-then-expand KDF, as `extract()`/`expand()`/`derive()`. A concrete
   utility rather than one implementation of an `IKdf` family, following
