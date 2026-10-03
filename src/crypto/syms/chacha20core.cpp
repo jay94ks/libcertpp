@@ -1,6 +1,16 @@
 #include "chacha20core.hpp"
 #include <cstring>
 
+/* Four-block SSE2 path. Unlike CBigNum's ADX/BMI2 and CGf2m's PCLMULQDQ, this needs no runtime
+ * CPU check: SSE2 is part of the x86-64 ABI, so every 64-bit x86 processor has it. The gate is
+ * therefore the architecture and the build option alone, and there is no feature-detection
+ * branch to get wrong. Still honours CERTPP_DISABLE_HWACCEL_SIMD, so the portable path stays
+ * reachable for comparison -- which is what the differential test below relies on. */
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && (defined(_M_X64) || defined(__x86_64__))
+#define CERTPP_CHACHA20_SSE2 1
+#include <emmintrin.h>
+#endif
+
 namespace certpp {
 namespace crypto {
 
@@ -66,6 +76,107 @@ namespace crypto {
             }
         }
 
+
+#if defined(CERTPP_CHACHA20_SSE2)
+
+        /* SSE2 has no vector rotate, so it is a shift pair. The 16- and 8-bit cases have faster
+         * shuffle forms under SSSE3, which is deliberately not required here. */
+        template <int N>
+        inline __m128i rotl32x4(__m128i x) {
+            return _mm_or_si128(_mm_slli_epi32(x, N), _mm_srli_epi32(x, 32 - N));
+        }
+
+        inline void quarterRoundX4(__m128i& a, __m128i& b, __m128i& c, __m128i& d) {
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl32x4<16>(d);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl32x4<12>(b);
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl32x4<8>(d);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl32x4<7>(b);
+        }
+
+        /* Turns four vectors each holding one state word across four blocks into four vectors
+         * each holding four consecutive words of one block -- which is the layout the output
+         * needs. The whole 4-way scheme is one 4x4 transpose per group of four words. */
+        inline void transpose4(__m128i& a, __m128i& b, __m128i& c, __m128i& d) {
+            const __m128i t0 = _mm_unpacklo_epi32(a, b);
+            const __m128i t1 = _mm_unpackhi_epi32(a, b);
+            const __m128i t2 = _mm_unpacklo_epi32(c, d);
+            const __m128i t3 = _mm_unpackhi_epi32(c, d);
+
+            a = _mm_unpacklo_epi64(t0, t2);
+            b = _mm_unpackhi_epi64(t0, t2);
+            c = _mm_unpacklo_epi64(t1, t3);
+            d = _mm_unpackhi_epi64(t1, t3);
+        }
+
+        /* Four blocks at a time: each of the sixteen state words becomes a vector holding that
+         * word for four consecutive counters, so one pass of the rounds produces 256 bytes of
+         * keystream. The rounds are the same twenty; what changes is that four independent
+         * blocks fill the four lanes, which is where the speedup comes from -- ChaCha20 blocks
+         * are independent by construction, so there is nothing to serialize.
+         *
+         * x86 is little-endian, so a state word stored straight out of a vector is already in
+         * the byte order the algorithm specifies; no byte-swapping is needed anywhere here. */
+        void xorStream4(
+            const ChaCha20Core::SState& state, uint32_t counter,
+            const uint8_t* in, uint8_t* out, size_t blocks
+        ) {
+            __m128i original[16];
+            for (size_t i = 0; i < 16; ++i) {
+                original[i] = _mm_set1_epi32(int(state.words[i]));
+            }
+
+            for (size_t blockIndex = 0; blockIndex < blocks; blockIndex += 4) {
+                const uint32_t base = counter + uint32_t(blockIndex);
+
+                __m128i v[16];
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = original[i];
+                }
+                v[12] = _mm_setr_epi32(int(base), int(base + 1), int(base + 2), int(base + 3));
+
+                const __m128i counters = v[12];
+
+                for (int round = 0; round < 10; ++round) {
+                    quarterRoundX4(v[0], v[4], v[8], v[12]);
+                    quarterRoundX4(v[1], v[5], v[9], v[13]);
+                    quarterRoundX4(v[2], v[6], v[10], v[14]);
+                    quarterRoundX4(v[3], v[7], v[11], v[15]);
+
+                    quarterRoundX4(v[0], v[5], v[10], v[15]);
+                    quarterRoundX4(v[1], v[6], v[11], v[12]);
+                    quarterRoundX4(v[2], v[7], v[8], v[13]);
+                    quarterRoundX4(v[3], v[4], v[9], v[14]);
+                }
+
+                // Feed-forward: add the original state back, with word 12 taking the per-lane
+                // counters rather than the broadcast zero.
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = _mm_add_epi32(v[i], (i == 12) ? counters : original[i]);
+                }
+
+                // Transpose each group of four words, then XOR each block into place.
+                for (size_t group = 0; group < 4; ++group) {
+                    transpose4(v[4 * group], v[4 * group + 1],
+                               v[4 * group + 2], v[4 * group + 3]);
+                }
+
+                for (size_t block = 0; block < 4; ++block) {
+                    for (size_t group = 0; group < 4; ++group) {
+                        const size_t offset =
+                            (blockIndex + block) * 64 + group * 16;
+
+                        const __m128i keystream = v[4 * group + block];
+                        const __m128i input = _mm_loadu_si128(
+                            reinterpret_cast<const __m128i*>(in + offset));
+
+                        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + offset),
+                                         _mm_xor_si128(input, keystream));
+                    }
+                }
+            }
+        }
+
+#endif
     } // namespace
 
     /* Prepares a state from a key and nonce. */
@@ -106,6 +217,20 @@ namespace crypto {
     ) {
         uint32_t counter = initialCounter;
         size_t offset = 0;
+
+#if defined(CERTPP_CHACHA20_SSE2)
+        // Four-block groups go through SSE2; the remainder falls through to the scalar loop
+        // below, which also serves every non-x86-64 target and a build with the option off.
+        const size_t wholeBlocks = (length - offset) / BLOCK_BYTES;
+        const size_t vectorBlocks = wholeBlocks & ~size_t(3);
+
+        if (vectorBlocks != 0) {
+            xorStream4(state, counter, in + offset, out + offset, vectorBlocks);
+
+            offset += vectorBlocks * BLOCK_BYTES;
+            counter += uint32_t(vectorBlocks);
+        }
+#endif
 
         while (length - offset >= BLOCK_BYTES) {
             uint32_t working[16];

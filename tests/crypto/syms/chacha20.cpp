@@ -3,6 +3,7 @@
 
 #include <certpp.hpp>
 #include <cstring>
+#include <vector>
 
 using namespace certpp;
 using namespace certpp::crypto;
@@ -167,4 +168,202 @@ TEST_CASE("ChaCha20: createEncrypter fails without a key or a correctly-sized no
     ISymmetricContextPtr ctxNoNonce = cc->createContext(key);
     ISymmetricTransformerPtr t2;
     CHECK(ctxNoNonce->createEncrypter(t2) == ERET_KEY_PARAM);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The four-block SSE2 path, against an independent scalar reference.
+//
+// RFC 8439's own vectors do not reach it: the AEAD vector in 2.8.2 is 114 bytes and the cipher
+// vectors are smaller still, so every one of them is served entirely by the scalar loop. A
+// vectorized path that is wrong past the first four blocks would pass all of them.
+//
+// So the reference below is ChaCha20's block function written out again from RFC 8439 2.3,
+// sharing no code with the library's, and the comparison sweeps every length across the
+// scalar/vector boundary at 256 bytes -- including the partial blocks on either side of it,
+// where the two paths hand over to each other.
+
+namespace {
+    /* RFC 8439 2.3, implemented independently of ChaCha20Core. */
+    struct ReferenceChaCha20 {
+        static uint32_t rotl(uint32_t x, int n) {
+            return (x << n) | (x >> (32 - n));
+        }
+
+        static void quarter(uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d) {
+            a += b; d ^= a; d = rotl(d, 16);
+            c += d; b ^= c; b = rotl(b, 12);
+            a += b; d ^= a; d = rotl(d, 8);
+            c += d; b ^= c; b = rotl(b, 7);
+        }
+
+        static void block(
+            const uint8_t key[32], const uint8_t nonce[12], uint32_t counter, uint8_t out[64]
+        ) {
+            uint32_t s[16];
+            s[0] = 0x61707865u; s[1] = 0x3320646eu;
+            s[2] = 0x79622d32u; s[3] = 0x6b206574u;
+
+            for (int i = 0; i < 8; ++i) {
+                s[4 + i] = uint32_t(key[4 * i]) | (uint32_t(key[4 * i + 1]) << 8)
+                         | (uint32_t(key[4 * i + 2]) << 16) | (uint32_t(key[4 * i + 3]) << 24);
+            }
+
+            s[12] = counter;
+            for (int i = 0; i < 3; ++i) {
+                s[13 + i] = uint32_t(nonce[4 * i]) | (uint32_t(nonce[4 * i + 1]) << 8)
+                          | (uint32_t(nonce[4 * i + 2]) << 16) | (uint32_t(nonce[4 * i + 3]) << 24);
+            }
+
+            uint32_t w[16];
+            for (int i = 0; i < 16; ++i) {
+                w[i] = s[i];
+            }
+
+            for (int r = 0; r < 10; ++r) {
+                quarter(w[0], w[4], w[8], w[12]);
+                quarter(w[1], w[5], w[9], w[13]);
+                quarter(w[2], w[6], w[10], w[14]);
+                quarter(w[3], w[7], w[11], w[15]);
+                quarter(w[0], w[5], w[10], w[15]);
+                quarter(w[1], w[6], w[11], w[12]);
+                quarter(w[2], w[7], w[8], w[13]);
+                quarter(w[3], w[4], w[9], w[14]);
+            }
+
+            for (int i = 0; i < 16; ++i) {
+                const uint32_t v = w[i] + s[i];
+                out[4 * i + 0] = uint8_t(v);
+                out[4 * i + 1] = uint8_t(v >> 8);
+                out[4 * i + 2] = uint8_t(v >> 16);
+                out[4 * i + 3] = uint8_t(v >> 24);
+            }
+        }
+
+        /* The keystream from counter 1, which is what the AEAD's payload uses. */
+        static std::vector<uint8_t> keystreamFromOne(
+            const uint8_t key[32], const uint8_t nonce[12], size_t length
+        ) {
+            std::vector<uint8_t> out;
+            uint32_t counter = 1;
+
+            while (out.size() < length) {
+                uint8_t blk[64];
+                block(key, nonce, counter, blk);
+                ++counter;
+
+                for (size_t i = 0; i < 64 && out.size() < length; ++i) {
+                    out.push_back(blk[i]);
+                }
+            }
+
+            return out;
+        }
+    };
+}
+
+TEST_CASE("ChaCha20: the vectorized path matches an independent reference at every length") {
+    uint8_t key[32];
+    uint8_t nonce[12];
+    for (size_t i = 0; i < 32; ++i) {
+        key[i] = uint8_t(i * 7 + 1);
+    }
+    for (size_t i = 0; i < 12; ++i) {
+        nonce[i] = uint8_t(i * 5 + 3);
+    }
+
+    CChaCha20Poly1305 aead;
+    REQUIRE(aead.reset(SReadOnlyByteSpan(key, sizeof(key))));
+
+    // Every length from 0 to 600 covers: the scalar-only region below 256, the handover at
+    // exactly 256, the vector region, and every partial-block remainder after a vector group.
+    // Then a few larger sizes, where several vector groups run back to back.
+    std::vector<size_t> lengths;
+    for (size_t n = 0; n <= 600; ++n) {
+        lengths.push_back(n);
+    }
+    for (size_t n : { size_t(1024), size_t(4096), size_t(16384), size_t(65536) }) {
+        lengths.push_back(n);
+    }
+
+    for (size_t n : lengths) {
+        // Sealing a zero buffer yields the keystream itself, which is what makes this a direct
+        // comparison of the two implementations rather than of ciphertexts.
+        std::vector<uint8_t> buffer(n, 0x00);
+        uint8_t tag[16];
+
+        REQUIRE(aead.seal(SReadOnlyByteSpan(nonce, sizeof(nonce)),
+                          SReadOnlyByteSpan(nullptr, 0),
+                          SReadOnlyByteSpan(buffer.data(), n),
+                          SByteSpan(buffer.data(), n),
+                          SByteSpan(tag, sizeof(tag))));
+
+        const std::vector<uint8_t> expected =
+            ReferenceChaCha20::keystreamFromOne(key, nonce, n);
+
+        REQUIRE(buffer.size() == expected.size());
+        for (size_t i = 0; i < n; ++i) {
+            // Reported per byte so a failure names the exact offset, which immediately says
+            // whether the fault is in a vector group, a transpose lane, or the remainder.
+            REQUIRE(buffer[i] == expected[i]);
+        }
+    }
+}
+
+TEST_CASE("ChaCha20: the stream cipher agrees with the reference across chunk boundaries") {
+    uint8_t key[32];
+    uint8_t nonce[12];
+    for (size_t i = 0; i < 32; ++i) {
+        key[i] = uint8_t(0xA0 + i);
+    }
+    for (size_t i = 0; i < 12; ++i) {
+        nonce[i] = uint8_t(0x10 + i);
+    }
+
+    // The transformer keeps a cursor across calls, so feeding it in awkward pieces exercises the
+    // handover between its byte-wise edges and the block-aligned vector bulk. The chunk sizes
+    // straddle both boundaries that matter: 64 (one block) and 256 (one vector group).
+    const size_t total = 1000;
+
+    // The stream cipher starts at counter 0, unlike the AEAD payload, which starts at 1.
+    std::vector<uint8_t> expected;
+    uint32_t refCounter = 0;
+    while (expected.size() < total) {
+        uint8_t blk[64];
+        ReferenceChaCha20::block(key, nonce, refCounter, blk);
+        ++refCounter;
+        for (size_t i = 0; i < 64 && expected.size() < total; ++i) {
+            expected.push_back(blk[i]);
+        }
+    }
+
+    for (size_t chunk : { size_t(1), size_t(7), size_t(63), size_t(64), size_t(65),
+                          size_t(255), size_t(256), size_t(257) }) {
+        ISymmetricPtr cc = ISymmetric::builtIn(ESYM_CHACHA20);
+        ISymmetricKeyPtr skey = cc->createKey(SReadOnlyByteSpan(key, sizeof(key)));
+        REQUIRE(skey);
+
+        ISymmetricContextPtr ctx = cc->createContext(skey);
+        ctx->key(skey, CBuffer(nonce, sizeof(nonce)));
+
+        ISymmetricTransformerPtr enc;
+        REQUIRE(ctx->createEncrypter(enc) == ERET_OK);
+
+        std::vector<uint8_t> input(total, 0x00);
+        std::vector<uint8_t> output(total, 0xFF);
+
+        size_t offset = 0;
+        while (offset < total) {
+            const size_t take = (total - offset < chunk) ? (total - offset) : chunk;
+
+            SByteSpan piece(output.data() + offset, take);
+            REQUIRE(enc->transform(SReadOnlyByteSpan(input.data() + offset, take), piece)
+                    == ERET_OK);
+            REQUIRE(piece.size == take);
+            offset += take;
+        }
+
+        for (size_t i = 0; i < total; ++i) {
+            REQUIRE(output[i] == expected[i]);
+        }
+    }
 }

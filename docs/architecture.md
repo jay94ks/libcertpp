@@ -1371,6 +1371,25 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   the arrangement `DesCore` and `KeccakCore` already have. The AEAD needs it at
   two counters `ISymmetric` cannot express: 0 for the Poly1305 key derivation,
   and 1 onward for the payload.
+  `xorStream()` carries the four-block SSE2 keystream path (`xorStream4()`,
+  behind `CERTPP_DISABLE_HWACCEL_SIMD`): each of the sixteen state words
+  becomes an `__m128i` holding that word for four consecutive counters, so one
+  pass of the twenty rounds produces 256 bytes, followed by a 4x4 transpose per
+  group of four words to get back to block-major byte order. Blocks are
+  independent by construction, so nothing has to be serialized. Unlike
+  `CBigNum`'s ADX/BMI2 and `CGf2m`'s PCLMULQDQ paths there is **no runtime
+  CPUID check**, because SSE2 is part of the x86-64 ABI -- the gate is the
+  architecture and the build option alone. Whole four-block groups go through
+  it and the remainder falls through to the scalar loop, which also serves
+  every non-x86-64 target. Measured at 1.93x the scalar keystream rate, taking
+  a 64 KiB `seal()` from 331 to roughly 560 MiB/s.
+  RFC 8439's own vectors cannot check any of this -- the largest is 114 bytes,
+  so every one of them is served entirely by the scalar loop -- which is why
+  `tests/crypto/syms/chacha20.cpp` carries a second, independent
+  implementation of RFC 8439 2.3 and sweeps every length from 0 to 600 plus
+  1 KiB/4 KiB/16 KiB/64 KiB against it. Deliberately breaking the per-lane
+  counter feed-forward leaves all seven RFC-vector cases passing and fails
+  only those two.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via
@@ -1880,8 +1899,11 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   "Equivalent Inverse Cipher" construction -- the forward round keys in
   reverse order, each put through `AESIMC` except the first and last --
   rather than re-deriving a true inverse key schedule. `DES`/`TripleDES`/
-  `ChaCha20` have no equivalent: there is no mainstream x86 hardware
-  extension for DES/3DES's Feistel network or ChaCha20's ARX rounds.
+  have no equivalent: there is no mainstream x86 hardware extension for
+  DES/3DES's Feistel network. ChaCha20's ARX rounds have no dedicated
+  extension either, but they vectorize across blocks, so it has an SSE2 path
+  of its own under `CERTPP_DISABLE_HWACCEL_SIMD` -- see the
+  `src/crypto/syms/chacha20core.hpp` bullet above.
   Verified by the same SP 800-38A/FIPS-46/RFC 8439 known-answer vectors
   this module already runs -- on an AES-NI-capable CPU they exercise the
   accelerated path automatically, with `CERTPP_DISABLE_HWACCEL_AES`
@@ -2199,9 +2221,11 @@ affects the others:
   functions (`src/crypto/syms/aes.cpp`) to always use the portable round
   loop instead of the AES-NI instructions (AESENC/AESENCLAST/AESDEC/
   AESDECLAST/AESIMC), gated on its own runtime CPUID check (`hasAesNi()`,
-  leaf 1, ECX bit 25). `DES`/`TripleDES`/`ChaCha20` have no accelerated path
-  and are unaffected -- see the `crypto/syms/aes.hpp` bullet above for the
-  Equivalent Inverse Cipher construction the decrypt side uses.
+  leaf 1, ECX bit 25). `DES`/`TripleDES` have no accelerated path and are
+  unaffected; `ChaCha20` has one, but it is SSE2 rather than an AES extension
+  and so answers to `CERTPP_DISABLE_HWACCEL_SIMD` instead -- see the
+  `crypto/syms/aes.hpp` bullet above for the Equivalent Inverse Cipher
+  construction the decrypt side uses.
 
 All three settings' accelerated and portable paths are expected to produce
 byte-identical results and are verified against the full test suite before
