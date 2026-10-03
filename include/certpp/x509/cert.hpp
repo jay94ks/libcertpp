@@ -24,6 +24,40 @@ namespace asn1 {
 namespace certpp {
 namespace x509 {
 
+    /**
+     * @brief The RSASSA-PSS-params (RFC 4055 3.1) carried in an id-RSASSA-PSS signature
+     * AlgorithmIdentifier's "parameters" field, as parsed out of a certificate.
+     *
+     * All four ASN.1 fields are DEFAULTed, and DER omits a field that equals its default, so a
+     * value this struct reports isn't necessarily one the certificate spelled out -- a
+     * default-constructed instance already holds exactly the four defaults an empty
+     * RSASSA-PSS-params SEQUENCE means (SHA-1, MGF1 with SHA-1, a 20-byte salt, trailerFieldBC).
+     */
+    struct SRsaPssParams {
+        /* hashAlgorithm [0]: the digest the signature is computed over. */
+        crypto::EHashers hashAlgo;
+
+        /* maskGenAlgorithm [1]: the hash id-mgf1 is parameterized with. RFC 8017 recommends,
+         * and practice universally uses, the same hash as hashAlgo -- but the encoding allows
+         * them to differ, so it's reported separately rather than assumed. */
+        crypto::EHashers mgfHashAlgo;
+
+        /* saltLength [2]: the length, in bytes, of the salt embedded in the PSS encoding. */
+        size_t saltLength;
+
+        /* trailerField [3]: trailerFieldBC (1) is its only value defined by RFC 4055. */
+        uint32_t trailerField;
+
+        /**
+         * @brief Constructs an SRsaPssParams holding RSASSA-PSS-params' own DER defaults.
+         */
+        SRsaPssParams()
+            : hashAlgo(crypto::EHASH_SHA1), mgfHashAlgo(crypto::EHASH_SHA1),
+              saltLength(20), trailerField(1)
+        {
+        }
+    };
+
     /* Certificate formats. */
     enum ECertFormat {
         ECERT_AUTO = 0,     /*< Automatically detect the certificate format. */
@@ -129,6 +163,12 @@ namespace x509 {
 
         std::vector<IExtensionPtr> _extensions;
         bool _keyAlgoIsDsa = false; // --> Whether publicKey()'s lazy build needs DSA's SPKI re-encoding.
+
+        /* Whether signatureAlgorithm is id-RSASSA-PSS *and* its RSASSA-PSS-params parsed, i.e.
+         * whether verifyBy() has to go through verifyPss() rather than PKCS#1 v1.5's verify().
+         * Only meaningful together with _sigPssParams, which is otherwise left at its defaults. */
+        bool _sigIsRsaPss = false;
+        SRsaPssParams _sigPssParams;
 
     public:
         /**
@@ -272,6 +312,23 @@ namespace x509 {
          * if hash has no defined id-sha2-family OID for this purpose (e.g. MD5, SHAKE256, or
          * EHASH_UNKNOWN). Used by resolveSigAlgoForSigning() when rsaPss is requested. */
         static bool buildRsaPssParams(crypto::EHashers hash, COctet& outParams);
+
+        /* The inverse of buildRsaPssParams(): reads an RSASSA-PSS-params SEQUENCE's content (via
+         * params, a reader positioned inside it) into an SRsaPssParams. Every field is OPTIONAL
+         * by virtue of being DEFAULTed, so any the encoding omits is left at outValue's own
+         * constructor default -- an empty SEQUENCE legitimately means "all four defaults". False
+         * for a field out of order or repeated, an unknown context tag, a maskGenAlgorithm that
+         * isn't id-mgf1, a hash OID this library can't produce, or any malformed TLV; outValue
+         * is then left untouched. */
+        static bool parseRsaPssParams(asn1::CReader& params, SRsaPssParams& outValue);
+
+        /* Resolves one of RSASSA-PSS-params' HashAlgorithm AlgorithmIdentifiers (via algo, a
+         * reader positioned inside the AlgorithmIdentifier SEQUENCE) to the digest it names.
+         * Accepts both encodings seen in practice for the parameters field: absent (RFC 5754's
+         * SHOULD, what buildRsaPssParams() writes) and an explicit NULL. False for an OID outside
+         * the SHA-1/SHA-2 families, a parameters field that's anything but those two, or a
+         * malformed TLV. */
+        static bool parsePssHashAlgo(asn1::CReader& algo, crypto::EHashers& outHash);
 
         /* Encodes an X.509 Time CHOICE (UTCTime | GeneralizedTime) from time, appending it to
          * out -- the inverse of readTime(). UTCTime for time.year in [1950, 2049] (RFC 5280
@@ -526,10 +583,11 @@ namespace x509 {
          * @return ERET_OK if the signature verifies; ERET_INVAL if either certificate is empty or
          * this one carries no signature/TBS to check; ERET_KEY_EMPTY if the issuer exposes no
          * usable public key; ERET_NOTSUP if this certificate's signature algorithm isn't one this
-         * library can verify (an unregistered OID, or RSASSA-PSS, whose parameters signAlgo()'s
-         * OID-keyed table cannot resolve); ERET_HASH_PIPE if hashing failed; otherwise whatever
-         * the algorithm's own verify() reported, with a plain mismatch distinguishable from an
-         * error.
+         * library can verify (an unregistered OID, an id-RSASSA-PSS whose parameters didn't
+         * parse, or an RSASSA-PSS whose maskGenAlgorithm/trailerField this library's verifyPss()
+         * can't express -- see rsaPssParams()); ERET_HASH_PIPE if hashing failed; otherwise
+         * whatever the algorithm's own verify() reported, with a plain mismatch distinguishable
+         * from an error.
          */
         ERetCode verifyBy(const CCert& issuer) const;
 
@@ -544,6 +602,29 @@ namespace x509 {
          * @return The signature algorithm.
          */
         inline const CString& signAlgo() const { return _signAlgo; }
+
+        /**
+         * @brief Gets the RSASSA-PSS parameters (RFC 4055 3.1) this certificate's own signature
+         * was produced with, for an id-RSASSA-PSS signatureAlgorithm whose parameters parsed.
+         *
+         * A field the DER omitted because it equals its ASN.1 default is reported as that
+         * default, not as "absent": under DER a field equal to its default has to be left out,
+         * so the two are the same statement. verifyBy() already applies these itself; this is for
+         * a caller that wants to inspect or re-verify by hand.
+         * @param outValue Receives the parameters. Left untouched if this returns false.
+         * @return true if this certificate's signature algorithm is RSASSA-PSS and its
+         * parameters were parsed; false for any other algorithm (including an id-RSASSA-PSS
+         * whose parameters were malformed, which leaves signAlgo() resolved but the signature
+         * unverifiable).
+         */
+        inline bool rsaPssParams(SRsaPssParams& outValue) const {
+            if (!_sigIsRsaPss) {
+                return false;
+            }
+
+            outValue = _sigPssParams;
+            return true;
+        }
 
         /**
          * @brief Gets the key algorithm parameters of the certificate: the content octets of

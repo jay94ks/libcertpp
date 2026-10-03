@@ -1,4 +1,5 @@
 #include <certpp/name.hpp>
+#include <cstring>
 
 namespace certpp {
 
@@ -12,7 +13,15 @@ namespace certpp {
         "O",
         "L",
         "ST",
-        "C"
+        "C",
+        "organizationIdentifier",
+        "serialNumber",
+        "title",
+        "givenName",
+        "surname",
+        "pseudonym",
+        "dnQualifier",
+        "DC"
     };
 
     /**
@@ -25,55 +34,72 @@ namespace certpp {
         "Organization",
         "Locality",
         "State or Province",
-        "Country"
+        "Country",
+        "Organization Identifier",
+        "Serial Number",
+        "Title",
+        "Given Name",
+        "Surname",
+        "Pseudonym",
+        "DN Qualifier",
+        "Domain Component"
     };
 
     /**
-     * X.520 attribute-type OBJECT IDENTIFIER arcs corresponding to each name type.
+     * DN attribute-type OBJECT IDENTIFIER arcs corresponding to each name type.
      */
-    const uint32_t CName::TYPE_OIDS[ENAME_MAX][4] = {
-        { 0, 0, 0, 0 },     // ENAME_NONE (unused)
-        { 2, 5, 4, 3  },    // ENAME_CN -- commonName
-        { 2, 5, 4, 11 },    // ENAME_OU -- organizationalUnitName
-        { 2, 5, 4, 10 },    // ENAME_O  -- organizationName
-        { 2, 5, 4, 7  },    // ENAME_L  -- localityName
-        { 2, 5, 4, 8  },    // ENAME_ST -- stateOrProvinceName
-        { 2, 5, 4, 6  },    // ENAME_C  -- countryName
+    const CName::SAttributeOid CName::TYPE_OIDS[ENAME_MAX] = {
+        {  0, { 0, 0, 0, 0 } },                                     // ENAME_NONE (unused)
+        {  4, { 2, 5, 4, 3  } },                                    // ENAME_CN        -- commonName
+        {  4, { 2, 5, 4, 11 } },                                    // ENAME_OU        -- organizationalUnitName
+        {  4, { 2, 5, 4, 10 } },                                    // ENAME_O         -- organizationName
+        {  4, { 2, 5, 4, 7  } },                                    // ENAME_L         -- localityName
+        {  4, { 2, 5, 4, 8  } },                                    // ENAME_ST        -- stateOrProvinceName
+        {  4, { 2, 5, 4, 6  } },                                    // ENAME_C         -- countryName
+        {  4, { 2, 5, 4, 97 } },                                    // ENAME_OI        -- organizationIdentifier
+        {  4, { 2, 5, 4, 5  } },                                    // ENAME_SERIAL    -- serialNumber
+        {  4, { 2, 5, 4, 12 } },                                    // ENAME_TITLE     -- title
+        {  4, { 2, 5, 4, 42 } },                                    // ENAME_GN        -- givenName
+        {  4, { 2, 5, 4, 4  } },                                    // ENAME_SURNAME   -- surname
+        {  4, { 2, 5, 4, 65 } },                                    // ENAME_PSEUDONYM -- pseudonym
+        {  4, { 2, 5, 4, 46 } },                                    // ENAME_DNQ       -- dnQualifier
+        { 10, { 0, 9, 2342, 19200300, 100, 1, 25, 0, 0, 0 } },      // ENAME_DC        -- domainComponent
     };
 
-    /* Retrieves the X.520 attribute-type OID arcs corresponding to a given name type. */
+    /* Retrieves the DN attribute-type OID arcs corresponding to a given name type. */
     bool CName::attributeOid(ENameType type, TSpan<uint32_t> outArcs, size_t& outArcCount) {
         outArcCount = 0;
 
-        if (type <= ENAME_NONE || type >= ENAME_MAX || outArcs.size < 4) {
+        if (type <= ENAME_NONE || type >= ENAME_MAX) {
             return false;
         }
 
-        for (size_t i = 0; i < 4; ++i) {
-            outArcs[i] = TYPE_OIDS[type][i];
+        const SAttributeOid& entry = TYPE_OIDS[type];
+        if (!entry.count || outArcs.size < entry.count) {
+            return false;
         }
 
-        outArcCount = 4;
+        // --> memcpy rather than an element-wise loop: the arcs are a flat uint32_t block.
+        std::memcpy(outArcs.data, entry.arcs, sizeof(uint32_t) * entry.count);
+
+        outArcCount = entry.count;
         return true;
     }
 
-    /* Retrieves the name type corresponding to a given X.520 attribute-type OID's arc values. */
+    /* Retrieves the name type corresponding to a given DN attribute-type OID's arc values. */
     ENameType CName::attributeTypeOf(TReadOnlySpan<uint32_t> arcs) {
-        if (arcs.size != 4) {
+        if (!arcs.size || arcs.size > MAX_OID_ARCS) {
             return ENAME_NONE;
         }
 
         for (int i = 1; i < ENAME_MAX; ++i) {
-            bool match = true;
+            const SAttributeOid& entry = TYPE_OIDS[i];
 
-            for (size_t j = 0; j < 4; ++j) {
-                if (arcs[j] != TYPE_OIDS[i][j]) {
-                    match = false;
-                    break;
-                }
+            if (entry.count != arcs.size) {
+                continue;
             }
 
-            if (match) {
+            if (std::memcmp(arcs.data, entry.arcs, sizeof(uint32_t) * entry.count) == 0) {
                 return ENameType(i);
             }
         }
@@ -172,8 +198,11 @@ namespace certpp {
         for (int i = 1; i < ENAME_MAX; ++i) {
             const size_t len = std::strlen(TYPE_KEYS[i]);
 
-            // --> Compare the type key with the provided key, ignoring case.
-            if (SFunc::caseCmp(TYPE_KEYS[i], key, len) == 0) {
+            // --> Compare the type key with the provided key, ignoring case -- len + 1 so the
+            // table key's own NUL takes part, which is what makes this a whole-key match rather
+            // than a prefix one. Comparing only len bytes let any key that merely *starts* with
+            // a table entry resolve to it, so "organizationIdentifier" came back as ENAME_O.
+            if (SFunc::caseCmp(TYPE_KEYS[i], key, len + 1) == 0) {
                 return ENameType(i);
             }
         }

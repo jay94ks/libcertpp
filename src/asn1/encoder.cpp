@@ -517,9 +517,9 @@ namespace asn1 {
     bool CEncoder::buildAttributeTypeAndValue(const CName& name, TArray<uint8_t>& out) {
         out.clear();
 
-        uint32_t arcs[4];
+        uint32_t arcs[CName::MAX_OID_ARCS];
         size_t arcCount = 0;
-        if (!CName::attributeOid(name.type(), TSpan<uint32_t>(arcs, 4), arcCount)) {
+        if (!CName::attributeOid(name.type(), TSpan<uint32_t>(arcs, CName::MAX_OID_ARCS), arcCount)) {
             return false;
         }
 
@@ -545,7 +545,10 @@ namespace asn1 {
 
         // Value: the component's unescaped text, as genuine (locale-independent) UTF-8 --
         // preferred as a PrintableString, falling back to a UTF8String if the content isn't
-        // within PrintableString's restricted charset.
+        // within PrintableString's restricted charset. domainComponent is the one exception: RFC
+        // 4519 2.4 gives it IA5String as its syntax, with no alternative, so it's written that
+        // way (and fails outright rather than falling back) even though its content would almost
+        // always fit a PrintableString too.
         const CWideString text = name.toString<wchar_t>(false);
 
         size_t valueContentSize = encodedStringSize(text);
@@ -555,9 +558,13 @@ namespace asn1 {
 
         CBuffer valueContent(valueContentSize);
         size_t valueContentWritten = 0;
-        EUniversalTags kind = EAUTAG_STRING_P;
+        EUniversalTags kind = name.type() == ENAME_DC ? EAUTAG_STRING_IA5 : EAUTAG_STRING_P;
 
         if (!encodeString(TSpan<uint8_t>(valueContent.toPtr(), valueContent.size()), kind, text, valueContentWritten)) {
+            if (kind == EAUTAG_STRING_IA5) {
+                return false;
+            }
+
             kind = EAUTAG_STRING_UTF8;
             if (!encodeString(TSpan<uint8_t>(valueContent.toPtr(), valueContent.size()), kind, text, valueContentWritten)) {
                 return false;

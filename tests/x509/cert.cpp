@@ -1737,12 +1737,23 @@ TEST_CASE("CCertBuilder: builds and self-signs an RSASSA-PSS certificate with a 
     REQUIRE(builder.build(cert) == ERET_OK);
     REQUIRE_FALSE(cert.empty());
 
-    // signAlgo() falls back to the raw OID: RSASSA-PSS's own AlgorithmIdentifier carries its
-    // hash/salt inside its parameters, which resolveSigAlgo()'s OID-keyed table can't resolve --
-    // the same documented fallback importDer() uses for any algorithm it doesn't fully parse.
-    // So this cert's own signature must be re-verified directly via verifyPss(), not through
-    // createHasher()/verifyCertSelfSigned()'s generic OID-driven dispatch.
-    CHECK(cert.signAlgo() == CString("1.2.840.113549.1.1.10"));
+    // signAlgo() resolves by OID, and the hash/salt that OID doesn't name come from the
+    // AlgorithmIdentifier's own parameters -- which importDer() parses back out, so the
+    // round-trip through build() -> importDer() has to report exactly what buildRsaPssParams()
+    // wrote: SHA-256 for both the digest and MGF1, a salt the length of that digest, and
+    // trailerField left at its DER default.
+    CHECK(cert.signAlgo() == CString("rsassaPss"));
+
+    SRsaPssParams pss;
+    REQUIRE(cert.rsaPssParams(pss));
+    CHECK(pss.hashAlgo == EHASH_SHA256);
+    CHECK(pss.mgfHashAlgo == EHASH_SHA256);
+    CHECK(pss.saltLength == 32);
+    CHECK(pss.trailerField == 1);
+
+    // And so verifyBy() can check it directly, routing through verifyPss() with those
+    // parameters rather than PKCS#1 v1.5's verify().
+    CHECK(cert.verifyBy(cert) == ERET_OK);
 
     COctet der;
     REQUIRE(cert.exportDer(der) == ERET_OK);

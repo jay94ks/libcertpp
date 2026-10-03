@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
+#include <cstring>
 #include <fstream>
 
 using namespace certpp;
@@ -16,13 +17,12 @@ using namespace certpp::crypto;
  * collection" than a few thousand lines of hex.
  *
  * certs/implemented/  -- ordinary certificates using algorithms this library implements
- *                         end-to-end (RSA, ECDSA), so importDer() plus every derived accessor
- *                         works fully.
- * certs/unimplemented/ -- real, currently-valid, commercially-issued certificates that
- *                         exercise a gap this library actually has: either an algorithm
- *                         importDer() can't resolve (falls back to the raw OID text, per its own
- *                         doc comment) or, more fundamentally, a subject/issuer Name attribute
- *                         CDistinguishedName doesn't recognize at all.
+ *                         end-to-end (RSA with PKCS#1 v1.5 or PSS, ECDSA), so importDer() plus
+ *                         every derived accessor works fully.
+ * certs/unimplemented/ -- real, currently-valid, commercially-issued certificates whose
+ *                         signature or public-key algorithm importDer() can't resolve, so it
+ *                         falls back to the raw OID text per its own doc comment and everything
+ *                         derived from a resolved algorithm goes unavailable.
  */
 
 namespace {
@@ -58,7 +58,7 @@ namespace {
     constexpr const char* GITHUB_CERT_PATH      = CERTPP_TEST_DIR "/certs/implemented/github.com.der";
     constexpr const char* AMAZON_CERT_PATH      = CERTPP_TEST_DIR "/certs/implemented/amazon.com.der";
     constexpr const char* SOURCEFORGE_CERT_PATH = CERTPP_TEST_DIR "/certs/implemented/sourceforge.net.der";
-    constexpr const char* RSAPSS_CA_CERT_PATH   = CERTPP_TEST_DIR "/certs/unimplemented/quovadis-rsassa-pss-ca.der";
+    constexpr const char* RSAPSS_CA_CERT_PATH   = CERTPP_TEST_DIR "/certs/implemented/quovadis-rsassa-pss-ca.der";
     constexpr const char* MLDSA_ROOT_CERT_PATH  = CERTPP_TEST_DIR "/certs/unimplemented/identrust-mldsa-root.der";
 }
 
@@ -295,32 +295,264 @@ TEST_CASE("CCert (real-world): sourceforge.net leaf certificate's SAN/CDP/AIA/Ce
     CHECK_FALSE(cp->policies()[0].hasPolicyQualifiers());
 }
 
-// --------------------------------------------------------------------------------------------
-// certs/unimplemented/ -- real, currently-valid, commercially-issued certificates that exercise
-// an actual gap in this library, collected separately from the above.
-// --------------------------------------------------------------------------------------------
-
-TEST_CASE("CCert (real-world, unimplemented): QuoVadis RSASSA-PSS qualified CA -- fails structurally, not just on algorithm") {
+TEST_CASE("CCert (real-world): QuoVadis/DigiCert RSASSA-PSS timestamping CA (RSA-4096, PSS-SHA256, organizationIdentifier)") {
     // "DigiCert QV G3 TS EUR RSA4096 RSASSA-PSS 2025 CA1", issued by QuoVadis Root CA 1 G3
     // (found via crt.sh, a real commercial CA's currently-valid intermediate as of 2025-2034).
-    // Its own signatureAlgorithm is rsassaPss (1.2.840.113549.1.1.10, RFC 4055) -- not in this
-    // library's SIG_ALGOS table -- which on its own would just leave signAlgo() at the raw OID
-    // text, the same graceful fallback the ML-DSA case below demonstrates.
+    // Two independent things make it worth keeping as a fixture, and each on its own used to
+    // make importDer() fail:
     //
-    // But this particular certificate's subject also carries an ETSI EN 319 412
-    // "organizationIdentifier" attribute (OID 2.5.4.97, common on EU-regulated/qualified
-    // certificates), which isn't one of the 6 basic X.520 types CName recognizes (C/ST/L/O/OU/
-    // CN) -- CDecoder::decodeDistinguishedName() fails the whole subject Name over that single
-    // unrecognized attribute, so importDer() fails with ERET_BADREQ before it ever reaches the
-    // signature algorithm at all. A real, structural gap, distinct from (and more fundamental
-    // than) an unresolved algorithm OID.
+    //  * its subject carries an ETSI EN 319 412 "organizationIdentifier" (2.5.4.97), which was
+    //    not one of the 6 basic X.520 types CName originally recognized -- and
+    //    CDecoder::decodeDistinguishedName() rejects an RDN whose attribute type it can't name,
+    //    so that single unknown attribute failed the entire subject Name, before the signature
+    //    algorithm was ever looked at;
+    //  * its signatureAlgorithm is id-RSASSA-PSS (1.2.840.113549.1.1.10, RFC 4055), the one
+    //    signature algorithm here whose AlgorithmIdentifier parameters carry information the
+    //    verifier actually needs. All four RSASSA-PSS-params fields are DEFAULTed, and DER omits
+    //    a field equal to its default, so what this file spells out is exactly its three
+    //    non-default ones -- see the assertions below.
     COctet der;
     REQUIRE(readCertFile(RSAPSS_CA_CERT_PATH, der));
 
     CCert cert;
-    CHECK(cert.importDer(der) == ERET_BADREQ);
-    CHECK(cert.empty());
+    REQUIRE(cert.importDer(der) == ERET_OK);
+    REQUIRE_FALSE(cert.empty());
+
+    // --- subject: C / O / organizationIdentifier / CN, exactly four attributes.
+    CHECK(cert.subject().size() == 4);
+
+    CName name;
+    REQUIRE(cert.subject().tryGet(ENAME_C, name));
+    CHECK(name == CName(ENAME_C, "NL"));
+    REQUIRE(cert.subject().tryGet(ENAME_O, name));
+    CHECK(name == CName(ENAME_O, "DigiCert Europe Netherlands B.V."));
+    REQUIRE(cert.subject().tryGet(ENAME_OI, name));
+    CHECK(name == CName(ENAME_OI, "NTRNL-30237459"));
+    REQUIRE(cert.subject().tryGet(ENAME_CN, name));
+    CHECK(name == CName(ENAME_CN, "DigiCert QV G3 TS EUR RSA4096 RSASSA-PSS 2025 CA1"));
+
+    // ENAME_OI's key is the whole word "organizationIdentifier" -- no standard short form for it
+    // exists, so CName::typeOf() has to match it in full rather than as a string that merely
+    // starts with "O".
+    CHECK(CName::typeOf("organizationIdentifier") == ENAME_OI);
+    CHECK(CName::typeOf("O") == ENAME_O);
+
+    // --- issuer: the root that signed this intermediate; only the basic three attributes.
+    CHECK(cert.issuer().size() == 3);
+    REQUIRE(cert.issuer().tryGet(ENAME_C, name));
+    CHECK(name == CName(ENAME_C, "BM"));
+    REQUIRE(cert.issuer().tryGet(ENAME_O, name));
+    CHECK(name == CName(ENAME_O, "QuoVadis Limited"));
+    REQUIRE(cert.issuer().tryGet(ENAME_CN, name));
+    CHECK(name == CName(ENAME_CN, "QuoVadis Root CA 1 G3"));
+
+    CHECK(cert.issuer() != cert.subject()); // --> an intermediate, not a self-signed root
+
+    // --- algorithms. rsassaPss resolves by OID; the digest behind it comes from the parameters
+    // rather than from the OID (which names none), so createHasher() is what proves they were
+    // read at all.
+    CHECK(cert.keyAlgo() == CString("RSA"));
+    CHECK(cert.signAlgo() == CString("rsassaPss"));
+
+    IHasherPtr hasher = cert.createHasher();
+    REQUIRE(hasher);
+    CHECK(hasher->byteWidth() == 32); // --> SHA-256, per RSASSA-PSS-params.hashAlgorithm
+
+    // --- RSASSA-PSS-params as this file actually encodes them: [0] hashAlgorithm = id-sha256,
+    // [1] maskGenAlgorithm = id-mgf1 parameterized with id-sha256, [2] saltLength = 32. [3]
+    // trailerField is absent, which under DER *means* trailerFieldBC (1) -- so 1 is what gets
+    // reported, not "unspecified".
+    SRsaPssParams pss;
+    REQUIRE(cert.rsaPssParams(pss));
+    CHECK(pss.hashAlgo == EHASH_SHA256);
+    CHECK(pss.mgfHashAlgo == EHASH_SHA256);
+    CHECK(pss.saltLength == 32);
+    CHECK(pss.trailerField == 1);
+
+    // --- the rest of the certificate.
+    IPublicKeyPtr pub = cert.publicKey();
+    REQUIRE(pub);
+    CHECK(pub->algorithm() == EASYM_RSA);
+
+    CHECK(cert.notBefore().year == 2025);
+    CHECK(cert.notBefore().month == 6);
+    CHECK(cert.notBefore().day == 24);
+    CHECK(cert.notAfter().year == 2034);
+    CHECK(cert.notAfter().month == 6);
+    CHECK(cert.notAfter().day == 22);
+
+    REQUIRE(cert.serialNumber().size() == 20);
+    CHECK(cert.serialNumber().toPtr()[0] == 0x51);
+    CHECK(cert.serialNumber().toPtr()[19] == 0xad);
+
+    CHECK(cert.signature().size() == 512); // --> 4096-bit modulus, so a 512-byte PSS signature
+    CHECK(cert.thumbprint().size() == 20);
+
+    auto bc = cert.extension<CBasicConstraintsExtension>();
+    REQUIRE(bc);
+    CHECK(bc->isCa());
+    REQUIRE(bc->hasPathLenConstraint());
+    CHECK(bc->pathLenConstraint() == 0);
+
+    const uint16_t ku = cert.keyUsages();
+    CHECK((ku & EKUSE_DIGITAL_SIGNATURE) != 0);
+    CHECK((ku & EKUSE_KEY_CERT_SIGN) != 0);
+    CHECK((ku & EKUSE_CRL_SIGN) != 0);
+    CHECK((ku & EKUSE_KEY_ENCIPHERMENT) == 0);
+
+    auto eku = cert.extension<CEkuExtension>();
+    REQUIRE(eku);
+    REQUIRE(eku->purposes().size() == 1);
+    CHECK(eku->purposes()[0] == CString(CEkuExtension::OID_TIME_STAMPING));
+
+    auto ski = cert.extension<CSkiExtension>();
+    REQUIRE(ski);
+    CHECK(ski->keyIdentifier().size() == 20);
+
+    auto aki = cert.extension<CAkiExtension>();
+    REQUIRE(aki);
+    REQUIRE(aki->hasKeyIdentifier());
+    CHECK(aki->keyIdentifier().size() == 20);
+
+    // --- verifyBy() routes this through verifyPss() rather than PKCS#1 v1.5's verify(). The
+    // issuer ("QuoVadis Root CA 1 G3") isn't in this repository, so the only key available to
+    // check against is this certificate's own -- the wrong key, which must come back a mismatch.
+    // What matters here is *which* failure: ERET_BADREQ is what verifyPss() itself reports for a
+    // signature it rejects, i.e. the PSS verifier genuinely ran with the parsed hash and salt
+    // length, whereas ERET_NOTSUP would mean verifyBy() declined the algorithm before doing any
+    // arithmetic at all. The next test case signs and verifies with these same parameters, which
+    // is the part a missing parent certificate can't cover.
+    CHECK(cert.verifyBy(cert) == ERET_BADREQ);
 }
+
+TEST_CASE("CCert (real-world): the QuoVadis CA's own PSS parameters, exercised end-to-end against a generated RSA key") {
+    // The parent of the RSASSA-PSS intermediate above ("QuoVadis Root CA 1 G3") isn't in this
+    // repository, so its real signature can only be rejected, never confirmed (see above). What
+    // *can* be exercised is everything else on that path: the parameters as parsed out of the
+    // real file, driving a real sign/verify round-trip over the real TBSCertificate bytes, with
+    // a locally generated key standing in for the issuer's.
+    COctet der;
+    REQUIRE(readCertFile(RSAPSS_CA_CERT_PATH, der));
+
+    CCert cert;
+    REQUIRE(cert.importDer(der) == ERET_OK);
+
+    SRsaPssParams pss;
+    REQUIRE(cert.rsaPssParams(pss));
+
+    // The message: the real certificate's own signed bytes, digested with the hash its own
+    // RSASSA-PSS-params named.
+    IHasherPtr hasher = cert.createHasher();
+    REQUIRE(hasher);
+
+    CBuffer digest;
+    REQUIRE(digest.resize(hasher->byteWidth()));
+    REQUIRE(hasher->push(cert.tbsCertificate()));
+    REQUIRE(hasher->finish(SByteSpan(digest.toPtr(), digest.size())));
+
+    IAsymmetricPtr rsa = IAsymmetric::builtIn(EASYM_RSA);
+    REQUIRE(rsa);
+    SKeyPair kp;
+    REQUIRE(rsa->generateKeyPair(1024, kp) == ERET_OK);
+
+    IAsymmetricContextPtr ctx = rsa->createContext();
+    REQUIRE(ctx);
+    ctx->keyPair(kp.publicKey, kp.privateKey);
+
+    CBuffer signature;
+    REQUIRE(signature.resize(128)); // --> 1024-bit modulus
+    SByteSpan sigOut = signature.toSpan();
+    REQUIRE(ctx->signPss(digest.toSpan(), pss.hashAlgo, pss.saltLength, sigOut) == ERET_OK);
+    REQUIRE(sigOut.size == 128);
+
+    const SReadOnlyByteSpan sig(sigOut.data, sigOut.size);
+
+    // The parameters the certificate carries verify it.
+    CHECK(ctx->verifyPss(digest.toSpan(), pss.hashAlgo, pss.saltLength, sig) == ERET_OK);
+
+    // A tampered signature does not.
+    CBuffer tampered = signature;
+    tampered[0] = uint8_t(tampered[0] ^ 0x01);
+    CHECK(ctx->verifyPss(digest.toSpan(), pss.hashAlgo, pss.saltLength, tampered.toSpan()) != ERET_OK);
+
+    // Neither does a tampered message.
+    CBuffer otherDigest = digest;
+    otherDigest[0] = uint8_t(otherDigest[0] ^ 0x01);
+    CHECK(ctx->verifyPss(otherDigest.toSpan(), pss.hashAlgo, pss.saltLength, sig) != ERET_OK);
+
+    // Nor the right signature checked with the wrong salt length -- the whole reason saltLength
+    // has to be read out of the file instead of assumed. 20 is RSASSA-PSS-params' own DEFAULT,
+    // i.e. precisely the value a parser that ignored [2] would have used.
+    CHECK(pss.saltLength != 20);
+    CHECK(ctx->verifyPss(digest.toSpan(), pss.hashAlgo, 20, sig) != ERET_OK);
+    CHECK(ctx->verifyPss(digest.toSpan(), pss.hashAlgo, pss.saltLength - 1, sig) != ERET_OK);
+    CHECK(ctx->verifyPss(digest.toSpan(), pss.hashAlgo, pss.saltLength + 1, sig) != ERET_OK);
+
+    // Nor with the wrong hash, which through this API is also the wrong MGF1 hash: verifyPss()
+    // drives the digest comparison and MGF1's mask generation from the same hashAlg. EHASH_SHA1
+    // is exactly what a parser that fell back to RSASSA-PSS-params' defaults for [0] and [1]
+    // would have supplied.
+    CHECK(ctx->verifyPss(digest.toSpan(), EHASH_SHA1, pss.saltLength, sig) != ERET_OK);
+    CHECK(ctx->verifyPss(digest.toSpan(), EHASH_SHA512, pss.saltLength, sig) != ERET_OK);
+}
+
+TEST_CASE("CCert: verifyBy() declines an RSASSA-PSS certificate whose MGF1 hash differs from its hashAlgorithm") {
+    // Nothing in the wild encodes maskGenAlgorithm with a hash other than hashAlgorithm's --
+    // RFC 8017 recommends against it, and every issuer complies -- but the encoding permits it,
+    // and this library's verifyPss() takes a single hash algorithm for both roles. Verifying such
+    // a signature with the wrong MGF1 hash would reject every valid signature, which a caller
+    // can't distinguish from a forgery, so verifyBy() has to decline instead of guessing.
+    //
+    // The fixture: the real certificate above, with its *outer* signatureAlgorithm parameters
+    // edited so maskGenAlgorithm's own hash OID reads id-sha384 where hashAlgorithm still reads
+    // id-sha256. Both OIDs are 9 content octets, so the edit is length-preserving and the DER
+    // stays well-formed; importDer() compares only the OID between the TBSCertificate's copy of
+    // the AlgorithmIdentifier and this one, and it's this outer copy that verifyBy() reads.
+    COctet der;
+    REQUIRE(readCertFile(RSAPSS_CA_CERT_PATH, der));
+
+    // id-mgf1's OBJECT IDENTIFIER followed by its parameters, SEQUENCE { id-sha256, NULL }. It
+    // occurs exactly twice -- once in each copy of the AlgorithmIdentifier -- and the second is
+    // the outer one.
+    static const uint8_t MGF1_SHA256[] = {
+        0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08,   // id-mgf1
+        0x30, 0x0d,                                                          // SEQUENCE
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,   // id-sha256
+        0x05, 0x00                                                           // NULL
+    };
+    constexpr size_t SHA_VARIANT_AT = 23; // --> the id-sha256 OID's last content octet
+
+    CBuffer raw;
+    REQUIRE(raw.resize(der.size()));
+    std::memcpy(raw.toPtr(), der.toPtr(), der.size());
+
+    size_t patchedAt = size_t(-1);
+    for (size_t i = 0; i + sizeof(MGF1_SHA256) <= raw.size(); ++i) {
+        if (std::memcmp(raw.toPtr() + i, MGF1_SHA256, sizeof(MGF1_SHA256)) == 0) {
+            patchedAt = i; // --> keep going: the last match is the outer AlgorithmIdentifier's
+        }
+    }
+    REQUIRE(patchedAt != size_t(-1));
+    raw[patchedAt + SHA_VARIANT_AT] = 0x02; // id-sha256 -> id-sha384
+
+    CCert cert;
+    REQUIRE(cert.importDer(COctet(SReadOnlyByteSpan(raw.toPtr(), raw.size()))) == ERET_OK);
+
+    SRsaPssParams pss;
+    REQUIRE(cert.rsaPssParams(pss));
+    CHECK(pss.hashAlgo == EHASH_SHA256);
+    CHECK(pss.mgfHashAlgo == EHASH_SHA384); // --> the mismatch, read as encoded
+    CHECK(pss.saltLength == 32);
+
+    // Fails closed, and specifically before any verification arithmetic: compare the unmodified
+    // certificate's ERET_BADREQ (a genuine signature mismatch) in the first test case above.
+    CHECK(cert.verifyBy(cert) == ERET_NOTSUP);
+}
+
+// --------------------------------------------------------------------------------------------
+// certs/unimplemented/ -- real, currently-valid, commercially-issued certificates that exercise
+// an actual gap in this library, collected separately from the above.
+// --------------------------------------------------------------------------------------------
 
 TEST_CASE("CCert (real-world, unimplemented): IdenTrust ML-DSA pilot root -- parses fully, algorithm gracefully unresolved") {
     // "IdenTrust Pilot Root TLS ML-DSA CA 1", a real, currently-valid (2026-2027) self-signed

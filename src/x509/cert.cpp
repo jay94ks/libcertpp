@@ -87,6 +87,11 @@ namespace x509 {
         { "1.2.840.10045.4.3.4",    "ecdsa-with-SHA512",       crypto::EHASH_SHA512 },
         { "1.3.101.112",            "Ed25519",                 crypto::EHASH_UNKNOWN },
         { "1.3.101.113",            "Ed448",                   crypto::EHASH_UNKNOWN },
+        // --> id-RSASSA-PSS (RFC 4055) names no digest of its own: the hash lives in the
+        // AlgorithmIdentifier's parameters, which importDer() reads separately via
+        // parseRsaPssParams() and then uses to set _sigHashAlgo. EHASH_UNKNOWN here keeps
+        // resolveSigAlgo() from claiming a digest this OID genuinely doesn't carry.
+        { "1.2.840.113549.1.1.10",  "rsassaPss",               crypto::EHASH_UNKNOWN },
     };
 
     /* Copy constructor for the X.509 certificate. */
@@ -110,6 +115,8 @@ namespace x509 {
         _cachedPub = other._cachedPub;
         _cachedPvt = other._cachedPvt;
         _sigHashAlgo = other._sigHashAlgo;
+        _sigIsRsaPss = other._sigIsRsaPss;
+        _sigPssParams = other._sigPssParams;
         _keyAlgoIsDsa = other._keyAlgoIsDsa;
         _extensions = other._extensions;
     }
@@ -135,6 +142,8 @@ namespace x509 {
         _cachedPub = move(other._cachedPub);
         _cachedPvt = move(other._cachedPvt);
         _sigHashAlgo = other._sigHashAlgo;
+        _sigIsRsaPss = other._sigIsRsaPss;
+        _sigPssParams = other._sigPssParams;
         _keyAlgoIsDsa = other._keyAlgoIsDsa;
         _extensions = move(other._extensions);
     }
@@ -161,6 +170,8 @@ namespace x509 {
             _cachedPub = other._cachedPub;
             _cachedPvt = other._cachedPvt;
             _sigHashAlgo = other._sigHashAlgo;
+            _sigIsRsaPss = other._sigIsRsaPss;
+            _sigPssParams = other._sigPssParams;
             _keyAlgoIsDsa = other._keyAlgoIsDsa;
             _extensions = other._extensions;
         }
@@ -189,6 +200,8 @@ namespace x509 {
             swap(_cachedPub, other._cachedPub);
             swap(_cachedPvt, other._cachedPvt);
             swap(_sigHashAlgo, other._sigHashAlgo);
+            swap(_sigIsRsaPss, other._sigIsRsaPss);
+            swap(_sigPssParams, other._sigPssParams);
             swap(_keyAlgoIsDsa, other._keyAlgoIsDsa);
             swap(_extensions, other._extensions);
         }
@@ -443,6 +456,129 @@ namespace x509 {
         }
 
         outParams = COctet(paramsSeq.toSpan());
+        return true;
+    }
+
+    /* Resolves one of RSASSA-PSS-params' HashAlgorithm AlgorithmIdentifiers to the digest it
+     * names -- see its own doc comment in cert.hpp. */
+    bool CCert::parsePssHashAlgo(CReader& algo, crypto::EHashers& outHash) {
+        CString oid;
+        if (!algo.readOidString(oid)) {
+            return false;
+        }
+
+        // parameters ANY DEFINED BY algorithm OPTIONAL -- NULL or absent for every hash here
+        // (RFC 5754 2: SHOULD be absent, but real encoders write both, and this library's own
+        // buildRsaPssParams() writes it absent).
+        if (!algo.atEnd()) {
+            if (!algo.readNull() || !algo.atEnd()) {
+                return false;
+            }
+        }
+
+        // --> id-sha1 lives under a different arc (1.3.14.3.2.26) than the id-sha2 family, which
+        // is why this isn't a single prefix test.
+        if (oid.compare("1.3.14.3.2.26") == 0)          { outHash = crypto::EHASH_SHA1;   return true; }
+        if (oid.compare("2.16.840.1.101.3.4.2.4") == 0) { outHash = crypto::EHASH_SHA224; return true; }
+        if (oid.compare("2.16.840.1.101.3.4.2.1") == 0) { outHash = crypto::EHASH_SHA256; return true; }
+        if (oid.compare("2.16.840.1.101.3.4.2.2") == 0) { outHash = crypto::EHASH_SHA384; return true; }
+        if (oid.compare("2.16.840.1.101.3.4.2.3") == 0) { outHash = crypto::EHASH_SHA512; return true; }
+
+        return false;
+    }
+
+    /* Reads an RSASSA-PSS-params SEQUENCE's content -- see its own doc comment in cert.hpp. */
+    bool CCert::parseRsaPssParams(CReader& params, SRsaPssParams& outValue) {
+        // --> Starts from the four ASN.1 DEFAULTs, which SRsaPssParams' own constructor already
+        // holds: under DER a field equal to its default MUST be omitted, so every field this
+        // loop never sees is a field that was defaulted, not one that was missing.
+        SRsaPssParams result;
+        int32_t lastField = -1;
+
+        while (!params.atEnd()) {
+            CTag tag;
+            CReader field;
+
+            // --> Every one of the four is [n] EXPLICIT (RFC 4055's module is EXPLICIT TAGS), so
+            // each is a constructed context-specific wrapper around its own single element --
+            // including saltLength/trailerField, whose INTEGER sits inside the wrapper.
+            if (!params.readConstructed(tag, field) || tag.tagClass() != EATAG_CONTEXT_SPECIFIC) {
+                return false;
+            }
+
+            // --> SEQUENCE, not SET: DER fixes the field order, so a repeated or out-of-order
+            // tag is malformed rather than merely unusual, and silently taking the last one
+            // would let a second saltLength override the first.
+            if (int32_t(tag.value()) <= lastField) {
+                return false;
+            }
+            lastField = int32_t(tag.value());
+
+            switch (tag.value()) {
+                case 0: { // hashAlgorithm [0] EXPLICIT AlgorithmIdentifier DEFAULT sha1
+                    CReader hashAlgo;
+                    if (!field.readSequence(hashAlgo) || !parsePssHashAlgo(hashAlgo, result.hashAlgo)) {
+                        return false;
+                    }
+                    break;
+                }
+
+                case 1: { // maskGenAlgorithm [1] EXPLICIT AlgorithmIdentifier DEFAULT mgf1SHA1
+                    CReader mgfAlgo;
+                    CString mgfOid;
+                    if (!field.readSequence(mgfAlgo) || !mgfAlgo.readOidString(mgfOid)) {
+                        return false;
+                    }
+
+                    // --> id-mgf1 is the only mask generation function RFC 4055 defines, and its
+                    // parameters ARE a HashAlgorithm (RFC 8017 A.2.3) -- not optional here,
+                    // since mgf1SHA1's "absent parameters" form is the DEFAULT, which DER would
+                    // have encoded by omitting this whole field.
+                    if (mgfOid.compare("1.2.840.113549.1.1.8") != 0) {
+                        return false;
+                    }
+
+                    CReader mgfHashAlgo;
+                    if (!mgfAlgo.readSequence(mgfHashAlgo)
+                        || !parsePssHashAlgo(mgfHashAlgo, result.mgfHashAlgo)
+                        || !mgfAlgo.atEnd())
+                    {
+                        return false;
+                    }
+                    break;
+                }
+
+                case 2: { // saltLength [2] EXPLICIT INTEGER DEFAULT 20
+                    int64_t saltLength = 0;
+                    if (!field.readInteger(saltLength) || saltLength < 0 || saltLength > 0xffff) {
+                        // --> A PSS salt can't exceed emLen - hLen - 2, so 64 KiB is already far
+                        // past any real RSA modulus; bounding it here keeps a hostile value from
+                        // reaching verifyPss() as a size_t at all.
+                        return false;
+                    }
+                    result.saltLength = size_t(saltLength);
+                    break;
+                }
+
+                case 3: { // trailerField [3] EXPLICIT INTEGER DEFAULT 1
+                    int64_t trailerField = 0;
+                    if (!field.readInteger(trailerField) || trailerField < 0 || trailerField > 0xffffffffll) {
+                        return false;
+                    }
+                    result.trailerField = uint32_t(trailerField);
+                    break;
+                }
+
+                default:
+                    return false; // --> RSASSA-PSS-params has exactly four fields.
+            }
+
+            if (!field.atEnd()) {
+                return false; // --> Trailing content inside an EXPLICIT wrapper.
+            }
+        }
+
+        outValue = result;
         return true;
     }
 
@@ -928,6 +1064,39 @@ namespace x509 {
 
         resolveSigAlgo(sigAlgoOid, sigAlgoHash, signAlgoName);
 
+        // parameters ANY DEFINED BY algorithm OPTIONAL -- only id-RSASSA-PSS's are read: it's
+        // the one signature algorithm here whose parameters carry information the verifier needs
+        // (the digest, the MGF1 hash and the salt length) rather than a NULL placeholder, so
+        // without them signAlgo()'s OID alone doesn't say what was signed.
+        //
+        // Best-effort, exactly like resolveSigAlgo() above: parameters that don't parse leave
+        // sigIsRsaPss false and sigAlgoHash at EHASH_UNKNOWN, so verifyBy() reports ERET_NOTSUP
+        // instead of falling back to RSASSA-PSS-params' SHA-1 defaults -- which would be a guess
+        // at what a signature covers, and the rest of the certificate is still perfectly usable.
+        bool sigIsRsaPss = false;
+        SRsaPssParams sigPssParams;
+
+        if (sigAlgoOid.compare("1.2.840.113549.1.1.10") == 0) {
+            CReader pssParams;
+
+            if (sigAlgoSeq.atEnd()) {
+                // --> No parameters field at all. RFC 4055 3.3 requires one here, but an empty
+                // RSASSA-PSS-params SEQUENCE (all four fields defaulted) is legal and means
+                // exactly what sigPssParams already holds, so the two are treated alike.
+                sigIsRsaPss = true;
+            }
+            else if (sigAlgoSeq.readSequence(pssParams)
+                && parseRsaPssParams(pssParams, sigPssParams)
+                && sigAlgoSeq.atEnd())
+            {
+                sigIsRsaPss = true;
+            }
+
+            if (sigIsRsaPss) {
+                sigAlgoHash = sigPssParams.hashAlgo;
+            }
+        }
+
         // signatureValue BIT STRING
         SReadOnlyByteSpan sigBits;
         uint8_t sigUnusedBits = 0;
@@ -972,6 +1141,8 @@ namespace x509 {
         _cachedPub.reset(); // --> Rebuilt lazily by publicKey() on first call.
         _cachedPvt.reset();
         _sigHashAlgo = sigAlgoHash;
+        _sigIsRsaPss = sigIsRsaPss;
+        _sigPssParams = sigPssParams;
 
         // --> Writes directly into member state (_extensions), so it's called last, only once
         // every fallible read above has already succeeded.
@@ -1355,6 +1526,8 @@ namespace x509 {
         _cachedPub.reset();
         _cachedPvt.reset();
         _sigHashAlgo = crypto::EHASH_UNKNOWN;
+        _sigIsRsaPss = false;
+        _sigPssParams = SRsaPssParams();
         _keyAlgoIsDsa = false;
         _extensions.clear();
     }
@@ -1581,6 +1754,24 @@ namespace x509 {
             || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
         {
             return ERET_HASH_PIPE;
+        }
+
+        if (_sigIsRsaPss) {
+            // --> verifyPss() takes a single hash algorithm and uses it for both the message
+            // digest and MGF1's own mask generation, which is the only pairing RFC 8017
+            // recommends and the only one any real issuer encodes. A certificate whose
+            // maskGenAlgorithm genuinely names a different hash than hashAlgorithm -- or whose
+            // trailerField isn't trailerFieldBC, the single value RFC 4055 defines and the only
+            // one EMSA-PSS-VERIFY implements -- therefore cannot be checked here, and must fail
+            // closed: verifying it with the wrong MGF1 hash would reject every valid signature,
+            // which is indistinguishable from a forgery.
+            if (_sigPssParams.mgfHashAlgo != _sigPssParams.hashAlgo || _sigPssParams.trailerField != 1) {
+                return ERET_NOTSUP;
+            }
+
+            return ctx->verifyPss(
+                digest.toSpan(), _sigHashAlgo, _sigPssParams.saltLength, _signature.toSpan()
+            );
         }
 
         return ctx->verify(digest.toSpan(), _signature.toSpan());

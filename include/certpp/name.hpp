@@ -22,6 +22,20 @@ namespace certpp {
         ENAME_ST,       // --> State or Province.
         ENAME_C,        // --> Country.
 
+        // --> Appended, never inserted: these values cross the shared-library ABI boundary, so a
+        // caller compiled against an older header would silently read a different attribute type
+        // out of every new enumerator placed ahead of one it already knows.
+        ENAME_OI,       // --> Organization Identifier (ETSI EN 319 412 / X.520 2.5.4.97).
+        ENAME_SERIAL,   // --> Serial Number (X.520 2.5.4.5) -- a device/subject serial, not the
+                        //     certificate's own CCert::serialNumber().
+        ENAME_TITLE,    // --> Title.
+        ENAME_GN,       // --> Given Name.
+        ENAME_SURNAME,  // --> Surname.
+        ENAME_PSEUDONYM,// --> Pseudonym.
+        ENAME_DNQ,      // --> DN Qualifier.
+        ENAME_DC,       // --> Domain Component (RFC 4519 0.9.2342.19200300.100.1.25) -- the only
+                        //     one of these not under the 2.5.4 attributeType arc.
+
         // --
         ENAME_MAX
     };
@@ -37,7 +51,25 @@ namespace certpp {
          */
         static constexpr size_t MAX_LEN = 256;
 
+        /**
+         * The maximum number of arcs any recognized DN attribute-type OBJECT IDENTIFIER has --
+         * the size an attributeOid() caller's output span has to be able to take. The X.520
+         * attributeType arc needs only 4 ({2, 5, 4, N}); RFC 4519's domainComponent
+         * (0.9.2342.19200300.100.1.25) needs all 10.
+         */
+        static constexpr size_t MAX_OID_ARCS = 10;
+
     private:
+        /**
+         * One recognized DN attribute type's OBJECT IDENTIFIER, as its arc values plus how many
+         * of them are in use -- a plain fixed-size array can't hold the table, since
+         * domainComponent's OID is 10 arcs long where every X.520 one is 4.
+         */
+        struct SAttributeOid {
+            uint8_t count;
+            uint32_t arcs[MAX_OID_ARCS];
+        };
+
         static constexpr uint16_t MASK_TYPE = 0x00ffu;
 
         /**
@@ -56,11 +88,10 @@ namespace certpp {
         static const char* TYPE_LABELS[ENAME_MAX];
 
         /**
-         * X.520 attribute-type OBJECT IDENTIFIER arcs corresponding to each name type, as a
-         * fixed 4-arc {2, 5, 4, N} tuple (e.g. ENAME_CN -> {2, 5, 4, 3}). Index ENAME_NONE is
-         * unused (all zero).
+         * DN attribute-type OBJECT IDENTIFIER arcs corresponding to each name type (e.g.
+         * ENAME_CN -> {2, 5, 4, 3}). Index ENAME_NONE is unused (count zero).
          */
-        static const uint32_t TYPE_OIDS[ENAME_MAX][4];
+        static const SAttributeOid TYPE_OIDS[ENAME_MAX];
 
     private:
         uint16_t _type;
@@ -282,26 +313,28 @@ namespace certpp {
         }
 
         /**
-         * Retrieves the X.520 attribute-type OBJECT IDENTIFIER arcs corresponding to a given
-         * name component type (e.g. ENAME_CN -> {2, 5, 4, 3}). Used by the asn1 module to encode
-         * a CDistinguishedName's components as AttributeTypeAndValue.type.
+         * Retrieves the DN attribute-type OBJECT IDENTIFIER arcs corresponding to a given name
+         * component type (e.g. ENAME_CN -> {2, 5, 4, 3}). Used by the asn1 module to encode a
+         * CDistinguishedName's components as AttributeTypeAndValue.type.
          *
          * @param type The name component type.
-         * @param outArcs The destination for the OID's arc values; must be at least 4 long.
-         * @param outArcCount The number of arcs written to outArcs (always 4 on success).
+         * @param outArcs The destination for the OID's arc values; a span of MAX_OID_ARCS takes
+         * any recognized type, and a shorter one only the types whose OID fits it.
+         * @param outArcCount The number of arcs written to outArcs -- 4 for every X.520 type,
+         * 10 for ENAME_DC.
          * @return true if type is a recognized, non-ENAME_NONE type and outArcs had enough
          * room; otherwise, false.
          */
         static bool attributeOid(ENameType type, TSpan<uint32_t> outArcs, size_t& outArcCount);
 
         /**
-         * Retrieves the name component type corresponding to a given X.520 attribute-type
-         * OBJECT IDENTIFIER's arc values, the inverse of attributeOid(). Used by the asn1 module
-         * to decode a CDistinguishedName's components from AttributeTypeAndValue.type.
+         * Retrieves the name component type corresponding to a given DN attribute-type OBJECT
+         * IDENTIFIER's arc values, the inverse of attributeOid(). Used by the asn1 module to
+         * decode a CDistinguishedName's components from AttributeTypeAndValue.type.
          *
          * @param arcs The OID's arc values.
          * @return The corresponding name component type, or ENAME_NONE if arcs isn't a
-         * recognized X.520 DN attribute OID.
+         * recognized DN attribute OID.
          */
         static ENameType attributeTypeOf(TReadOnlySpan<uint32_t> arcs);
 
