@@ -2389,6 +2389,7 @@ Two pre-existing tests changed meaning rather than breaking:
   (each still rejected), then asserts IA5String decodes, and a new case
   round-trips a `DC=example, CN=host` DN through the encoder and back -- the
   only coverage that exercises a 10-arc attribute OID in both directions.
+
 ## Ed25519 onto `Fe25519`: the 100x gap was one unmigrated file
 
 A downstream consumer measured Ed25519 at 1.84 ms to sign and 8.78 ms to verify
@@ -2569,6 +2570,7 @@ verification itself. The remaining headroom is in `Fe25519` (a dedicated
 squaring, and the 2^51-radix layout that MSVC's missing `__int128` currently
 rules out), a dedicated doubling formula, and a cheaper cofactor check — all
 separate items, none of them this one.
+
 ## Post-quantum: ML-DSA itself (FIPS 204), and the first real PQ certificate verified
 
 The layers underneath this were already in and already validated — the ring, the
@@ -2776,6 +2778,7 @@ them. `MlDsaScheme` also stays private to `src/`, unlike ML-KEM's public
 `CMlKem` — every entry point is parameterized by `MlDsaParams`, and exporting
 the signatures would mean moving that already-tested private header into the
 public API or duplicating it, for a surface callers do not need.
+
 ## `CMontgomery`: taking the long division out of every modular multiply
 
 `CBigNum::mulMod(other, modulus)` is `mul(other)` followed by `mod(modulus)`,
@@ -3163,6 +3166,7 @@ and the certificate parse never ran, meaning the test would have passed even
 with the DER check disabled. The fix was a second subcase that truncates by a
 whole number of base64 groups, which decodes cleanly and can only be caught by
 the DER parse. Two layers, two subcases.
+
 ## PBKDF2, and PKCS#12/PFX as the first container format
 
 `x509/chain.hpp` had defined `IChainFormat` and `ECHAINFMT_PFX` with
