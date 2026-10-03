@@ -243,5 +243,5 @@ namespace x509 {
         return CDer::appendSequence(out, body.toSpan());
     }
 
-}
-}
+} // namespace x509
+} // namespace certpp

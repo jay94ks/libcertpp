@@ -460,7 +460,7 @@ namespace asn1 {
         static bool decodeDistinguishedName(SReadOnlyByteSpan content, CDistinguishedName& outValue);
     };
 
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif

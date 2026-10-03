@@ -318,7 +318,7 @@ namespace asn1 {
         bool readDistinguishedName(CDistinguishedName& outValue);
     };
 
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif

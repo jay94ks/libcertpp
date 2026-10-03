@@ -115,7 +115,7 @@ namespace dnssec {
         );
     };
 
-}
-}
+} // namespace dnssec
+} // namespace certpp
 
 #endif

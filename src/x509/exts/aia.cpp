@@ -82,5 +82,5 @@ namespace x509 {
         return std::make_shared<CAiaExtension>(value);
     }
 
-}
-}
+} // namespace x509
+} // namespace certpp

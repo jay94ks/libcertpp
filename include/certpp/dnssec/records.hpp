@@ -268,7 +268,7 @@ namespace dnssec {
         bool toSignedPrefix(TArray<uint8_t>& out) const;
     };
 
-}
-}
+} // namespace dnssec
+} // namespace certpp
 
 #endif

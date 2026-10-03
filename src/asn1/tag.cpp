@@ -103,5 +103,5 @@ namespace asn1 {
         return true;
     }
 
-}
-}
+} // namespace asn1
+} // namespace certpp

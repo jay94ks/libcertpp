@@ -148,5 +148,5 @@ namespace x509 {
         return std::make_shared<CNameConstraintsExtension>(value);
     }
 
-}
-}
+} // namespace x509
+} // namespace certpp

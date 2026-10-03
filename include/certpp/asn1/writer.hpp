@@ -223,7 +223,7 @@ namespace asn1 {
         bool writeDistinguishedName(const CDistinguishedName& value);
     };
 
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif

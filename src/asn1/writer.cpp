@@ -198,5 +198,5 @@ namespace asn1 {
             && writeElement(CTag::SEQ, SReadOnlyByteSpan(buf.toPtr(), written));
     }
 
-}
-}
+} // namespace asn1
+} // namespace certpp

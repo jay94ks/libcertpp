@@ -90,7 +90,7 @@ namespace dnssec {
         static bool isCanonical(const SReadOnlyByteSpan& wire);
     };
 
-}
-}
+} // namespace dnssec
+} // namespace certpp
 
 #endif

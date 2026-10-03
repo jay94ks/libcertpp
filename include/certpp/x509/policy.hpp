@@ -66,7 +66,7 @@ namespace x509 {
         bool encode(CBuffer& out) const;
     };
 
-}
-}
+} // namespace x509
+} // namespace certpp
 
 #endif

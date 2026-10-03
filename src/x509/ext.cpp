@@ -78,5 +78,5 @@ namespace x509 {
 
         return std::make_shared<UnknownExtension>(oid, value);
     }
-}
-}
+} // namespace x509
+} // namespace certpp

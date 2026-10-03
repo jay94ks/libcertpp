@@ -202,5 +202,5 @@ namespace asn1 {
         });
     }
 
-}
-}
+} // namespace asn1
+} // namespace certpp

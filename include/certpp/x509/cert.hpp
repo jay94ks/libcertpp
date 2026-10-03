@@ -18,8 +18,8 @@ namespace asn1 {
     // --> Forward declaration: only used by-reference in CCert's private helper declarations,
     // so a full #include <certpp/asn1/reader.hpp> here would be an unnecessary public dependency.
     class CReader;
-}
-}
+} // namespace x509
+} // namespace certpp
 
 namespace certpp {
 namespace x509 {
@@ -915,7 +915,7 @@ namespace x509 {
          */
         ERetCode build(CCert& out) const;
     };
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif

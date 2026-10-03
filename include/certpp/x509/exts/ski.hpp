@@ -57,7 +57,7 @@ namespace x509 {
         IExtensionPtr build() const override;
     };
 
-}
-}
+} // namespace x509
+} // namespace certpp
 
 #endif

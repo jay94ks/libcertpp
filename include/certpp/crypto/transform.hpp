@@ -71,7 +71,7 @@ namespace crypto {
          */
         virtual ERetCode transformFinal(SByteSpan& output) = 0;
     };
-}
-}
+} // namespace crypto
+} // namespace certpp
 
 #endif

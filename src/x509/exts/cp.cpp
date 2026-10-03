@@ -80,5 +80,5 @@ namespace x509 {
         return std::make_shared<CPoliciesExtension>(value);
     }
 
-}
-}
+} // namespace x509
+} // namespace certpp

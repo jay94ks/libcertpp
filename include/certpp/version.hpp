@@ -67,7 +67,7 @@ namespace certpp {
     /**
      * The version of the header file.
      */
-    static constexpr SVersion HEADER_VERSION{1, 0, 0};
+    static constexpr SVersion HEADER_VERSION{1, 0, 1};
 
     /**
      * Retrieves the version of the library.

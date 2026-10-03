@@ -150,7 +150,7 @@ namespace x509 {
         virtual IExtensionPtr build() const = 0;
     };
 
-}
-}
+} // namespace x509
+} // namespace certpp
 
 #endif

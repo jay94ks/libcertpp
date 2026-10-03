@@ -388,5 +388,5 @@ namespace dnssec {
         return true;
     }
 
-}
-}
+} // namespace dnssec
+} // namespace certpp

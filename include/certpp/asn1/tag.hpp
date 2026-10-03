@@ -430,7 +430,7 @@ namespace asn1 {
             return hasSameClass(other) && hasSameValue(other);
         }
     };
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif

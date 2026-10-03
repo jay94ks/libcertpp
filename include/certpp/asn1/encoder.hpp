@@ -558,7 +558,7 @@ namespace asn1 {
         static bool buildDistinguishedNameContent(const CDistinguishedName& value, TArray<uint8_t>& out);
     };
 
-}
-}
+} // namespace asn1
+} // namespace certpp
 
 #endif
