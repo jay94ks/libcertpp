@@ -117,59 +117,73 @@ anything.
   the multiply count from 100 limb products to 25, and a dedicated
   `square` is worth roughly another 30% on top. MSVC has no `__int128`,
   which is why `Fe25519` is on a 25.5-bit radix today.
-- **Prime-curve scalar multiplication.** Branch-free laddering and
-  projective coordinates for `CEcCurve`/`CEc2Curve`, plus a fixed-base
-  comb table for signing. This is what prime-curve ECDH needs before it
-  can honestly claim constant-time behaviour.
-- **Signature speed: a division per modular multiply.** Reported
-  downstream, where a certificate handshake spends about 20 ms of CPU per
-  side and one core manages roughly 30 handshakes a second. Measured here
-  (Release, loaded 4-core i7-11370H, min of 3x20): Ed25519 sign 7.4 ms /
-  verify 35.1 ms, ECDSA P-256 sign 7.9 ms / verify 17.9 ms, P-384 verify
-  40.7 ms. Optimized implementations verify Ed25519 in 50--100 us.
+- **Prime-curve scalar multiplication: the ladder is done, the field is
+  not.** Branch-free laddering, projective coordinates and a fixed-base
+  table have all landed for both families -- `CEcCurve::scalarMul()` is a
+  two-variable Montgomery ladder over Jacobian coordinates whose addition
+  runs unconditionally and selects with `condSwapJac()`, `CEc2Curve` is the
+  same shape over Lopez-Dahab coordinates with `condSwapLD()`, and both
+  have a lazily-built `_baseTable` behind `scalarMulBase()`.
 
-  The cause is one line: `CBigNum::mulMod()` is `mul()` then `mod()`, and
-  `mod()` calls `divMod()` -- a 138-line schoolbook long division, run once
-  per field multiplication. It is reached from 113 `mulMod` and 51 `mod()`
-  call sites across `eccurve.cpp` (42), `ed25519.cpp` (33), `ed448.cpp`
-  (30), `ecdsa.cpp` and `gost3410.cpp`.
+  What blocks an honest constant-time claim is now entirely *below* the
+  ladder, and it is two things:
 
-  The control that proves it: **X25519 derives a shared secret in 246 us**
-  on the same curve in the same build, because it is the one algorithm
-  already moved onto `Fe25519`, which has no division. Ed25519 uses
-  `Fe25519` zero times and `CBigNum` 118 times; X25519 uses it 32 times.
-  A 142x gap between two implementations of the same curve.
+  1. `CBigNum` trims leading zero limbs, so every operation does work
+     proportional to its operands' values, and `CBigNum::condSwap()` is a
+     plain branch by its own documentation -- in a ladder that branch is a
+     bit of the secret scalar. This is what `Fe25519` fixed for Curve25519
+     and what the prime curves have no equivalent of, because there are 29
+     of them and a hand-written field per curve is not a plan.
+  2. `scalarMulBase()` indexes `_baseTable` by a window of the secret
+     scalar, which is a secret-dependent memory access. It needs a
+     constant-time table scan; the table is small enough to stay in L1 in
+     practice, which is a mitigation and not a fix.
 
-  **Precomputation is the lever, but not everywhere -- some of it is
-  already done.** Worth separating, because "precompute more points" is
-  the intuitive answer and is the wrong one here:
+  Until both are addressed, prime-curve ECDH and ECDSA signing should be
+  described as branch-free in shape but not constant-time, which is what
+  their doc comments say.
 
-  1. *Already present.* Both `Edwards25519::scalarMulBase()` and
-     `CEcCurve::scalarMulBase()` build a lazy fixed-base window table and
-     reuse it for the life of the process, and Ed25519 already keeps
-     extended `(X, Y, Z, T)` coordinates with an inversion-free
-     `pointAddProj()` and a precomputed `2*d`. Adding more point tables
-     does not help: every point addition still pays ~8 divisions, so the
-     table only changes how many of those additions there are.
-  2. *The actual win -- per-modulus reduction constants.* Montgomery
-     (`n' = -m^-1 mod 2^64`, `R^2 mod m`) or Barrett
-     (`mu = floor(2^2k / m)`), computed once per modulus, turns each
-     reduction into multiplications. This is what removes `divMod` from
-     the inner loop, and unlike a per-curve field it covers all 29 prime
-     curves, Ed448, GOST and DSA at once. The obstacle is API shape rather
-     than arithmetic: `mulMod(other, modulus)` has nowhere to cache
-     anything, so the modulus needs to become a type that owns its
-     constants.
-  3. *Still open, and workload-specific.* Verification multiplies a
-     **variable** base -- the public key -- so no fixed-base table helps
-     it. But `verifyBy()` reuses one issuer key across every certificate
-     that issuer signed, so caching a window table per public key would
-     pay for exactly the chain-checking workload that prompted the report.
-     The downstream consumer already caches at a coarser level, per
-     credential.
+- **Signature speed.** Reported downstream, where a certificate handshake
+  spent about 20 ms of CPU per side. The diagnosis then was that
+  `CBigNum::mulMod()` is `mul()` then `mod()`, and `mod()` calls
+  `divMod()` -- a schoolbook long division per field multiplication,
+  reached from 113 `mulMod` and 51 `mod()` call sites across the curve
+  code. That diagnosis was right and the fix has landed: `CMontgomery`
+  owns one odd modulus plus its precomputed `n'` and `R^2`, which is the
+  "the modulus needs to become a type that owns its constants" conclusion
+  this entry used to end on, and `Fe25519` replaced `CBigNum` underneath
+  Curve25519 and Ed25519 entirely.
 
-  Ed25519 gets `Fe25519` because that field already exists and is
-  validated; everything else wants (2).
+  Re-measured after both (Release, loaded 4-core i7-11370H, min of 3x20,
+  two runs; the run-to-run spread is 20-30%, so read nothing into a
+  difference smaller than that):
+
+  | | sign | verify |
+  |---|---|---|
+  | Ed25519 | **0.20 ms** | **1.00 ms** |
+  | Ed448 | 3.27 ms | 13.5 ms |
+  | ECDSA P-256 | 1.03 ms | 2.53 ms |
+  | ECDSA P-384 | 2.21 ms | 6.62 ms |
+  | ECDSA P-521 | 4.59 ms | 15.1 ms |
+
+  Against the figures this entry previously carried, Ed25519 verify is
+  35x faster and P-256 verify 7x. Ed25519 is within an order of magnitude
+  of the 50--100 us an optimized implementation takes, which is the first
+  time that has been true.
+
+  What is left, in the order the remaining cost sits:
+
+  1. **`Fe25519`'s radix.** A 2^51 layout needs 25 limb products where
+     the current 2^25.5 needs 100, and a dedicated `square` is worth
+     roughly another 30%. MSVC has no `__int128`, so this means
+     `_umul128`. This is also the X25519 item above.
+  2. **A window table per public key, for verification.** Verification
+     multiplies a *variable* base, so no fixed-base table helps it -- but
+     `verifyBy()` reuses one issuer key across every certificate that
+     issuer signed, so caching a table per public key pays for exactly the
+     chain-checking workload that prompted the report. Still open.
+  3. **Ed448 and P-521 are the outliers** now that the shared reduction is
+     fixed, and neither has had a pass of its own.
 
 ## Not planned
 
