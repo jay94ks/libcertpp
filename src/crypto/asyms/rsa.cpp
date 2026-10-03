@@ -1034,9 +1034,24 @@ namespace crypto {
             return ERET_KEY_PARAM;
         }
 
-        // d must be e's modular inverse mod phi(n).
-        CBigNum expectedD;
-        if (!CBigNum::modInverse(e, phi, expectedD) || expectedD != d) {
+        // e*d must be congruent to 1 modulo both p-1 and q-1 -- equivalently, modulo
+        // lambda(n) = lcm(p-1, q-1). RFC 8017 3.2 lets d be the inverse of e modulo either
+        // lambda(n) or phi(n), and the two differ whenever gcd(p-1, q-1) > 2: OpenSSL (for
+        // 2048 bits and up), BIND's dnssec-keygen and ldns all emit the lambda(n) value,
+        // which is the smaller of the two. Comparing d against the phi(n) inverse rejected
+        // every one of those keys as ERET_KEY_PARAM even though they sign and verify
+        // correctly. lambda divides phi, so this congruence accepts both forms -- and still
+        // rejects a d that is not an inverse at all.
+        CBigNum ed(e);
+        ed.mul(d);
+
+        CBigNum edModP(ed);
+        edModP.mod(pMinus1);
+
+        CBigNum edModQ(ed);
+        edModQ.mod(qMinus1);
+
+        if (edModP != one || edModQ != one) {
             return ERET_KEY_PARAM;
         }
 

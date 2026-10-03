@@ -1959,6 +1959,7 @@ A side benefit: unpadded CBC is the first thing in this library that can be
 held against SP 800-38A F.2's *four-block* CBC vector. Padded CBC appends a
 fifth all-16s block, so until now only the single-block, all-zero-IV reduction
 of F.2 was checked, which exercises no chaining at all.
+
 ## GOST R 34.11-2012 (Streebog) and GOST R 34.10-2012
 
 Added the Russian federal hash and signature standards, as new `IHasher` and
@@ -3516,3 +3517,61 @@ Private static members in PascalCase, where
 [coding-conventions.md](coding-conventions.md) calls for `camelCase` on
 members and reserves PascalCase for free functions. Renamed across 32 call
 sites; no behaviour change.
+
+## `RSA::checkPrivateKey` rejected every OpenSSL and BIND private key
+
+Reported downstream: cppskit's cskdns_certpp imports DNSSEC keys produced by
+BIND's `dnssec-keygen`, and `checkPrivateKey()` returned `ERET_KEY_PARAM` for
+all of them — while a sign/verify probe on the very same key succeeded. The
+workaround downstream was to validate with that probe instead, which is a
+sound diagnosis of where the fault was.
+
+The check computed `phi = (p-1)*(q-1)` and required `d == e^-1 mod phi`
+exactly. But RFC 8017 3.2 defines `d` as the inverse of `e` modulo **either**
+`lambda(n) = lcm(p-1, q-1)` or `phi(n)`, and the two values differ whenever
+`gcd(p-1, q-1) > 2`. `lambda` divides `phi`, so the `lambda(n)` value is the
+smaller one, and a check written against `phi` rejects it.
+
+It is not a corner of the standard that nothing uses. Generating keys with
+OpenSSL 3.2 and reading their parameters back shows the split directly:
+
+| `openssl genrsa` | `d == e^-1 mod lambda` | `d == e^-1 mod phi` |
+|---|---|---|
+| 2048-bit | yes | **no** (3 of 4 sampled keys) |
+| 1024-bit | — | yes |
+
+At 2048 bits and up OpenSSL follows FIPS 186-4, which requires `d < lambda(n)`;
+below that it keeps the historical `phi(n)` value. So `openssl genrsa 2048`,
+the single most common way to produce an RSA key, was rejected, and only the
+sizes nobody should still be using passed. `dnssec-keygen` and ldns produce the
+`lambda(n)` form as well.
+
+The fix checks the congruence rather than a specific representative:
+`e*d ≡ 1 (mod p-1)` and `e*d ≡ 1 (mod q-1)`, which together are
+`e*d ≡ 1 (mod lambda(n))`. That accepts both forms — and also a `d` offset by
+any multiple of `lambda`, which is equally valid and equally functional — while
+still rejecting a `d` that is not an inverse at all. The `gcd(e, phi) == 1`
+test above it needs no change, since `phi` and `lambda` have the same prime
+divisors. The CRT checks below it needed none either: `dP = d mod (p-1)` holds
+for both forms, because that identity is what makes the CRT exponents work in
+the first place.
+
+### What the test pins
+
+A sign/verify round trip would not have caught this and did not: the bug was
+in the validator, not the arithmetic. The regression test therefore carries one
+real 1024-bit `openssl genrsa` key encoded as PKCS#1 `RSAPrivateKey` twice —
+same `n`, `e`, `p`, `q`, with `d` in each form — chosen so that
+`gcd(p-1, q-1) = 24` and the two `d` values are genuinely 24× apart rather
+than coinciding, which they do about half the time when the gcd is 2. Both
+must now validate, and the two imports must agree on their public half, which
+is what proves they are the same key rather than two unrelated ones.
+
+A third vector is the `lambda(n)` key's `d` plus one, with `dP`/`dQ`
+recomputed to match so that the congruence is the only thing wrong. It must
+still be rejected — a fix that simply dropped the `d` check would pass the
+first two cases and leave nothing behind it.
+
+Confirmed by negative control: with the one-line condition reverted, the
+`lambda(n)` cases fail and the `phi(n)` and non-inverse cases still pass,
+which is exactly the signature of the reported bug.
