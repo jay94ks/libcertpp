@@ -10,6 +10,30 @@ namespace certpp {
 namespace crypto {
 
     /**
+     * How a block cipher mode treats the final, possibly partial, block.
+     */
+    enum ESymPaddings {
+        /**
+         * PKCS#7 (RFC 5652 6.3), the default: encrypting always appends a padding block --
+         * between 1 and one full block of bytes, every one of them holding that count -- so the
+         * ciphertext is always longer than the plaintext and always ends on a block boundary;
+         * decrypting locates and strips it, and rejects a ciphertext whose padding is malformed.
+         */
+        ESYMPAD_PKCS7 = 0,
+
+        /**
+         * No padding at all: the plaintext must already be a whole number of blocks, and the
+         * ciphertext is exactly as long as it. Finalizing with a partial block left over fails
+         * rather than padding it.
+         *
+         * This is what a protocol that does its own padding needs -- IKEv2 (RFC 7296 3.14)
+         * builds its own pad-length-terminated padding into the payload before encrypting, so a
+         * PKCS#7 block added underneath it would be a second, unexpected one.
+         */
+        ESYMPAD_NONE,
+    };
+
+    /**
      * Forward declaration of the ISymmetric interface.
      */
     class ISymmetric;
@@ -167,6 +191,7 @@ namespace crypto {
         CBuffer _iv;                        // --> Initialization vector used by this context.
 
         size_t _sizeOfBlock;                // --> Size of the block used by this context.
+        ESymPaddings _padding;              // --> How the final block is padded; see padding().
 
     public:
         /**
@@ -174,6 +199,7 @@ namespace crypto {
          */
         ISymmetricContext() {
             _sizeOfBlock = 0;
+            _padding = ESYMPAD_PKCS7;
         }
 
         /**
@@ -244,7 +270,30 @@ namespace crypto {
         inline size_t sizeOfBlock() const {
             return _sizeOfBlock;
         }
-    
+
+        /**
+         * Selects how the final block is padded. The choice is read when
+         * createEncrypter()/createDecrypter() builds a transformer, so it applies to every
+         * transformer created afterwards and not to any created before.
+         *
+         * Deliberately *not* cleared by reset() or key(), unlike the key, IV and block size:
+         * padding is a mode choice rather than key material, and clearing it would mean
+         * `padding(ESYMPAD_NONE)` followed by `key(...)` silently reverting to PKCS#7 -- which
+         * would be a particularly quiet way to produce a ciphertext a peer rejects.
+         * @param padding The padding mode to use.
+         */
+        inline void padding(ESymPaddings padding) {
+            _padding = padding;
+        }
+
+        /**
+         * @return This context's padding mode; ESYMPAD_PKCS7 unless padding() changed it.
+         */
+        inline ESymPaddings padding() const {
+            return _padding;
+        }
+
+
         /**
          * Creates an encrypter transformer for this context.
          * @param out The output parameter to receive the encrypter transformer.

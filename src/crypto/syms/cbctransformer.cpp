@@ -6,10 +6,10 @@ namespace crypto {
 
     CbcTransformer::CbcTransformer(
         const ISymmetricContextPtr& ctx, bool encrypting, size_t blockBytes,
-        SReadOnlyByteSpan iv, BlockFn blockFn
+        SReadOnlyByteSpan iv, ESymPaddings padding, BlockFn blockFn
     )
         : ISymmetricTransformer(ctx), _encrypting(encrypting), _blockBytes(blockBytes),
-          _blockFn(std::move(blockFn))
+          _padding(padding), _blockFn(std::move(blockFn))
     {
         blockSize(blockBytes);
 
@@ -65,7 +65,13 @@ namespace crypto {
                 consumed += _blockBytes;
             }
 
-            if (result == ERET_OK && final) {
+            if (result == ERET_OK && final && _padding == ESYMPAD_NONE) {
+                // --> Unpadded CBC has no final block of its own: the loop above already emitted
+                // every whole block, so anything left is a partial block the mode cannot encode.
+                if (_buffer.size() != consumed) {
+                    result = ERET_BADREQ;
+                }
+            } else if (result == ERET_OK && final) {
                 size_t leftover = _buffer.size() - consumed;
                 size_t padByte = _blockBytes - leftover; // 1..blockBytes (always pads, per PKCS#7)
 
@@ -89,11 +95,16 @@ namespace crypto {
                 }
             }
         } else {
-            // --> Always holds back the most recently completed block, whether or not this call
-            // is final -- a final call still needs it held back so the code below can strip its
-            // padding instead of emitting it as an ordinary block.
+            // --> Under PKCS#7, always holds back the most recently completed block, whether or
+            // not this call is final -- a final call still needs it held back so the code below
+            // can strip its padding instead of emitting it as an ordinary block. Unpadded, there
+            // is nothing to strip and nothing special about the last block, so every whole block
+            // is emitted as it completes.
             size_t fullBlocks = (_buffer.size() - consumed) / _blockBytes;
-            size_t blocksToEmit = fullBlocks > 0 ? fullBlocks - 1 : 0;
+            size_t blocksToEmit = fullBlocks;
+            if (_padding == ESYMPAD_PKCS7 && fullBlocks > 0) {
+                blocksToEmit = fullBlocks - 1;
+            }
 
             for (size_t b = 0; b < blocksToEmit; ++b) {
                 if (output.size - outWritten < _blockBytes) {
@@ -117,7 +128,13 @@ namespace crypto {
                 consumed += _blockBytes;
             }
 
-            if (result == ERET_OK && final) {
+            if (result == ERET_OK && final && _padding == ESYMPAD_NONE) {
+                // --> As when encrypting unpadded: every whole block is already out, so a
+                // leftover is a truncated ciphertext rather than a final block to unpad.
+                if (_buffer.size() != consumed) {
+                    result = ERET_BADREQ;
+                }
+            } else if (result == ERET_OK && final) {
                 size_t leftover = _buffer.size() - consumed;
 
                 if (leftover != _blockBytes) {

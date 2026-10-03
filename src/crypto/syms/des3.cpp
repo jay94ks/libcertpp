@@ -83,7 +83,7 @@ namespace crypto {
                 std::memcpy(keys[2], _k3, sizeof(keys[2]));
 
                 out = std::make_shared<CbcTransformer>(
-                    shared_from_this(), true, DES3_BLOCK_BYTES, iv().toSpan(),
+                    shared_from_this(), true, DES3_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         TripleDesCore::process(in, o, keys);
                     }
@@ -105,7 +105,7 @@ namespace crypto {
                 TripleDesCore::reverseSchedule(_k1, keys[2]);
 
                 out = std::make_shared<CbcTransformer>(
-                    shared_from_this(), false, DES3_BLOCK_BYTES, iv().toSpan(),
+                    shared_from_this(), false, DES3_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         TripleDesCore::process(in, o, keys);
                     }
