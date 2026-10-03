@@ -616,8 +616,8 @@ namespace x509 {
         crypto::IPublicKeyPtr requestorKey = requestorCert.publicKey();
         crypto::EAsymmetrics keyAlgo = requestorKey ? requestorKey->algorithm() : crypto::EASYM_UNKNOWN;
 
-        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
-            // self-hashing (EdDSA) -- the raw tbsRequest bytes are the message itself.
+        if (CCert::signsMessageDirectly(keyAlgo)) {
+            // self-hashing (EdDSA, ML-DSA) -- the raw tbsRequest bytes are the message itself.
             return ctx->verify(_tbsRequestRaw.toSpan(), _signatureValue.toSpan());
         }
 
@@ -792,7 +792,7 @@ namespace x509 {
                 return ERET_NOTSUP;
             }
 
-            bool sigIsEddsa = (sigHash == crypto::EHASH_UNKNOWN);
+            bool sigIsSelfHashing = (sigHash == crypto::EHASH_UNKNOWN);
 
             CBuffer sigAlgoIdTlv;
             {
@@ -825,7 +825,7 @@ namespace x509 {
             }
 
             COctet toSign;
-            if (sigIsEddsa) {
+            if (sigIsSelfHashing) {
                 toSign = COctet(tbsTlv.toSpan());
             } else {
                 crypto::IHasherPtr hasher;
@@ -961,10 +961,9 @@ namespace x509 {
         // the whole message. An unrecognized algorithm must fail closed instead.
         crypto::IPublicKeyPtr responderKey = responderCert.publicKey();
         crypto::EAsymmetrics keyAlgo = responderKey ? responderKey->algorithm() : crypto::EASYM_UNKNOWN;
-        bool keyIsEddsa = (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448);
-
-        if (keyIsEddsa) {
-            // self-hashing (EdDSA) -- the raw tbsResponseData bytes are the message itself.
+        if (CCert::signsMessageDirectly(keyAlgo)) {
+            // self-hashing (EdDSA, ML-DSA) -- the raw tbsResponseData bytes are the message
+            // itself.
             return ctx->verify(_tbsResponseDataRaw.toSpan(), _signatureValue.toSpan());
         }
 
@@ -1093,7 +1092,7 @@ namespace x509 {
             return ERET_NOTSUP;
         }
 
-        bool sigIsEddsa = (sigHash == crypto::EHASH_UNKNOWN);
+        bool sigIsSelfHashing = (sigHash == crypto::EHASH_UNKNOWN);
 
         CBuffer sigAlgoIdTlv;
         {
@@ -1189,7 +1188,7 @@ namespace x509 {
         }
 
         COctet toSign;
-        if (sigIsEddsa) {
+        if (sigIsSelfHashing) {
             toSign = COctet(responseDataTlv.toSpan());
         } else {
             crypto::IHasherPtr hasher;

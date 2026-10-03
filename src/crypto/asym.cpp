@@ -7,6 +7,7 @@
 #include <certpp/crypto/asyms/x25519.hpp>
 #include <certpp/crypto/asyms/ecdsa2.hpp>
 #include <certpp/crypto/asyms/gost3410.hpp>
+#include <certpp/crypto/asyms/mldsa.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -144,6 +145,15 @@ namespace crypto {
 
             case EASYM_GOST512C:
                 return std::make_shared<CGost3410>(ECURVE_GOST512C);
+
+            case EASYM_MLDSA44:
+                return std::make_shared<CMlDsa>(EASYM_MLDSA44);
+
+            case EASYM_MLDSA65:
+                return std::make_shared<CMlDsa>(EASYM_MLDSA65);
+
+            case EASYM_MLDSA87:
+                return std::make_shared<CMlDsa>(EASYM_MLDSA87);
 
             default:
                 return nullptr;

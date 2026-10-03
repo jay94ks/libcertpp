@@ -408,8 +408,7 @@ namespace x509 {
 
         // --> Decided by the issuer's key algorithm, never by _sigHashAlgo == EHASH_UNKNOWN --
         // see CCert::verifyBy() for why that test would be unsafe here.
-        crypto::EAsymmetrics keyAlgo = issuerKey->algorithm();
-        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
+        if (CCert::signsMessageDirectly(issuerKey->algorithm())) {
             return ctx->verify(tbs, _signature.toSpan());
         }
 
@@ -558,7 +557,7 @@ namespace x509 {
             return ERET_NOTSUP; // --> e.g. issuer's key is X25519, which can't sign at all.
         }
 
-        bool sigIsEddsa = (sigHash == crypto::EHASH_UNKNOWN);
+        bool sigIsSelfHashing = (sigHash == crypto::EHASH_UNKNOWN);
 
         // AlgorithmIdentifier ::= SEQUENCE { OID, parameters ANY OPTIONAL } -- built once, since
         // TBSCertList.signature and CertificateList.signatureAlgorithm must be byte-identical.
@@ -663,7 +662,7 @@ namespace x509 {
         }
 
         // --- Sign the TBSCertList: a digest for a hash-then-sign family, or the raw TBSCertList
-        // bytes directly for the self-hashing EdDSA schemes -- same shape as
+        // bytes directly for the self-hashing schemes (EdDSA, ML-DSA) -- same shape as
         // CCertBuilder::build(). ---
         crypto::IAsymmetricContextPtr ctx = issuer.createAsymmetricContext();
         if (!ctx) {
@@ -671,7 +670,7 @@ namespace x509 {
         }
 
         COctet toSign;
-        if (sigIsEddsa) {
+        if (sigIsSelfHashing) {
             toSign = COctet(tbsFull.toSpan());
         } else {
             crypto::IHasherPtr hasher;

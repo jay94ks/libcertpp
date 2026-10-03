@@ -1,6 +1,7 @@
 #include <certpp/x509/cert.hpp>
 #include <certpp/x509/exts/ski.hpp>
 #include <certpp/x509/exts/aki.hpp>
+#include <certpp/crypto/asyms/mldsa.hpp>
 #include <certpp/asn1/reader.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/asn1/encoder.hpp>
@@ -31,6 +32,16 @@ namespace x509 {
         { "1.3.101.110",          "X25519",  crypto::EASYM_X25519 },
         { "1.3.101.112",          "Ed25519", crypto::EASYM_ED25519 },
         { "1.3.101.113",          "Ed448",   crypto::EASYM_ED448 },
+
+        // NIST CSOR's ML-DSA arc, as RFC 9881 2 profiles it for X.509. The three OIDs run 17/18/
+        // 19 for ML-DSA-44/65/87 -- consecutive, so an off-by-one here resolves a certificate to
+        // the wrong parameter set, and since every parameter set has a different public-key
+        // length that shows up as createPublicKey() refusing the key rather than as a wrong
+        // answer. The IdenTrust pilot root in tests/x509/certs/implemented/ carries .19, and its
+        // 2592-byte key and 4627-byte signature are ML-DSA-87's own sizes.
+        { "2.16.840.1.101.3.4.3.17", "ML-DSA-44", crypto::EASYM_MLDSA44 },
+        { "2.16.840.1.101.3.4.3.18", "ML-DSA-65", crypto::EASYM_MLDSA65 },
+        { "2.16.840.1.101.3.4.3.19", "ML-DSA-87", crypto::EASYM_MLDSA87 },
     };
 
     const CCert::SKeyAlgo CCert::EC_CURVES[] = {
@@ -92,7 +103,24 @@ namespace x509 {
         // parseRsaPssParams() and then uses to set _sigHashAlgo. EHASH_UNKNOWN here keeps
         // resolveSigAlgo() from claiming a digest this OID genuinely doesn't carry.
         { "1.2.840.113549.1.1.10",  "rsassaPss",               crypto::EHASH_UNKNOWN },
+
+        // --> The same three OIDs as KEY_ALGOS above, which is correct and not a copy/paste
+        // slip: RFC 9881 uses one identifier for both the key type and the signature, the way
+        // Ed25519/Ed448 do and unlike ecdsa-with-SHA256. EHASH_UNKNOWN because there is no
+        // separate digest -- see signsMessageDirectly(), which is what verifyBy() actually
+        // branches on; EHASH_UNKNOWN here is ambiguous with "OID not in this table at all" and
+        // must never be read as "self-hashing" on its own.
+        { "2.16.840.1.101.3.4.3.17", "ML-DSA-44",              crypto::EHASH_UNKNOWN },
+        { "2.16.840.1.101.3.4.3.18", "ML-DSA-65",              crypto::EHASH_UNKNOWN },
+        { "2.16.840.1.101.3.4.3.19", "ML-DSA-87",              crypto::EHASH_UNKNOWN },
     };
+
+    /* Whether an algorithm signs the message itself rather than a caller-supplied digest. */
+    bool CCert::signsMessageDirectly(crypto::EAsymmetrics which) {
+        return which == crypto::EASYM_ED25519
+            || which == crypto::EASYM_ED448
+            || crypto::CMlDsa::isMlDsa(which);
+    }
 
     /* Copy constructor for the X.509 certificate. */
     CCert::CCert(const CCert& other) {
@@ -609,6 +637,23 @@ namespace x509 {
 
         if (which == crypto::EASYM_X25519) {
             return false; // --> Diffie-Hellman only; no signing capability at all.
+        }
+
+        if (crypto::CMlDsa::isMlDsa(which)) {
+            // RFC 9881 2: the signature AlgorithmIdentifier is the same OID as the key's, with
+            // `parameters` absent -- so outParams stays empty, exactly as for EdDSA. The
+            // requested digest is ignored for the same reason it is for Ed25519.
+            CString oid;
+            bool unusedIsDsa = false;
+            bool unusedIsEc = false;
+            CString unusedCurve;
+            if (!resolveKeyAlgoForBuild(which, oid, unusedIsDsa, unusedIsEc, unusedCurve)) {
+                return false;
+            }
+
+            outOid = oid;
+            outHash = crypto::EHASH_UNKNOWN; // --> self-hashing: sign() gets the message directly
+            return true;
         }
 
         if (rsaPss && which != crypto::EASYM_RSA) {
@@ -1734,8 +1779,11 @@ namespace x509 {
         // to an ECDSA/DSA verify as though they were a digest, which truncates them to the
         // order's bit length and leaves the signature covering a prefix of the plaintext rather
         // than a hash of the message. OCSP's own verifySignature() had exactly that bug.
-        crypto::EAsymmetrics keyAlgo = issuerKey->algorithm();
-        if (keyAlgo == crypto::EASYM_ED25519 || keyAlgo == crypto::EASYM_ED448) {
+        if (signsMessageDirectly(issuerKey->algorithm())) {
+            // --> The signature BIT STRING's content is handed over whole. ML-DSA's signature is
+            // one opaque blob (c-tilde || z || h) with no internal ASN.1, exactly like EdDSA's
+            // R || S -- unlike ECDSA's SEQUENCE { r, s }, which createPublicKey()'s algorithm
+            // unpacks itself.
             return ctx->verify(tbs, _signature.toSpan());
         }
 
@@ -2127,7 +2175,7 @@ namespace x509 {
             return ERET_NOTSUP; // --> e.g. issuerKeyPair is X25519, or digestAlgo has no OID for it.
         }
 
-        bool sigIsEddsa = (sigHash == crypto::EHASH_UNKNOWN);
+        bool sigIsSelfHashing = (sigHash == crypto::EHASH_UNKNOWN);
 
         // AlgorithmIdentifier ::= SEQUENCE { OID, parameters ANY OPTIONAL } -- built once, since
         // TBSCertificate.signature and Certificate.signatureAlgorithm must be byte-identical.
@@ -2335,7 +2383,7 @@ namespace x509 {
         }
 
         // --- Sign the TBSCertificate: a digest for a hash-then-sign family, or the raw
-        // TBSCertificate bytes directly for the self-hashing EdDSA schemes. ---
+        // TBSCertificate bytes directly for the self-hashing schemes (EdDSA, ML-DSA). ---
         crypto::IAsymmetricPtr issuerAsym = crypto::IAsymmetric::builtIn(issuerWhich);
         crypto::IAsymmetricContextPtr ctx = issuerAsym ? issuerAsym->createContext() : nullptr;
         if (!ctx) {
@@ -2345,7 +2393,7 @@ namespace x509 {
         ctx->keyPair(issuerKeyPair);
 
         COctet toSign;
-        if (sigIsEddsa) {
+        if (sigIsSelfHashing) {
             toSign = COctet(tbsFull.toSpan());
         } else {
             crypto::IHasherPtr hasher;

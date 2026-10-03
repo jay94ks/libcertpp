@@ -215,6 +215,24 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        # MlDsaScheme is the whole of ML-DSA over raw spans -- KeyGen/Sign/Verify plus the key
+        # and signature encoders -- and it has no public header: CMlDsa exports an IAsymmetric,
+        # which cannot be handed a test vector's seed or a deterministic rnd. So the ACVP
+        # known-answer tests and the encoder tests compile the private units in, same as the
+        # layers below it. mldsa.cpp is deliberately absent: it implements the exported CMlDsa,
+        # and compiling it here too would duplicate symbols the test already imports.
+        if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsascheme"
+           OR CERTPP_TEST_REL STREQUAL "crypto/asyms/kat_mldsa"
+           OR CERTPP_TEST_REL STREQUAL "crypto/asyms/kat_mldsaver")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsarounding.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsacodec.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsasampler.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsascheme.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsasampler")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp

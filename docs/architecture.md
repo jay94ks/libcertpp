@@ -115,6 +115,7 @@ include/
         ed448.hpp                       # Ed448: EdDSA over edwards448/"Goldilocks" (RFC 8032), keygen + sign/verify only
         x25519.hpp                      # X25519: Diffie-Hellman key agreement over Curve25519 (RFC 7748), keygen + IAsymmetricContext::deriveSharedSecret() only
         gost3410.hpp                     # CGost3410: GOST R 34.10-2012 (RFC 7091) over any ECURVE_GOST* parameter set, keygen + sign/verify only -- not ECDSA with a different curve (different s/verification equation, GOST's own hash-to-integer rule, and RFC 9215's own key/signature byte orders)
+        mldsa.hpp                         # CMlDsa: ML-DSA (FIPS 204, post-quantum) in all three parameter sets, keygen + sign/verify only; sign()/verify() take the MESSAGE, not a digest (sizeOfDigest() == 0), and implement FIPS 204's external interface with an empty context, which is what RFC 9881's id-ml-dsa-* OIDs mean
       transform.hpp                # ITransformer: generic streaming transform interface shared by IAsymmetricTransformer and ISymmetricTransformer
       sym.hpp                      # ISymmetric (algorithm descriptor/factory) + ISymmetricContext (bound-key encrypter/decrypter factory) + ISymmetricTransformer
       syms/                        # concrete ISymmetric implementations, one file each (mirrors asyms/)
@@ -242,6 +243,13 @@ src/
       ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
       x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication over Fe25519, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
       gost3410.cpp                      # CGost3410 implementation, plus the private GostPublicKey/GostPrivateKey/GostContext classes
+      mldsa.cpp                          # CMlDsa implementation, plus the private MlDsaPublicKey/MlDsaPrivateKey/MlDsaContext classes; the only ML-DSA layer that draws from CRng
+      mldsaring.hpp / .cpp                # MlDsaRing: private, R_q = Z_q[X]/(X^256 + 1) with q = 8380417, complete 8-layer NTT
+      mldsarounding.hpp / .cpp             # MlDsaRounding: private, FIPS 204 7.4's Power2Round/Decompose/MakeHint/UseHint
+      mldsacodec.hpp / .cpp                 # MlDsaCodec: private, FIPS 204 7.1-7.2's bit packing and hint encoding
+      mldsasampler.hpp / .cpp                # MlDsaSampler: private, FIPS 204 7.3's rejection samplers and Expand* procedures
+      mldsaparams.hpp                         # MlDsaParams: private, FIPS 204 Table 1's three parameter sets with every length derived
+      mldsascheme.hpp / .cpp                   # MlDsaScheme: private, ML-DSA itself over raw spans -- the 7.2 encoders plus KeyGen/Sign/Verify in both the internal and external forms
   x509/
     ext.cpp                    # UnknownExtension (fallback IExtension) + IExtension::create()'s OID-dispatch table
     generalname.cpp             # CGeneralName::decode()/decodeList() (GeneralName CHOICE parsing)
@@ -310,6 +318,14 @@ tests/
       b409.cpp, k409.cpp, b571.cpp, k571.cpp
                                      # the 10 binary/Koblitz curves, each: same coverage as p192.cpp
       gost3410.cpp                   # GOST R 34.10-2012 test cases: RFC 7091 section 7's (r, s) known answer, RFC 9215 appendix D's three test certificates end to end (hash + signature + both byte orders), sign/verify round trips on all nine parameter sets, and wrong-key/tampered-message/tampered-signature/swapped-half negatives
+      mldsaring.cpp                  # MlDsaRing: the twiddle table against FIPS 204 Appendix B and re-derived from ZETA, the complete 8-layer NTT against a schoolbook negacyclic multiply, centered()/infinityNorm()
+      mldsarounding.cpp              # MlDsaRounding: Power2Round/Decompose/HighBits/LowBits/MakeHint/UseHint, the inversion identity at the bucket boundaries, and Decompose's (q-1) band
+      mldsacodec.cpp                 # MlDsaCodec: SimpleBitPack/BitPack and their inverses, HintBitPack/HintBitUnpack and each of its three rejection conditions
+      mldsasampler.cpp               # MlDsaSampler: SampleInBall/RejNTTPoly/RejBoundedPoly and ExpandA/ExpandS/ExpandMask against pinned known answers, incl. ExpandA's transposed seed order
+      mldsaparams.cpp                # MlDsaParams: every derived length static_asserted against FIPS 204 Table 2
+      kat_mldsa.cpp                    # ML-DSA keyGen/sigGen against NIST ACVP: deterministic (rnd = 0) and hedged, internal and external interfaces, plus that the two interfaces disagree and that skDecode rejects an out-of-range s1
+      kat_mldsaver.cpp                  # ML-DSA sigVer against NIST ACVP, including all four negative reasons (modified message, commitment, hint, z), a per-region bit-flip sweep, and cross-parameter-set refusal
+      mldsa.cpp                          # CMlDsa as an IAsymmetric: the message-not-digest convention (sizeOfDigest() == 0), hedged signatures differing per call, publicKey() re-derivation, and malformed/foreign key refusal
     hashers/
       md4.cpp                    # MD4 test cases (RFC 1320 A.5 vectors + the documented NT hash of "password" + boundary/chunking tests)
       md5.cpp                    # MD5 test cases (RFC 1321 vectors + FIPS-style stress/chunking tests)
@@ -345,7 +361,11 @@ tests/
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
+<<<<<<< HEAD
     realcerts.cpp                # real commercial certificates on disk under certs/implemented/ (github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate), plus certs/unimplemented/ for ones whose signature algorithm importDer() cannot resolve at all (ML-DSA)
+=======
+    realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net, the IdenTrust ML-DSA-87 pilot root) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS)
+>>>>>>> worktree-agent-a8132717936d67566
   dnssec/
     name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
     records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
@@ -1424,6 +1444,111 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   the column byte before the row byte, exactly as ML-KEM's
   `SampleNTT(rho || j || i)` is. Both produce a scheme that is perfectly
   self-consistent and interoperates with nothing.
+- **`src/crypto/asyms/mldsaparams.hpp`** defines `MlDsaParams`, FIPS 204
+  Table 1's three parameter sets with every length derived from them rather
+  than written out, and `static_assert`ed against Table 2 by
+  `tests/crypto/asyms/mldsaparams.cpp`. Two of its values do not behave the way
+  a reader expects: **eta is not monotone** across the sets (2, 4, 2 for
+  ML-DSA-44/65/87), and **gamma1 is shared** by ML-DSA-65 and -87, so neither
+  can be used to tell a set apart.
+- **`src/crypto/asyms/mldsascheme.hpp`/`.cpp`** define `MlDsaScheme`, ML-DSA
+  itself over raw byte spans: FIPS 204 7.2's key and signature encoders
+  (`pkEncode`/`pkDecode`, `skEncode`/`skDecode`, `sigEncode`/`sigDecode`,
+  `w1Encode`), and KeyGen/Sign/Verify in both the internal
+  (Algorithms 6-8) and external (Algorithms 2-3) forms. It takes xi and rnd as
+  parameters rather than drawing them, which is what lets it be driven straight
+  from a test vector.
+
+  It stays private to `src/`, unlike ML-KEM's `CMlKem`, because every entry
+  point is parameterized by `MlDsaParams` -- exporting the signatures would
+  mean either moving that already-tested private header into the public API or
+  duplicating it, and the surface a caller actually needs is
+  `IAsymmetric`-shaped anyway.
+
+  **There are two message conventions and they are not interchangeable.** The
+  internal interface signs `M'` verbatim. The external one prepends
+  `IntegerToBytes(0, 1) || IntegerToBytes(|ctx|, 1) || ctx` first, and that is
+  what RFC 9881's `id-ml-dsa-*` OIDs mean -- so an X.509 signature covers
+  `0x00 || 0x00 || tbsCertificate`, not the TBS bytes alone. Signing the raw
+  message instead round-trips perfectly against itself and rejects every
+  genuine certificate; `tests/crypto/asyms/kat_mldsa.cpp` asserts the two
+  interfaces disagree, each rejecting the other's signature, so the distinction
+  cannot quietly collapse.
+
+  `sign()`/`verify()` compute mu themselves and hand it to the internal form as
+  its `externalMu`, rather than concatenating the prefix and the message into
+  one buffer. The results are bit-identical, because mu is `H(tr || M')` and
+  `H` absorbs its parts in order, but the message is never copied -- which
+  matters when it is a document rather than a 3 KiB TBSCertificate. `tr` sits
+  at a fixed offset in the private key, so reading it costs nothing. The same
+  `externalMu` parameter covers ACVP's `externalMu: true` groups.
+
+  `skDecode` **range-checks s1/s2**, which is not optional: `2*eta + 1` is 5 or
+  9, neither a power of two, so the field encodes values the range does not
+  contain (down to -5 at eta = 2, -11 at eta = 4). FIPS 204 Algorithm 25
+  rejects such a key, and so does every entry point that decodes one -- a
+  private key from storage or from a peer is untrusted input, and signing with
+  an out-of-range s1 lands outside the scheme's security argument while still
+  verifying against the matching public key.
+
+  Signing is a **rejection loop with aborts**: each iteration draws a fresh
+  masking vector and discards the whole attempt if any of four bounds fails, so
+  the iteration count depends on the key and the message. There is no
+  constant-time story to tell, and FIPS 204 offers none; see
+  [`docs/pqc-review.md`](pqc-review.md). The working set is heap-allocated
+  (`TArray<Poly>`) rather than on the stack because ML-DSA-87's is large --
+  A-hat alone is 8x7 polynomials, 56 KiB, with a dozen more vectors alongside
+  it.
+
+  Only the pure variant is implemented. HashML-DSA has its own separate
+  `id-hash-ml-dsa-*` OIDs, appears in no certificate this library is meant to
+  read, and would drag in a hash-OID table for no present caller.
+- **`crypto/asyms/mldsa.hpp` / `src/crypto/asyms/mldsa.cpp`** define `CMlDsa`,
+  ML-DSA as an `IAsymmetric`, one instance per parameter set -- the same
+  arrangement `CEcdsa` has across its curves, reached as
+  `IAsymmetric::builtIn(EASYM_MLDSA44 | EASYM_MLDSA65 | EASYM_MLDSA87)`.
+  Sign/verify only; `createEncrypter()`/`createDecrypter()` and
+  `deriveSharedSecret()` all report `ERET_NOTSUP`.
+
+  **`sign()`/`verify()`'s `digest` parameter is the message, not a hash of
+  it.** ML-DSA has no externally supplied digest -- it hashes the message
+  internally, twice with different domain separation, and signs a lattice
+  commitment rather than a fixed-width digest. Passing a pre-computed SHA-256
+  value would produce a valid ML-DSA signature *over that 32-byte string*, one
+  no other implementation would generate or check. Ed25519/Ed448 read the
+  parameter the same way for the same reason, and `CDnssecKeys::hasherOf()`
+  states the same fact from the other side. The signal to a caller is
+  `sizeOfDigest()`, which stays 0 for a bound ML-DSA key: zero means "there is
+  no digest to compute, pass the message". The parameter keeps its interface
+  name, since renaming it per implementation would obscure the override
+  relationship rather than clarify it.
+
+  `keySizes()` accepts the parameter set's own number (44, 65 or 87) rather
+  than a modulus width or a security strength, exactly as `MLKEM` does with
+  512/768/1024 -- ML-DSA has no size that can be scaled, and those numbers are
+  names. Keys serialize as FIPS 204's own encodings and nothing more, which is
+  also exactly what a `SubjectPublicKeyInfo` BIT STRING carries for these OIDs
+  (RFC 9881 puts the raw public key there, no inner `OCTET STRING`, with
+  `parameters` absent), so `CCert` needs no reshaping step the way DSA's split
+  `Dss-Parms` does. A private key does not embed its public key, so
+  `IPrivateKey::publicKey()` re-derives it from the key's own rho/s1/s2 and
+  checks the result against the stored `tr` (which is `H(pk)`) -- the one
+  internal-consistency test an ML-DSA private key admits.
+
+  This is also where randomness enters, and the only place it does. Signing is
+  **hedged**: a fresh 32-byte rnd per signature, FIPS 204's recommended
+  default, so two signatures over the same message differ and a known-answer
+  test has to go through `MlDsaScheme` with rnd = 0 instead. That is not a test
+  contrivance -- deterministic signing is the standard's own variant, and it is
+  what ACVP's `deterministic: true` groups use.
+
+  Validated against NIST's ACVP vectors for all three parameter sets:
+  `tests/crypto/asyms/kat_mldsa.cpp` (keyGen and sigGen, deterministic and
+  hedged, internal and external), `tests/crypto/asyms/kat_mldsaver.cpp`
+  (sigVer, including all four negative reasons -- modified message, commitment,
+  hint and z), and `tests/crypto/asyms/mldsa.cpp` for the wrapper. The
+  acceptance test is `tests/x509/realcerts.cpp`, where the real IdenTrust
+  ML-DSA-87 pilot root verifies its own signature.
 - **`crypto/hmac.hpp` / `src/crypto/hmac.cpp`** define `CHmac`, RFC 2104 over
   any fixed-output hasher here, with `IHasher`'s streaming shape plus a
   one-shot `compute()` and a constant-time `verify()`. Not an `IHasher`: HMAC
@@ -2425,6 +2550,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `resolveSigAlgo()` leaves it untouched for an unregistered OID, which is
   indistinguishable from EdDSA's legitimate "no separate hash", and reading
   it as EdDSA would hand raw TBS bytes to an ECDSA/DSA verify as though they
+<<<<<<< HEAD
   were a digest. It is a *single-link* check: no name chaining, no validity
   window, no constraint enforcement. An RSASSA-PSS-signed certificate is
   routed through `IAsymmetricContext::verifyPss()` with the hash and salt
@@ -2436,6 +2562,29 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   and a `trailerField` other than `trailerFieldBC`. Verifying with the wrong
   MGF1 hash would reject every valid signature, which a caller cannot tell
   apart from a forgery.
+=======
+  were a digest.
+
+  That decision is `CCert::signsMessageDirectly(which)`, one function rather
+  than a predicate repeated at each site -- Ed25519, Ed448 and all three ML-DSA
+  parameter sets sign the message itself. Four places have to agree about it
+  (`CCert::verifyBy()`, `CCrlReader::verifyBy()` and both OCSP
+  `verifySignature()`s), and a site that misses an entry does not fail to
+  compile or fail loudly: it hands raw TBS bytes to a hash-then-sign verify, or
+  hands a digest to ML-DSA and signs that 32-byte string instead of the
+  message. Both have been real bugs here, and neither is visible to a
+  self-signed round trip.
+
+  For a self-hashing algorithm the signature BIT STRING's content is passed
+  through whole. ML-DSA's signature is one opaque blob (`c-tilde || z || h`)
+  with no internal ASN.1, exactly like EdDSA's `R || S`, unlike ECDSA's
+  `SEQUENCE { r, s }` -- which the EC implementation unpacks itself rather than
+  `verifyBy()` doing it.
+
+  It is a *single-link* check: no name chaining, no validity
+  window, no constraint enforcement. RSASSA-PSS-signed certificates report
+  `ERET_NOTSUP`, since `SIG_ALGOS` has no id-RSASSA-PSS entry to resolve.
+>>>>>>> worktree-agent-a8132717936d67566
 
   `importDer()` enforces several DER rules whose absence had been
   exploitable, each covered by `tests/x509/malformed.cpp`: the `Certificate`
@@ -2455,6 +2604,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   s_client`/crt.sh) are checked into `tests/x509/certs/implemented/` as
   `.der` files (read via a small `readCertFile()` test helper, located
   through a generic `CERTPP_TEST_DIR` compile-definition every test target
+<<<<<<< HEAD
   gets -- see `CMakeLists.txt`'s test-registration loop); a certificate whose
   signature algorithm `importDer()` cannot resolve at all (currently just the
   ML-DSA post-quantum signature scheme) is kept separately under
@@ -2465,6 +2615,25 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   certificate path to it, and its import actually failed on an unrecognized
   `organizationIdentifier` in the subject `Name`, before the signature
   algorithm was read at all.
+=======
+  gets -- see `CMakeLists.txt`'s test-registration loop); certificates using
+  an algorithm this library doesn't implement yet (RSA-PSS) are kept
+  separately under `certs/unimplemented/`, documenting the gap rather than
+  hiding it.
+
+  One of the implemented ones carries its weight differently from the rest.
+  `identrust-mldsa-root.der` is the real "IdenTrust Pilot Root TLS ML-DSA CA 1"
+  (OID 2.16.840.1.101.3.4.3.19, which is **id-ml-dsa-87**; the arc runs
+  .17/.18/.19 for ML-DSA-44/65/87, and the certificate's own 2592-byte key and
+  4627-byte signature confirm which), and because it is self-signed
+  `cert.verifyBy(cert)` on it is a genuine third-party post-quantum signature
+  verified end to end. That is the only check in the suite that an ML-DSA
+  implementation cannot pass by being consistently wrong -- a sign/verify round
+  trip against itself survives a transposed `expandA`, a mis-shaped `Decompose`
+  carve-out, or the internal signing interface used where the external one
+  belongs. A companion test case flips one bit in the TBS, in the signature and
+  in the public key, and requires each to fail.
+>>>>>>> worktree-agent-a8132717936d67566
 - **`x509/crl.hpp` / `src/x509/crl.cpp`** define the CRL (RFC 5280 5)
   side, split across three types rather than one read/write class:
   `CCrlRevokationInfo` is a single `revokedCertificates` entry
@@ -2670,7 +2839,14 @@ for a new `asyms/` implementation follow the same mirrored path under
 `tests/crypto/asyms/`, exactly as `tests/crypto/hashers/` does today.
 `IAsymmetric::builtIn()` (`src/crypto/asym.cpp`) dispatches each
 `EAsymmetrics` value to its concrete class; a new algorithm adds one
-`case` there. RSA's key/signature DER encoding, and every future `asyms/`
+`case` there, and its enumerator goes **immediately before `EASYM_MAX`,
+never inserted in the middle**: the enum crosses an ABI boundary (this
+library ships as a shared object and is consumed as an installed package),
+so renumbering it leaves a caller compiled against the old header silently
+selecting a different algorithm, with nothing to diagnose it. Then check
+every exhaustive switch over the enum, and `CCert`'s `KEY_ALGOS`/`SIG_ALGOS`
+tables and `signsMessageDirectly()` if the algorithm appears in a
+certificate. RSA's key/signature DER encoding, and every future `asyms/`
 implementation's, goes through `asn1::CDer` (`asn1/der.hpp`) for the
 arbitrary-precision `INTEGER`s `CEncoder`/`CDecoder` don't handle -- see
 its own doc comment. A future genuinely non-library-providable dependency

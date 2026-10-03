@@ -229,6 +229,25 @@ namespace x509 {
          * unrecognized. */
         static void resolveSigAlgo(const CString& oid, crypto::EHashers& outHash, CString& outName);
 
+        /* Whether an algorithm's sign()/verify() take the message itself rather than a
+         * pre-computed digest -- Ed25519/Ed448 (which hash internally, twice, with different
+         * prefixes) and all three ML-DSA parameter sets (which derive mu from the message and
+         * then hash a lattice commitment).
+         *
+         * This exists as one function rather than four copies of the predicate because four
+         * places have to agree about it -- CCert::verifyBy(), CCrlReader::verifyBy() and both
+         * OCSP verifySignature()s -- and a site that misses an entry does not fail to compile or
+         * fail loudly: it hands the raw TBS bytes to a hash-then-sign verify as though they were
+         * a digest, or hands a digest to ML-DSA and signs that 32-byte string instead of the
+         * message. Both were real bugs in this library's own history (see verifyBy()'s comment
+         * on OCSP), and both are invisible to a self-signed round trip.
+         *
+         * Note what it is deliberately not: a test of _sigHashAlgo == EHASH_UNKNOWN. That value
+         * is also what resolveSigAlgo() leaves behind for an OID absent from SIG_ALGOS, so the
+         * two cases are indistinguishable there and an unrecognized algorithm must fail closed
+         * instead. The decision is made from the verifying key's own algorithm(). */
+        static bool signsMessageDirectly(crypto::EAsymmetrics which);
+
         /* Reads an X.509 Time CHOICE (UTCTime | GeneralizedTime); either read*Time() call rolls
          * the reader back on failure, so trying UTCTime first is safe regardless of which one
          * content actually is. */

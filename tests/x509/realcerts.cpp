@@ -17,12 +17,15 @@ using namespace certpp::crypto;
  * collection" than a few thousand lines of hex.
  *
  * certs/implemented/  -- ordinary certificates using algorithms this library implements
- *                         end-to-end (RSA with PKCS#1 v1.5 or PSS, ECDSA), so importDer() plus
- *                         every derived accessor works fully.
- * certs/unimplemented/ -- real, currently-valid, commercially-issued certificates whose
- *                         signature or public-key algorithm importDer() can't resolve, so it
- *                         falls back to the raw OID text per its own doc comment and everything
- *                         derived from a resolved algorithm goes unavailable.
+ *                         end-to-end (RSA with PKCS#1 v1.5 or PSS, ECDSA, ML-DSA), so
+ *                         importDer() plus every derived accessor works fully -- including
+ *                         verifyBy(), which for the self-signed ML-DSA root means a genuine
+ *                         third-party post-quantum signature verified end to end.
+ *
+ * There is no longer a certs/unimplemented/ directory. It held two certificates -- one RSASSA-PSS
+ * and one ML-DSA -- and both now import and parse, so both moved. If a future certificate
+ * exercises a genuine gap, recreate it rather than leaving the certificate loose here: the split
+ * is what keeps "this is a known gap" from being indistinguishable from "nobody looked".
  */
 
 namespace {
@@ -59,7 +62,46 @@ namespace {
     constexpr const char* AMAZON_CERT_PATH      = CERTPP_TEST_DIR "/certs/implemented/amazon.com.der";
     constexpr const char* SOURCEFORGE_CERT_PATH = CERTPP_TEST_DIR "/certs/implemented/sourceforge.net.der";
     constexpr const char* RSAPSS_CA_CERT_PATH   = CERTPP_TEST_DIR "/certs/implemented/quovadis-rsassa-pss-ca.der";
-    constexpr const char* MLDSA_ROOT_CERT_PATH  = CERTPP_TEST_DIR "/certs/unimplemented/identrust-mldsa-root.der";
+    constexpr const char* MLDSA_ROOT_CERT_PATH  = CERTPP_TEST_DIR "/certs/implemented/identrust-mldsa-root.der";
+
+    /* Finds the first occurrence of a byte pattern, so a tampering test can name the field it
+     * corrupts rather than an offset that silently points elsewhere if the file is replaced.
+     * size_t(-1) when absent. */
+    size_t findBytes(const COctet& haystack, const SReadOnlyByteSpan& needle) {
+        if (needle.size == 0 || haystack.size() < needle.size) {
+            return size_t(-1);
+        }
+
+        for (size_t i = 0; i + needle.size <= haystack.size(); ++i) {
+            if (std::memcmp(haystack.toPtr() + i, needle.data, needle.size) == 0) {
+                return i;
+            }
+        }
+
+        return size_t(-1);
+    }
+
+    /* A C string as a byte span, without its terminator. */
+    SReadOnlyByteSpan textSpan(const char* text) {
+        return SReadOnlyByteSpan(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+    }
+
+    /* A copy of der with one byte XORed, as an importable COctet; empty if offset is out of
+     * range, which the caller checks rather than asserting here. */
+    COctet withFlippedByte(const COctet& der, size_t offset) {
+        if (offset >= der.size()) {
+            return COctet();
+        }
+
+        TArray<uint8_t> copy;
+        if (!copy.resize(der.size())) {
+            return COctet();
+        }
+
+        std::memcpy(copy.begin(), der.toPtr(), der.size());
+        copy.begin()[offset] = uint8_t(copy.begin()[offset] ^ 0x01u);
+        return COctet(SReadOnlyByteSpan(copy.begin(), copy.size()));
+    }
 }
 
 // --------------------------------------------------------------------------------------------
@@ -550,29 +592,46 @@ TEST_CASE("CCert: verifyBy() declines an RSASSA-PSS certificate whose MGF1 hash 
 }
 
 // --------------------------------------------------------------------------------------------
-// certs/unimplemented/ -- real, currently-valid, commercially-issued certificates that exercise
-// an actual gap in this library, collected separately from the above.
+// The ML-DSA root belongs with certs/implemented/, above -- it is kept here, at the end, only
+// because it is the one certificate in the collection whose signature this library verifies
+// against a third party's own key rather than its own.
 // --------------------------------------------------------------------------------------------
 
-TEST_CASE("CCert (real-world, unimplemented): IdenTrust ML-DSA pilot root -- parses fully, algorithm gracefully unresolved") {
+TEST_CASE("CCert (real-world): IdenTrust ML-DSA-87 pilot root -- verifies its own signature") {
     // "IdenTrust Pilot Root TLS ML-DSA CA 1", a real, currently-valid (2026-2027) self-signed
     // pilot root from IdenTrust (a long-established commercial CA) for ML-DSA (NIST FIPS 204,
     // post-quantum) -- found via crt.sh. Both the public key type and the signature algorithm
-    // use the same OID (2.16.840.1.101.3.4.3.19); OpenSSL 3.2 itself can't even decode the
-    // public key. Unlike the RSASSA-PSS certificate above, this one's subject/issuer only use
-    // plain C/O/CN, so it's a clean demonstration of importDer()'s documented fallback: the
-    // certificate parses completely, keyAlgo()/signAlgo() fall back to the dotted-decimal OID
-    // text, and everything that depends on a resolved algorithm (publicKey(), createHasher(),
-    // createAsymmetricContext()) is simply unavailable -- without that failing the importDer or
-    // losing any of the certificate's other data.
+    // use the same OID, 2.16.840.1.101.3.4.3.19, which is **id-ml-dsa-87** -- not ML-DSA-65.
+    // The arc runs .17/.18/.19 for ML-DSA-44/65/87, and this certificate confirms which it is
+    // independently of the registry: its SubjectPublicKeyInfo BIT STRING holds 2592 bytes and
+    // its signatureValue 4627, and that pair of lengths belongs to ML-DSA-87 alone (ML-DSA-65's
+    // are 1952 and 3309). The three OIDs being consecutive is exactly why that cross-check
+    // matters.
+    //
+    // Two encoding details, both read off this certificate rather than assumed:
+    //
+    //  - `parameters` is **absent** from both AlgorithmIdentifiers, so keyAlgoParams() is empty.
+    //  - the BIT STRING holds the **raw** pkEncode output, with no inner OCTET STRING wrapper
+    //    (2592 is exactly pkEncode's length, with nothing left over for a DER header), and
+    //    signatureValue likewise holds the raw signature. So no reshaping step is needed between
+    //    X.509 and CMlDsa::createPublicKey(), unlike DSA's split Dss-Parms.
+    //
+    // The load-bearing assertion is verifyBy(cert) at the end. The certificate is self-signed,
+    // so that is a genuine third-party ML-DSA-87 signature -- produced by someone else's
+    // implementation, over bytes this library did not choose -- verified end to end through
+    // CCert, CMlDsa and MlDsaScheme. Nothing in a self-generated round trip can substitute for
+    // it: ML-DSA's commitment is a hash of the signer's own w1, so a sign/verify pair agrees
+    // with itself under most consistent mistakes, including a transposed ExpandA, a wrong
+    // Decompose carve-out, or the internal interface used where the external one belongs.
     COctet der;
     REQUIRE(readCertFile(MLDSA_ROOT_CERT_PATH, der));
 
     CCert cert;
     REQUIRE(cert.importDer(der) == ERET_OK);
 
-    CHECK(cert.keyAlgo() == CString("2.16.840.1.101.3.4.3.19"));
-    CHECK(cert.signAlgo() == CString("2.16.840.1.101.3.4.3.19"));
+    CHECK(cert.keyAlgo() == CString("ML-DSA-87"));
+    CHECK(cert.signAlgo() == CString("ML-DSA-87"));
+    CHECK(cert.keyAlgoParams().empty());    // --> parameters absent, per RFC 9881 2.
 
     CName name;
     REQUIRE(cert.subject().tryGet(ENAME_C, name));
@@ -590,11 +649,84 @@ TEST_CASE("CCert (real-world, unimplemented): IdenTrust ML-DSA pilot root -- par
     CHECK(cert.notAfter().year == 2027);
     CHECK(cert.notAfter().month == 7);
 
-    CHECK_FALSE(cert.publicKey());              // --> _asym never resolved for this OID.
-    CHECK_FALSE(cert.createHasher());            // --> _sigHashAlgo stays EHASH_UNKNOWN.
-    CHECK_FALSE(cert.createAsymmetricContext());
+    // The key resolves, and to the right parameter set.
+    IPublicKeyPtr pub = cert.publicKey();
+    REQUIRE(pub);
+    CHECK(pub->algorithm() == EASYM_MLDSA87);
+    CHECK(pub->keySize() == 87);            // --> the parameter set's name, not a bit length.
+    CHECK(cert.rawPublicKey().size() == 2592);
+    CHECK(cert.signature().size() == 4627);
 
-    // Unaffected by the unresolved algorithm -- both are computed directly from rawData().
+    // --> createHasher() is still null, and that is correct rather than a remaining gap: there
+    // is no separate digest algorithm in an ML-DSA signature at all, so _sigHashAlgo stays
+    // EHASH_UNKNOWN. verifyBy() below does not consult it -- it branches on the issuer key's
+    // own algorithm, which is the only unambiguous signal (EHASH_UNKNOWN also means "OID not
+    // recognized", and reading it as "self-hashing" is what let an earlier version of the OCSP
+    // code hand raw TBS bytes to an ECDSA verify as though they were a digest).
+    CHECK_FALSE(cert.createHasher());
+
+    IAsymmetricContextPtr ctx = cert.createAsymmetricContext();
+    REQUIRE(ctx);
+    CHECK(ctx->sizeOfSign() == 4627);
+    CHECK(ctx->sizeOfDigest() == 0);        // --> "pass the message, not a digest".
+
     CHECK_FALSE(cert.rawData().empty());
     CHECK(cert.thumbprint().size() == 20);
+
+    // The acceptance criterion.
+    CHECK(cert.verifyBy(cert) == ERET_OK);
+}
+
+TEST_CASE("CCert (real-world): the IdenTrust ML-DSA root's signature does not survive tampering") {
+    // Without this, the success above would be unfalsifiable -- a verify() that returned ERET_OK
+    // unconditionally would pass it. One flipped bit in each of the three things the signature
+    // is a function of has to break it.
+    COctet der;
+    REQUIRE(readCertFile(MLDSA_ROOT_CERT_PATH, der));
+
+    CCert pristine;
+    REQUIRE(pristine.importDer(der) == ERET_OK);
+    REQUIRE(pristine.verifyBy(pristine) == ERET_OK);
+
+    SUBCASE("a byte inside the signed TBSCertificate") {
+        // The issuer Name's commonName, which is inside TBSCertificate and outside the public
+        // key -- so mu changes while the verifying key does not.
+        const size_t offset = findBytes(der, textSpan("IdenTrust Pilot Root TLS ML-DSA CA 1"));
+        REQUIRE(offset != size_t(-1));
+
+        COctet tampered = withFlippedByte(der, offset);
+        REQUIRE_FALSE(tampered.empty());
+
+        CCert cert;
+        REQUIRE(cert.importDer(tampered) == ERET_OK);    // --> still structurally a certificate
+        CHECK(cert.verifyBy(cert) != ERET_OK);
+    }
+
+    SUBCASE("a byte inside the signatureValue") {
+        // The final byte of the DER is the last byte of the hint's cumulative-index block --
+        // the part of an ML-DSA signature most likely to be ignored by an incomplete
+        // HintBitUnpack.
+        COctet tampered = withFlippedByte(der, der.size() - 1);
+        REQUIRE_FALSE(tampered.empty());
+
+        CCert cert;
+        REQUIRE(cert.importDer(tampered) == ERET_OK);
+        CHECK(cert.verifyBy(cert) != ERET_OK);
+    }
+
+    SUBCASE("a byte inside the public key") {
+        // rho's first byte, located by searching the DER for the certificate's own
+        // rawPublicKey() rather than by a hard-coded offset. Changing it reseeds the whole
+        // matrix A *and* changes tr = H(pk), so both halves of the verification move -- the one
+        // tampering a verifier that ignored the key entirely could survive.
+        const size_t pkOffset = findBytes(der, pristine.rawPublicKey().toSpan());
+        REQUIRE(pkOffset != size_t(-1));
+
+        COctet tampered = withFlippedByte(der, pkOffset);
+        REQUIRE_FALSE(tampered.empty());
+
+        CCert cert;
+        REQUIRE(cert.importDer(tampered) == ERET_OK);
+        CHECK(cert.verifyBy(cert) != ERET_OK);
+    }
 }

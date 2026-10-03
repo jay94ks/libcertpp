@@ -26,18 +26,25 @@ appended at the end.
 | ML-DSA bit packing + hint encoding (`src/crypto/asyms/mldsacodec.hpp`) | **done** -- SimpleBitPack/BitPack and their inverses, HintBitPack/HintBitUnpack with all three rejection conditions; the ranges decoding cannot guarantee are documented and `inRange()` provided for them |
 | ML-DSA rounding/hints (`src/crypto/asyms/mldsarounding.hpp`) | **done** -- Power2Round/Decompose/HighBits/LowBits/MakeHint/UseHint; the inversion identity checked at the bucket boundaries and across Decompose's `(q-1)` band, which is a band of width gamma2 rather than the single point it reads as |
 | ML-DSA ring arithmetic (q=8380417) | **done** -- `src/crypto/asyms/mldsaring.hpp`; complete 8-layer NTT (zeta's order is 512, unlike ML-KEM's 256, so the transform runs to completion and the NTT-domain multiply is pointwise), checked against FIPS 204 Appendix B's printed table and a schoolbook negacyclic multiply |
-| ML-DSA | not started |
-| X.509 OID/algorithm wiring for PQ | not started |
+| ML-DSA, the algorithm (`src/crypto/asyms/mldsascheme.hpp`: `MlDsaScheme`) | **done** -- FIPS 204 7.2's key/signature encoders plus KeyGen/Sign/Verify in both the internal (Algorithms 6-8) and external (Algorithms 2-3) forms over raw spans; validated against ACVP for all three parameter sets, all 24 sigGen groups and all four sigVer rejection reasons |
+| ML-DSA as an `IAsymmetric` (`crypto/asyms/mldsa.hpp`, `EASYM_MLDSA44/65/87`) | **done** -- `CMlDsa` serves all three sets from one class; keys serialize as FIPS 204's own encodings, signing is hedged, and this is the only layer that draws from `CRng` |
+| X.509 OID/algorithm wiring for PQ | **done for ML-DSA** -- RFC 9881's `.17`/`.18`/`.19` in `CCert`'s `KEY_ALGOS`/`SIG_ALGOS`, `signsMessageDirectly()` shared by the four verification sites, and `CCertBuilder` able to issue ML-DSA-signed certificates. The IdenTrust ML-DSA-87 pilot root now verifies its own signature. ML-KEM's own SubjectPublicKeyInfo wrapping (RFC 9935) is still unwired |
 
-So Phases 1-4 are complete: ML-KEM works, matches NIST's vectors for all three parameter
-sets, and is reachable both as the raw-span `CMlKem` (which is what let it be validated
-straight from a test vector) and as `IKem::builtIn(EKEM_MLKEM768)` like every other algorithm
-in the library. Phase 5 has started with its ring arithmetic, which indeed shares nothing with
-ML-KEM's beyond the Keccak primitives and the general shape of an NTT -- `MlDsaRing` is a
-separate unit, not a parameterization. Its rounding and hint machinery is in, and so is the bit packing -- including
-`HintBitUnpack` with all three of its rejection conditions. The three rejection samplers, the Expand* procedures and the parameter table are in too. What
-remains for ML-DSA is the key/signature encoders that sit on top of the bit packing
-(`pkEncode`/`skEncode`/`sigEncode` and their inverses), and then sign/verify.
+So Phases 1-5 are complete, and Phase 6 is complete for ML-DSA. ML-KEM works, matches NIST's
+vectors for all three parameter sets, and is reachable both as the raw-span `CMlKem` (which is
+what let it be validated straight from a test vector) and as `IKem::builtIn(EKEM_MLKEM768)`
+like every other algorithm in the library. ML-DSA is the same shape one layer down: its ring
+arithmetic shares nothing with ML-KEM's beyond the Keccak primitives and the general shape of
+an NTT (`MlDsaRing` is a separate unit, not a parameterization), and on top of it sit the
+rounding and hint machinery, the bit packing including `HintBitUnpack`'s three rejection
+conditions, the three rejection samplers, the Expand* procedures, the parameter table, and now
+`MlDsaScheme` -- the 7.2 encoders plus KeyGen/Sign/Verify -- with `CMlDsa` exposing it as an
+`IAsymmetric`.
+
+The thing that makes it real rather than merely self-consistent:
+`tests/x509/realcerts.cpp`'s IdenTrust ML-DSA-87 pilot root, a certificate signed by somebody
+else's implementation, now passes `cert.verifyBy(cert)`. What remains on the PQ side is
+ML-KEM's X.509/CMS wrapping (RFC 9935), and Phase 7's re-evaluation of the other algorithms.
 
 ## Why this matters for libcertpp specifically
 
@@ -226,6 +233,16 @@ constant-time guarantee. ML-KEM/ML-DSA don't have that luxury:
   comparison and sampling patterns (and, for Kyber's decryption failure checks, explicit
   constant-time re-encryption comparison) that have to be followed precisely, not
   approximated.
+
+  **Where the implementation landed, stated plainly:** `MlDsaScheme::signInternal()`'s
+  retry loop is *not* constant-time, and no implementation of Fiat-Shamir-with-aborts can
+  be -- the four bounds it retries on are functions of the secret vectors and the message.
+  What is done instead is what FIPS 204 Appendix C actually asks for: the loop is unbounded,
+  so there is no exhaustion path whose behaviour could differ, and the secret intermediates
+  are zeroized at every exit including each `continue`. The arithmetic inside an iteration
+  is straight-line with no secret-indexed table lookups. A timing-side-channel audit of this
+  code, against the published Dilithium attacks specifically, has **not** been done and is
+  the obvious next piece of work on it.
 - **ML-KEM decapsulation requires the Fujisaki-Okamoto (FO) transform's implicit
   rejection**, which is subtle to get right: a malformed/invalid ciphertext must not
   cause a decapsulation failure that's *observably different* (in timing or in the
@@ -295,24 +312,26 @@ since weakened, so the ordering is worth restating rather than inherited:
   library with no TLS stack, so nothing inside it consumes a KEM. ML-KEM would ship with no
   in-tree caller; ML-DSA directly unblocks `CCert`/`CCertBuilder`.
 - *"ML-KEM is the simpler primitive."* Still true, and still a real argument -- ML-DSA adds
-  rejection sampling with aborts, hint encoding, and a constant-time retry loop on top of
-  the same ring arithmetic.
+  rejection sampling with aborts, hint encoding, and a retry loop on top of the same ring
+  arithmetic. (This bullet originally called that loop "constant-time". It cannot be: see
+  Phase 5, where the correction is recorded along with what FIPS 204 actually requires.)
 
-There is also now a concrete, in-tree thing ML-DSA would fix.
-`tests/x509/certs/unimplemented/identrust-mldsa-root.der` is a real, currently-valid
-self-signed ML-DSA pilot root ("IdenTrust Pilot Root TLS ML-DSA CA 1", signature/key OID
-`2.16.840.1.101.3.4.3.19` from NIST's CSOR ML-DSA arc), and
-`tests/x509/realcerts.cpp` already asserts that `CCert` parses all of it -- subject,
-issuer, validity, BasicConstraints, KeyUsage, ExtendedKeyUsage, SKI, AKI -- and resolves
-the algorithm to nothing. Every part of that certificate except its algorithm is already
-supported.
+There was also a concrete, in-tree thing ML-DSA would fix, and it has since been fixed.
+`identrust-mldsa-root.der` is a real, currently-valid self-signed ML-DSA pilot root
+("IdenTrust Pilot Root TLS ML-DSA CA 1", signature/key OID `2.16.840.1.101.3.4.3.19` from
+NIST's CSOR ML-DSA arc, which is ML-DSA-87), and `tests/x509/realcerts.cpp` used to assert
+that `CCert` parsed all of it -- subject, issuer, validity, BasicConstraints, KeyUsage,
+ExtendedKeyUsage, SKI, AKI -- and resolved the algorithm to nothing. It now lives in
+`certs/implemented/`, and the test case asserts `cert.verifyBy(cert) == ERET_OK` instead.
 
-**Recommendation: keep ML-KEM first for the shared substrate's sake, but treat the order as
-genuinely open.** Phases 2-3 below are a prerequisite either way; if the goal is to make
-this library parse and verify the PQ certificates that already exist in the wild, swapping
-Phases 4 and 5 is the better call and costs nothing structurally -- the ring arithmetic,
-the encoding helpers and the X.509 wiring are shared regardless of which algorithm lands
-first. This is a decision to make at Phase 4, not now.
+**Recommendation at the time: keep ML-KEM first for the shared substrate's sake, but treat
+the order as genuinely open.** That is what happened, and the order turned out not to
+matter much -- ML-DSA shares only the Keccak primitives with ML-KEM, since `q = 8380417`
+and a 512th root of unity make its ring a separate unit rather than a parameterization of
+ML-KEM's. What ML-KEM did pay forward was the discipline: the parameter-set struct with
+every length derived and `static_assert`ed, the private-units-compiled-into-the-test
+arrangement in `CMakeLists.txt`, and the habit of reproducing the whole ACVP set in Python
+before writing any C++. All three were reused verbatim.
 
 ## The test vectors, located and validated up front
 
@@ -527,7 +546,55 @@ The same primitive has since been applied across the pre-quantum algorithms too 
 ECDSA/DSA signing nonces, EdDSA's nonce and expanded seed, X25519's scalar and shared secret,
 and RSA's CRT intermediates -- via `CSecure::zero()` and `CBigNum::secureClear()`.
 
-### Phase 5 -- ML-DSA (a new `IAsymmetric`)
+### Phase 5 -- ML-DSA (a new `IAsymmetric`) -- **done**
+
+What the plan below predicted, and what turned out differently, in the order it mattered:
+
+- **The internal/external interface split was the thing this plan did not name at all**, and
+  it is the one that decides whether a real certificate verifies. FIPS 204 has two message
+  conventions: the internal interface (Algorithms 7-8) signs `M'` verbatim, while the external
+  one (Algorithms 2-3) prepends `IntegerToBytes(0, 1) || IntegerToBytes(|ctx|, 1) || ctx`
+  first. RFC 9881's `id-ml-dsa-*` OIDs mean the **external** interface with an empty context,
+  so an X.509 signature covers `0x00 || 0x00 || tbsCertificate`. Both forms exist on
+  `MlDsaScheme`; `CMlDsa` exposes only the external one, since that is what every X.509, CMS
+  and TLS caller wants. An implementation that used the internal form instead passes every
+  round-trip test it has, matches half of ACVP's sigGen groups (the twelve
+  `signatureInterface: "internal"` ones), and rejects every genuine certificate. That last
+  property is now asserted directly, in both directions, rather than left implicit.
+- **The signing loop is not constant-time and cannot be made so.** The bullet below asking
+  for "no early exit whose iteration count depends on key material" is not achievable for
+  Fiat-Shamir with aborts: the loop retries until four bounds on `z`, `r0`, `c*t0` and the
+  hint weight all hold, and whether they hold depends on the secret vectors and the message.
+  FIPS 204 does not ask for it either -- what Appendix C actually requires is that the loops
+  be *unbounded* (or bounded no tighter than Table 3), and that any bound, if exceeded,
+  produce an identical result for every such execution. The loops here are unbounded, which
+  removes the question.
+- **The hint-encoding trap landed exactly where predicted**, and was already handled when
+  `MlDsaCodec` was written; ACVP's 36 "modified signature - hint" cases pass, and 12 of them
+  are pinned in `tests/crypto/asyms/kat_mldsaver.cpp`.
+- **Length-only rejection** (3.6.2) is in every entry point, and is also what makes a
+  consecutive-OID mix-up safe: the three parameter sets have different key *and* signature
+  lengths, so ML-DSA-65 bytes offered to ML-DSA-87 are refused before any arithmetic.
+- **No floating point anywhere**, as required. Zeroization (3.6.3) covers the seeds and the
+  secret vectors signing holds -- rho, K, tr, mu, rho'', s1/s2/t0 and their NTT forms, and the
+  masking vector -- via RAII scrubbers so the rejection loop's `continue` paths cannot skip
+  them. It does **not** extend to verification intermediates, which the standard also
+  mentions: everything verification touches is public (the public key, the signature, and
+  values derived from them), so there is nothing there to protect.
+- `skDecode`'s s1/s2 range check (Algorithm 25 lines 9-10) is enforced in every entry point
+  that decodes a private key, not only in a separate validation call -- `2*eta + 1` is 5 or 9,
+  neither a power of two, so the field genuinely encodes values the range does not contain.
+- The gate was met in full: ACVP keyGen 75/75, sigGen 360/360 byte-exact across all 24 groups
+  (deterministic and hedged, internal and external, pure and pre-hashed), sigVer 180/180
+  verdicts. Those complete runs went through a standalone Python reference written from the
+  specification text before any C++ was written; a representative subset of the same vectors
+  is pinned in `tests/crypto/asyms/kat_mldsa.cpp` and `kat_mldsaver.cpp`.
+- One deliberate omission: **only the pure variant is implemented.** HashML-DSA was validated
+  in the Python reference (ACVP's twelve `preHash` groups all match) but is not in the C++,
+  because RFC 9881 8.3 says its OIDs MUST NOT appear in an X.509 certificate and nothing else
+  in the tree needs them.
+
+The original plan, for the record:
 
 - `include/certpp/crypto/asyms/mldsa.hpp` + `src/crypto/asyms/mldsa.cpp`; `EAsymmetrics`
   gains `EASYM_MLDSA44`, `EASYM_MLDSA65`, `EASYM_MLDSA87`, dispatched from
@@ -567,7 +634,36 @@ and RSA's CRT intermediates -- via `CSecure::zero()` and `CBigNum::secureClear()
   and the hedged groups are byte-comparable, since the prompt supplies `rnd` -- so all 24
   sigGen groups count, not just the twelve deterministic ones.
 
-### Phase 6 -- X.509 integration (what makes it useful here)
+### Phase 6 -- X.509 integration (what makes it useful here) -- **done for ML-DSA**
+
+Every prediction below held, including the two that could only be confirmed against the
+fixture: `parameters` is absent from all three of its AlgorithmIdentifiers, and the BIT
+STRINGs carry the raw FIPS 204 public key and signature with no inner wrapper (2592 and 4627
+bytes exactly, which is also what identifies the parameter set as ML-DSA-87 independently of
+the registry). So `CCert` needs no reshaping step for ML-DSA, unlike DSA's split `Dss-Parms`.
+
+Two things were needed beyond the algorithm tables:
+
+- `CCert::signsMessageDirectly(which)` replaced the `keyAlgo == EASYM_ED25519 || keyAlgo ==
+  EASYM_ED448` predicate that had been copied into four verification paths
+  (`CCert::verifyBy()`, `CCrlReader::verifyBy()` and both OCSP `verifySignature()`s). A fifth
+  and sixth algorithm made keeping four copies in sync a question of when rather than whether,
+  and a site that missed one would hand raw TBS bytes to a hash-then-sign verify or a digest
+  to ML-DSA -- failing silently either way. The `sigIsEddsa` locals on the *signing* side were
+  renamed `sigIsSelfHashing` for the same reason; there the test on `sigHash ==
+  EHASH_UNKNOWN` is unambiguous, because `resolveSigAlgoForSigning()` returns false rather
+  than EHASH_UNKNOWN for an algorithm it does not know.
+- `resolveSigAlgoForSigning()` gained an ML-DSA branch that ignores the requested
+  `digestAlgo` entirely, as the EdDSA branches do. With that, `CCertBuilder` issues ML-DSA
+  certificates with no builder change, which `tests/x509/cert.cpp` exercises for all three
+  parameter sets (build, re-import, verify).
+
+The acceptance test passed: `tests/x509/realcerts.cpp`'s IdenTrust ML-DSA root is in
+`certs/implemented/`, its `keyAlgo()`/`signAlgo()` resolve to `ML-DSA-87`, and
+`cert.verifyBy(cert)` returns `ERET_OK`. A companion case flips one bit in the TBS, in the
+signature and in the public key and requires each to fail, so the success is not vacuous.
+
+The original plan, for the record:
 
 - Register the OIDs in `src/x509/cert.cpp`'s `SIG_ALGOS` and key-algorithm tables. These are
   now fixed by published RFCs rather than needing to be inferred:
