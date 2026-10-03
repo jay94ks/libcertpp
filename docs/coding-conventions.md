@@ -250,6 +250,23 @@ new styles.
   - `TArray<T>` stays `TArray<T>` for an actual sequence of logically
     distinct elements (e.g. `TArray<SKeySizeSpec>`), not for a byte buffer.
 
+## Span parameters
+
+- An output span is passed as `const SByteSpan&` unless the callee genuinely
+  needs to shorten it. The span's `data` is a `uint8_t*`, so the buffer stays
+  writable either way; `const` only prevents reassigning the span itself.
+- `SByteSpan&` (non-const) is reserved for the callees that really do report a
+  shorter length back by assigning `out = SByteSpan(out.data, written)` —
+  `IAsymmetricContext::sign()` and `CBase64::finish()` are the examples. If a
+  function never executes that assignment, its parameter should be `const`.
+- This is not cosmetic. A non-const lvalue reference cannot bind to a
+  temporary, so `hasher->finish(SByteSpan(buf, len))` is ill-formed in
+  standard C++ — MSVC accepts it as an extension while GCC and Clang reject
+  it. `IHasher::finish()` had exactly this problem across 13 call sites and
+  broke every non-MSVC build; see `docs/changelog.md`'s portability entry.
+- The same reasoning applies to input spans: take `const SReadOnlyByteSpan&`,
+  never a non-const reference, since nothing can usefully be written back.
+
 ## Naming
 
 - Namespaces: lowercase (`certpp`, `certpp::asn1`).

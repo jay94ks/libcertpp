@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+# certpp has no external dependencies to re-discover. Its one system dependency -- bcrypt, for
+# BCryptGenRandom on Windows -- is linked PRIVATE, which CMake records in the exported targets
+# as $<LINK_ONLY:bcrypt>, so a static consumer picks it up from certpp-targets.cmake without
+# anything being needed here.
+include("${CMAKE_CURRENT_LIST_DIR}/certpp-targets.cmake")
+
+check_required_components(certpp)

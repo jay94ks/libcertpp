@@ -60,7 +60,7 @@ namespace crypto {
     }
 
     /* Finalizes the SHA-384 hash computation and writes the result to the output buffer. */
-    bool SHA384::finish(SByteSpan& out) {
+    bool SHA384::finish(const SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }

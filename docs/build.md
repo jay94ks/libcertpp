@@ -44,12 +44,24 @@ cmake --build build
 cmake --install build --prefix <install-prefix>
 ```
 
-Installs the `certpp` library, public headers (`include/`), and a
-`certpp-targets.cmake` export under `<prefix>/lib/cmake/certpp`, so a
-downstream CMake project can `find_package` on it and link `certpp::certpp`.
-There is no versioned `certpp-config.cmake` yet — add one if/when the
-project needs `find_package(certpp)` to work without `CMAKE_PREFIX_PATH`
-pointing straight at the targets file.
+Installs the `certpp` library, the public headers (`include/`), and a full
+CMake package under `<prefix>/lib/cmake/certpp` — `certpp-targets.cmake`
+plus `certpp-config.cmake` and `certpp-config-version.cmake`. A downstream
+project consumes it the ordinary way:
+
+```cmake
+find_package(certpp REQUIRED)
+target_link_libraries(myapp PRIVATE certpp::certpp)
+```
+
+with `-DCMAKE_PREFIX_PATH=<prefix>` if the prefix is not already searched.
+The version file is `SameMajorVersion`, matching the shared object's
+`SOVERSION`.
+
+Note that a *static* certpp must be consumed with a matching MSVC runtime —
+installing a Release build and linking it into a Debug consumer produces
+`_ITERATOR_DEBUG_LEVEL`/`RuntimeLibrary` mismatch errors at link time, which
+is an MSVC rule rather than anything specific to this library.
 
 ## Notes on `CERTPP_API`
 

@@ -61,7 +61,7 @@ namespace crypto {
     }
 
     /* Finalizes the SHA-224 hash computation and writes the result to the output buffer. */
-    bool SHA224::finish(SByteSpan& out) {
+    bool SHA224::finish(const SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }

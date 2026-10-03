@@ -97,7 +97,7 @@ namespace crypto {
          * @param out The buffer to store the final hash.
          * @return True if the hash was successfully finalized, false otherwise.
          */
-        virtual bool finish(SByteSpan& out) = 0;
+        virtual bool finish(const SByteSpan& out) = 0;
     };
 
 } // namespace crypto

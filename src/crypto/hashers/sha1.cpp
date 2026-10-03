@@ -327,7 +327,7 @@ namespace crypto {
     }
 
     /* Finalizes the SHA-1 hash computation and writes the result to the output buffer. */
-    bool SHA1::finish(SByteSpan& out) {
+    bool SHA1::finish(const SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }

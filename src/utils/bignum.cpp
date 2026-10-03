@@ -58,7 +58,9 @@ namespace certpp {
 
         /* Reinterprets a little-endian 32-bit limb buffer as len64 64-bit digits, zero-padded
          * past src's actual length (and past len32 if len32 is odd). */
-        void CBigNum::packInto64(const uint32_t* src, size_t len32, uint64_t* dst64, size_t len64) {
+        void CBigNum::packInto64(
+            const uint32_t* src, size_t len32, unsigned long long* dst64, size_t len64
+        ) {
             for (size_t i = 0; i < len64; ++i) {
                 size_t lo = i * 2, hi = lo + 1;
                 uint64_t v = (lo < len32) ? uint64_t(src[lo]) : 0;
@@ -93,7 +95,13 @@ namespace certpp {
             size_t bLen64 = (bLen + 1) / 2;
             size_t resultLen64 = aLen64 + bLen64 + 1;
 
-            TArray<uint64_t> a64, b64, r64, row;
+            // --> `unsigned long long`, not uint64_t. The ADX/BMI2 intrinsics are declared in
+            // terms of `unsigned long long*`, and on LP64 targets (Linux, macOS) uint64_t is
+            // `unsigned long` -- a *distinct* type of the same width, so passing &x straight in
+            // is a hard error there even though it compiles on MSVC where the two coincide.
+            // Casting the pointer instead would compile but alias one integer type as another,
+            // so the arrays simply use the type the intrinsics ask for.
+            TArray<unsigned long long> a64, b64, r64, row;
             a64.resize(aLen64);
             b64.resize(bLen64);
             r64.resize(resultLen64);
@@ -106,7 +114,7 @@ namespace certpp {
             }
 
             for (size_t i = 0; i < aLen64; ++i) {
-                uint64_t ai = a64[i];
+                unsigned long long ai = a64[i];
                 if (ai == 0) {
                     continue;
                 }
@@ -119,10 +127,10 @@ namespace certpp {
                 // _addcarry_u64 call chained the "obvious" way -- the bug an earlier version of
                 // this function had, caught by the cross-check test this function's own doc
                 // comment mentions).
-                uint64_t carry = 0;
+                unsigned long long carry = 0;
                 for (size_t j = 0; j < bLen64; ++j) {
-                    uint64_t hi;
-                    uint64_t lo = _mulx_u64(ai, b64[j], &hi);
+                    unsigned long long hi;
+                    unsigned long long lo = _mulx_u64(ai, b64[j], &hi);
 
                     unsigned char c = _addcarry_u64(0, lo, carry, &row[j]);
                     carry = hi + c; // hi <= 2^64-2, so +1 (c is 0 or 1) never overflows
@@ -147,7 +155,7 @@ namespace certpp {
 
             for (size_t i = 0; i < resultLen; ++i) {
                 size_t digit = i / 2;
-                uint64_t v = (digit < resultLen64) ? r64[digit] : 0;
+                unsigned long long v = (digit < resultLen64) ? r64[digit] : 0;
                 result[i] = (i % 2 == 0) ? uint32_t(v) : uint32_t(v >> 32);
             }
         }

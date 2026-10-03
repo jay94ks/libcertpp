@@ -74,7 +74,7 @@ namespace crypto {
         _ctx.squeezePos = 0;
     }
 
-    bool SHAKE128::finish(SByteSpan& out) {
+    bool SHAKE128::finish(const SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }

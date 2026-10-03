@@ -49,7 +49,7 @@ namespace crypto {
          * @param out The output buffer to store the hash result (at least byteWidth() bytes).
          * @return True if the hash was successfully finalized, false otherwise.
          */
-        bool finish(SByteSpan& out) override;
+        bool finish(const SByteSpan& out) override;
     };
 
 } // namespace crypto

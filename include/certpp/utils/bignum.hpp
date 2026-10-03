@@ -37,7 +37,9 @@ namespace certpp {
 
         /* Reinterprets a little-endian 32-bit limb buffer as len64 64-bit digits, zero-padded
          * past src's actual length (and past len32 if len32 is odd). */
-        static void packInto64(const uint32_t* src, size_t len32, uint64_t* dst64, size_t len64);
+        static void packInto64(
+            const uint32_t* src, size_t len32, unsigned long long* dst64, size_t len64
+        );
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
         __attribute__((target("bmi2,adx")))

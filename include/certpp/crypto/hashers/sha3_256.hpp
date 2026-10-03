@@ -71,7 +71,7 @@ namespace crypto {
          * @param out The output buffer (at least byteWidth() bytes).
          * @return True if the digest was written, false otherwise.
          */
-        bool finish(SByteSpan& out) override;
+        bool finish(const SByteSpan& out) override;
     };
 
 } // namespace crypto

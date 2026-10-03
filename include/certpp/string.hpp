@@ -1245,7 +1245,10 @@ namespace certpp {
     template<typename T>
     template<typename U>
     TString<T>::TString(const TString<U>& cStr) : _data(nullptr), _size(0), _capacity(0) {
-        append(cStr.convertTo<T>());
+        // --> `template` is required: cStr's type depends on U, so without it a standard
+        // compiler parses the `<` as less-than. MSVC accepts the bare form, GCC and Clang
+        // reject it, which kept this from building anywhere but Windows.
+        append(cStr.template convertTo<T>());
     }
 
     /**
@@ -1258,7 +1261,8 @@ namespace certpp {
     template<typename T>
     template<typename U>
     inline TString<T>& TString<T>::append(const TString<U>& other) {
-        return append(other.convertTo<T>());
+        // --> `template` required for the same reason as in the converting constructor above.
+        return append(other.template convertTo<T>());
     }
 
     /**

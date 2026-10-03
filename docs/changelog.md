@@ -1327,3 +1327,84 @@ restarted its index counter instead of continuing at `r + l`, those two would
 be identical.
 
 9 test cases, 8004 assertions.
+
+## Portability: building on Linux/GCC, and `find_package` support
+
+Reported from downstream — cppskit's libcskcwk consumes libcertpp as an
+installed static package for P2P node-certificate authentication, and could
+not build on Ubuntu 24.04 with GCC 13.3. Four distinct problems, all of which
+MSVC had been hiding.
+
+### 1. Missing `template` on a dependent member template
+
+`TString`'s converting constructor and its cross-type `append()` both call
+`cStr.convertTo<T>()` where the object's type depends on a template
+parameter. Standard C++ needs `cStr.template convertTo<T>()`; without it the
+`<` parses as less-than. MSVC accepts the bare form, GCC and Clang reject it,
+and since `string.hpp` is included almost everywhere this failed most
+translation units. The report named one site; there were two.
+
+### 2. Temporaries bound to `SByteSpan&` (13 call sites)
+
+`hasher->finish(SByteSpan(...))` passes a temporary to a non-const lvalue
+reference, which MSVC allows as an extension and GCC/Clang reject.
+
+Rather than name a local at each of the 13 sites, `IHasher::finish()` now
+takes `const SByteSpan&`. That is the right fix rather than the expedient one:
+no implementation ever reassigned the span, the sibling `SHAKE*::squeeze()` in
+the same classes already took `const SByteSpan&`, and the newer APIs in this
+library (`CSecure::zero`, `CMlKem`, `MlDsaCodec`) all use the const form. The
+span's `data` is a `uint8_t*`, so the buffer is still writable; only
+reassignment is prevented.
+
+The distinction is principled, not blanket: `IAsymmetricContext::sign()` and
+`CBase64::finish()` genuinely do truncate their span to the bytes written
+(`out = SByteSpan(out.data, n)`), so those keep `SByteSpan&`.
+
+This is an API change for anyone implementing `IHasher` outside the library —
+an override's signature has to match.
+
+It also turned out to fix more than was reported. The 13 sites in `src/` were
+the ones the reporter hit, but `tests/` and `examples/` pass temporaries to
+`finish()` at 7 more — invisible in their build, which had
+`-DCERTPP_BUILD_TESTS=OFF -DCERTPP_BUILD_EXAMPLES=OFF`. Patching the 13 call
+sites by hand would have left those broken and the next non-MSVC build would
+have hit them. The signature change fixes all 20.
+
+### 3. `uint64_t*` vs `unsigned long long*` in the ADX/BMI2 path
+
+`_mulx_u64`/`_addcarry_u64` are declared in terms of `unsigned long long*`. On
+LP64 targets `uint64_t` is `unsigned long` — a *distinct* type of the same
+width — so passing `&x` is a hard error there while compiling fine on Windows,
+where the two coincide. The packed 64-bit arrays and locals in
+`mulAccelerated()` are now declared `unsigned long long` outright, rather than
+casting the pointers, which would compile but alias one integer type as
+another.
+
+### 4. `find_package(certpp)` did not work after install
+
+The install wrote only `certpp-targets.cmake`, and CMake looks for
+`certpp-config.cmake` by name. Added that plus a `SameMajorVersion`
+`certpp-config-version.cmake` via `CMakePackageConfigHelpers`. The config file
+is deliberately minimal — it had a speculative `find_dependency(Threads)` in
+its first draft, removed once a grep confirmed the library uses no threading
+at all; the one real system dependency, `bcrypt`, is already carried in the
+exported targets as `$<LINK_ONLY:bcrypt>`.
+
+### How these were verified
+
+Not by inspection. Clang was run with `-fno-ms-compatibility
+-fno-delayed-template-parsing`, which makes it reject the same constructs GCC
+does, across *every* source file in the library — it reproduced exactly the 13
+rvalue-binding errors reported, found the second `template` site the report
+had not, and now reports nothing. Issues 1, 2 and 4 are additionally covered
+end to end: the library was configured with the reporter's exact options
+(`-DCERTPP_BUILD_SHARED=OFF -DCERTPP_BUILD_TESTS=OFF
+-DCERTPP_BUILD_EXAMPLES=OFF`), installed to a prefix, and consumed by a
+separate project through `find_package(certpp REQUIRED)` that hashes, signs
+and verifies with a P-256 node key — including a `finish(SByteSpan(...))` call
+with a temporary, the exact construct that used to fail.
+
+Issue 3 cannot be reproduced on Windows, where `uint64_t` *is* `unsigned long
+long`, so it rests on the type analysis plus the existing `mul()` cross-check
+test against an independent reference multiply, which exercises that path.

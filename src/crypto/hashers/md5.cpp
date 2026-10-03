@@ -130,7 +130,7 @@ namespace crypto {
     }
 
     /* Finalizes the MD5 hash computation and writes the result to the output buffer. */
-    bool MD5::finish(SByteSpan& out) {
+    bool MD5::finish(const SByteSpan& out) {
         if (out.size < byteWidth()) {
             return false;
         }

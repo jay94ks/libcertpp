@@ -82,6 +82,33 @@ install(EXPORT certpp-targets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/certpp
 )
 
+# --> The exported targets file alone is not enough for find_package(certpp): CMake looks for
+# certpp-config.cmake (or certpp-config-version.cmake) by name, and without them a consumer has
+# to include the targets file by hand. These two make `find_package(certpp REQUIRED)` followed
+# by linking `certpp::certpp` work from an ordinary install prefix.
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/certpp-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/certpp-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/certpp
+)
+
+# SameMajorVersion: this library is pre-1.0 in spirit and its headers change freely, but the
+# shared object's SOVERSION is the major, so that is the compatibility boundary consumers can
+# actually rely on.
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/certpp-config-version.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/certpp-config.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/certpp-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/certpp
+)
+
 option(CERTPP_BUILD_TESTS "Build certpp test executables" ON)
 
 if(CERTPP_BUILD_TESTS)

@@ -67,7 +67,7 @@ namespace crypto {
          * @param out The output buffer to store the result (at least byteWidth() bytes).
          * @return True if the output was successfully produced, false otherwise.
          */
-        bool finish(SByteSpan& out) override;
+        bool finish(const SByteSpan& out) override;
 
         /**
          * Squeezes the next out.size bytes of this instance's output stream, advancing the sponge

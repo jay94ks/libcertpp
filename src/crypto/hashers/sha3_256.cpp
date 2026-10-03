@@ -15,7 +15,7 @@ namespace crypto {
         return Sha3Core::absorb(_ctx.state, _ctx.buffer, _ctx.bufferLen, RATE, buf);
     }
 
-    bool SHA3_256::finish(SByteSpan& out) {
+    bool SHA3_256::finish(const SByteSpan& out) {
         if (out.size < DIGEST_BYTES || !out.data) {
             return false;
         }
