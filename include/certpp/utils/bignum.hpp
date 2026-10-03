@@ -11,6 +11,10 @@ namespace certpp {
     // inside CBigNum itself, since CBigNum isn't a complete type yet at that point).
     struct SignedBig;
 
+    // --> Forward declaration for the friendship granted below; defined in utils/montgomery.hpp,
+    // which includes this header rather than the other way round.
+    class CMontgomery;
+
     /**
      * An arbitrary-precision, non-negative integer, stored as a little-endian array of 32-bit
      * limbs. Backs the modular arithmetic (RSA/DSA key generation and sign/verify, elliptic-curve
@@ -18,6 +22,14 @@ namespace certpp {
      * algorithm (or even to crypto/ specifically), so it lives under utils/ rather than crypto/.
      */
     class CERTPP_API CBigNum {
+        // --> CMontgomery (utils/montgomery.hpp) implements division-free modular arithmetic
+        // directly over these limbs -- that is the entire point of it, so it needs the raw
+        // little-endian limb buffer rather than going through the value-level API, which would
+        // re-introduce the per-operation copying it exists to avoid. Friendship rather than public
+        // limb accessors: the representation stays an implementation detail of this class, and
+        // nothing outside the pair can reach it.
+        friend class CMontgomery;
+
     private:
         TArray<uint32_t> _limbs; // little-endian limbs; canonical (no leading zero limb); empty == 0.
 

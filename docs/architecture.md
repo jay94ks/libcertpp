@@ -69,6 +69,7 @@ include/
       hex.hpp                   # CHex: hex-string-to-bytes decoder (optional "0x"/"0X" prefix), shared by CBigNum::fromHex()/CGf2m::fromHex()
       base64.hpp                 # CBase64: base64 codec, both a streaming push()/finish() transform and static one-shot encode()/decode(); EBase64Mode
       bignum.hpp                 # CBigNum: arbitrary-precision non-negative integer (RSA/DSA/EC/Ed25519 math)
+      montgomery.hpp              # CMontgomery: one odd modulus + its precomputed Montgomery constants; division-free mul/add/sub/dbl/neg/modExp for the EC field arithmetic
       gf2m.hpp                    # CGf2m: fixed-capacity GF(2^m) binary field element (polynomial basis); EGf2mKnownField + CGf2m::knownField()/knownFieldPtr() name the 5 field sizes the B-*/K-* binary curves share
     io/
       span.hpp              # TSpan<T> / TReadOnlySpan<T> (template-only, no .cpp); SByteSpan/SReadOnlyByteSpan aliases
@@ -160,6 +161,7 @@ src/
     hex.cpp                     # CHex::decode()
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
+    montgomery.cpp                # CMontgomery: the -m^-1 mod 2^32 Newton iteration, R^2 mod m, and the CIOS Montgomery multiply over CBigNum's raw limbs
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
     buffer.cpp                # CBuffer::store()/resize()
@@ -267,6 +269,7 @@ tests/
     base64.cpp                  # CBase64 streaming/one-shot encode/decode test cases, incl. PEM line breaking
     bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
     divmod.cpp                  # CBigNum::divMod() differentially fuzzed against a bit-serial reference built from the public API, plus constructed inputs for Algorithm D's add-back branch (unreachable by random testing)
+    montgomery.cpp               # CMontgomery differentially fuzzed against the CBigNum operations it is the fast path for, over every modulus the library ships (the 29 curves' p and n, edwards448's p and L) plus random odd moduli from 1 to 32 limbs
     gf2m.cpp                     # CGf2m field-axiom/known-answer-vector/encode-decode test cases, one known-answer vector per field size, independently cross-derived via a standalone Python implementation
   io/
     array.cpp                 # TArray<T> test cases
@@ -569,6 +572,56 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   that row into the running total via an ordinary multi-precision add
   (equally safe, same reason) -- rather than trying to fuse both steps
   into a single pass.
+- **`utils/montgomery.hpp` / `src/utils/montgomery.cpp`** define
+  `CMontgomery`: one **odd** modulus together with the constants that let
+  modular arithmetic against it run with no big-number division at all --
+  Montgomery's `n' = -m^-1 mod 2^32` and `R^2 mod m`, where
+  `R = 2^(32*limbs(m))`. It exists because `CBigNum::mulMod()` has nowhere to
+  cache anything: it is necessarily `mul()` then `mod()`, and `mod()` is a full
+  Knuth-D long division, so every single modular multiply inside a scalar
+  multiplication paid for one. `CMontgomery` hoists that cost out of the loop
+  — two divisions once, at construction, against the thousands the loop would
+  otherwise perform.
+
+  It is **additive, not a replacement**: `CBigNum::mod()`/`mulMod()` are
+  unchanged and still the only option for an even modulus, which Montgomery
+  reduction cannot handle (it needs `gcd(R, m) == 1` with `R` a power of two).
+  A `CMontgomery` built from an even or zero modulus reports `isValid() ==
+  false` and turns every operation into a no-op rather than computing
+  something plausible-looking.
+
+  Two domains are in play. *Ordinary* form is the plain residue `a`;
+  *Montgomery* form is `a*R mod m`. `toMont()`/`fromMont()` convert,
+  `one()` is the Montgomery form of 1 (what a projective `Z = 1` must be
+  initialized to), and `mul()` multiplies two Montgomery-form values into a
+  third. `add()`/`sub()`/`dbl()`/`neg()` are valid in *either* domain, since
+  `a -> a*R` is linear — and they matter as much as `mul()` does, because the
+  code they replaced spelled addition as `.add(x)` followed by `.mod(p)`, i.e.
+  a long division to reduce a sum that was at most `2p`. `mulMod()` is the
+  ordinary-form drop-in for `CBigNum::mulMod()` for a caller that does not want
+  to think about domains, and `modExp()` is square-and-multiply in the domain.
+
+  The multiply itself is CIOS (Coarsely Integrated Operand Scanning): the
+  schoolbook multiply and the reduction are interleaved per limb of the second
+  operand, so the accumulator never exceeds `limbs(m)+2` words and lives in an
+  on-stack buffer (sized for 80 limbs, well past P-521's 17, so no curve
+  operation allocates). It reaches `CBigNum`'s raw limb array through
+  `friend class CMontgomery` rather than new public limb accessors — the
+  representation stays `CBigNum`'s own business, and avoiding the per-operation
+  copying is the entire point of the class.
+
+  Its final step is the conditional subtraction that brings a result in
+  `[m, 2m)` back below `m`. Skipping that is the classic Montgomery bug and it
+  only shows on about half of all inputs, never on a hand-picked small case, so
+  the class is tested the way `CBigNum::divMod()` is: differentially, against
+  the `CBigNum` operation each method is the fast path for, over every modulus
+  the library actually ships (the 29 `CEcCurve` parameter sets' `p` and `n`,
+  plus edwards448's `p` and `L`), random odd moduli from 1 to 32 limbs,
+  exhaustively over `[0, 2m+2]^2` for single-limb moduli, the hand-picked
+  `0`/`1`/`m-1`/`m`/`m+1`/`m^2-1`/`m^2+m` operand classes per modulus, and
+  200-step chained sequences that would expose an error that only accumulates
+  (`tests/utils/montgomery.cpp`, ~915k assertions). Dropping the conditional
+  subtraction, perturbing `n'`, or omitting one `fromMont()` each fail it.
 - **`utils/gf2m.hpp` / `src/utils/gf2m.cpp`** define `CGf2m`, a binary
   field GF(2^m) element (polynomial basis) -- the field arithmetic
   `CEc2Curve`'s binary curves need, and which `CBigNum` cannot provide
@@ -1890,7 +1943,21 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   (`condSwapJac()` swaps which register holds which value based on the
   scalar's bit, rather than branching on whether to add at all) that pays
   for exactly one modular inversion at the very end
-  (`toAffineFromJac()`), not one per bit; `scalarMulBase()` additionally
+  (`toAffineFromJac()`), not one per bit, and holds its coordinates in
+  **Montgomery form** (`CMontgomery`, see `utils/montgomery.hpp` above) so
+  that the thousands of field multiplications a scalar multiplication performs
+  cost limb-wise multiply-accumulate passes rather than a long division each.
+  The per-modulus context is built at the top of `scalarMul()`/
+  `scalarMulBase()` and passed down, rather than cached on the `CEcCurve`
+  instance: `p`/`a`/`b` are public mutable fields, so a cached context would
+  need invalidating whenever a caller wrote to one, and its two divisions are
+  unmeasurable next to the scalar multiplication they precede.
+  `toJacobian()`/`toAffineFromJac()` are the conversion boundary in both
+  directions, so no Montgomery-form value escapes those five functions; the
+  affine `add()`/`doublePoint()`/`isOnCurve()` deliberately stay on
+  `CBigNum`'s general path, since a single group operation is dominated by its
+  one modular inversion and there is nothing to amortize a context over.
+  `scalarMulBase()` additionally
   uses a lazily-built, per-instance-cached table of small multiples of `g`
   (`_baseTable`, a 4-bit window, 16 entries) to cut the number of additions
   from one per bit to one per 4 bits. `doublePointJac()`/`addJac()`
@@ -2064,7 +2131,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   one -- derived directly from the affine addition law (see this function's
   own comment in `ed448.cpp`) rather than transcribed from a reference,
   since the well-known named formula for this shape is specific to `a =
-  -1`.
+  -1`. `EdPointProj`'s four coordinates are held in **Montgomery form**
+  (`CMontgomery`, see `utils/montgomery.hpp` above) for the same reason
+  `CEcCurve`'s `ECPointJac` is, with `toProjective()`/`toAffine()` as the
+  conversion boundary; unlike `CEcCurve`, the context here is a
+  construct-on-first-use singleton next to `fieldPrime()`, since edwards448
+  has exactly one field prime and it is not a mutable public field. `d` is
+  cached in Montgomery form alongside it (`curveDMont()`), and `fieldSqrt()`'s
+  `x2^((p+1)/4)` runs through `CMontgomery::modExp()` -- ~446 squarings and
+  ~223 multiplies that each used to be followed by a long division, once per
+  decoded point, i.e. once per `verify()`.
 - **`crypto/asyms/x25519.hpp` / `src/crypto/asyms/x25519.cpp`** define
   `X25519` (Diffie-Hellman key agreement over Curve25519, RFC 7748) --
   same field prime as `Ed25519` (`2^255 - 19`), but Montgomery-form curve

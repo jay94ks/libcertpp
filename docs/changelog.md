@@ -2241,3 +2241,132 @@ asserts it is on the curve, in field range, of order exactly 2, and refused by
 both `decodePoint()` and `createPublicKey()`. Disabling the check fails that
 case and **leaves the other sixteen ECDH cases passing**, which is the
 measurement of how much coverage there was before.
+
+## `CMontgomery`: taking the long division out of every modular multiply
+
+`CBigNum::mulMod(other, modulus)` is `mul(other)` followed by `mod(modulus)`,
+and `mod()` calls `divMod()`, which is Knuth's Algorithm D. That is the right
+shape for the method — it has nowhere to cache anything, and it has to keep
+working for any non-zero modulus, including an even one — but it means every
+modular multiply in every curve operation performed a full big-number division.
+Across the 113 `mulMod` and 51 `mod` call sites in `eccurve.cpp`, `ed448.cpp`,
+`ed25519.cpp`, `ecdsa.cpp` and `gost3410.cpp`, that was the single largest cost
+in this library's asymmetric algorithms.
+
+`include/certpp/utils/montgomery.hpp` + `src/utils/montgomery.cpp` add
+`CMontgomery`: one odd modulus plus `n' = -m^-1 mod 2^32` and `R^2 mod m`,
+precomputed once, with a CIOS Montgomery multiply over `CBigNum`'s raw limbs.
+See [architecture.md](architecture.md)'s entry for the API and the two domains
+it works in. Three decisions are worth recording here.
+
+**Montgomery, not Barrett.** Barrett's advantage is that it needs no residue
+domain and works for an even modulus; Montgomery's is a cheaper inner loop
+(~2k² limb multiplies against Barrett's ~2.5k², and no `mu` of `k+1` limbs with
+the truncations that implies) *provided* several operations share one modulus.
+The curve code does hundreds of operations against one fixed prime per scalar
+multiplication, which is precisely that case, and Barrett's generality buys
+nothing here because `CBigNum::mod()` already covers the even-modulus case and
+is staying.
+
+**Additive, never a substitution.** `CBigNum::mod()` and `mulMod()` are
+byte-for-byte unchanged. Montgomery reduction requires an odd modulus, so
+silently rerouting them was never an option; `CMontgomery` is an opt-in fast
+path beside them, and one built from an even or zero modulus reports
+`isValid() == false` and makes every operation a no-op rather than computing
+something plausible-looking.
+
+**`add`/`sub`/`dbl` mattered as much as `mul`.** The expectation going in was
+that the win would come from the multiplies. It did not come only from there:
+the code being replaced spelled a field addition as `.add(x)` followed by
+`.mod(p)`, which is a long division to reduce a sum that is at most `2p`, and a
+subtraction as `.modSub(y, p)`, which reduces *both* operands first — two more.
+Those are a single conditional subtraction and a single conditional add-back on
+a context, and `doublePointJac()` alone contained seven of them.
+
+### What was converted
+
+- **`CEcCurve`'s Jacobian point arithmetic** (`infinityJac`, `toJacobian`,
+  `toAffineFromJac`, `doublePointJac`, `addJac`, and the two scalar-multiply
+  loops): one caller first, measured before going further, because it serves
+  all 29 prime curves — ECDSA, ECDH and GOST R 34.10-2012 alike. The context is
+  built per `scalarMul()`/`scalarMulBase()` call rather than cached on the
+  curve, since `p`/`a`/`b` are public mutable fields and a cached context would
+  have to be invalidated whenever one was written; its two divisions do not
+  register against the thousands the loop would otherwise do.
+- **`Edwards448`'s extended-projective arithmetic** (`toProjective`,
+  `toAffine`, `identityPointProj`, `pointAddProj`), plus `fieldSqrt()`'s
+  `x2^((p+1)/4)` through `CMontgomery::modExp()` — ~670 modular multiplications
+  that each used to be followed by a division, once per decoded point, i.e.
+  once per `verify()`.
+- **Deliberately not converted:** the affine `add()`/`doublePoint()`/
+  `isOnCurve()`. A single group operation is dominated by its one modular
+  inversion, so there is nothing for a context to amortize over, and these are
+  the validation paths — not where to take risk for an unmeasurable gain.
+  `ed25519.cpp` was left alone because it was concurrently moving onto the
+  dedicated `Fe25519` field, which is a better fix for that one curve.
+
+The multiplication by the literal 8 in `doublePointJac()` (`8*C`) became three
+`dbl()` calls: 8 is a plain integer, the operands are Montgomery-form, so
+multiplying by it would have needed `toMont(8)`, whereas doubling is
+domain-agnostic — and cheaper anyway.
+
+### The measured effect
+
+Release build, minimum across 3 invocations of (minimum of 5 runs of 30
+iterations). This machine is a loaded 4-core i7-11370H with other work running,
+and the run-to-run spread on a single metric reached 30%, so these are minima
+and anything under ~20% should be read as noise.
+
+| | before | after | |
+|---|---|---|---|
+| ECDSA P-256 sign | 6.81 ms | **2.04 ms** | 3.3x |
+| ECDSA P-256 verify | 22.50 ms | **5.53 ms** | 4.1x |
+| ECDSA P-384 sign | 13.34 ms | **4.27 ms** | 3.1x |
+| ECDSA P-384 verify | 39.92 ms | **13.99 ms** | 2.9x |
+| ECDSA P-521 verify | 72.36 ms | **28.94 ms** | 2.5x |
+| Ed448 sign | 14.62 ms | **5.52 ms** | 2.6x |
+| Ed448 verify | 70.73 ms | **23.83 ms** | 3.0x |
+
+The whole test suite dropped from roughly 50s to 17.6s as a side effect.
+
+### Validation
+
+The 118 existing test cases pass with **no expected value edited** — every RFC
+8032, RFC 5903, FIPS 186-4, RFC 6986/7091 and ACVP vector in the tree is a
+check on this change, and `tests/crypto/eccurve.cpp`'s group-law cases and
+`kat_ecdsa.cpp`'s FIPS vectors both proved able to catch a broken conversion
+(see below).
+
+The primary evidence, though, is `tests/utils/montgomery.cpp`, written the way
+`divmod.cpp` is: it asserts nothing against expected values, only that each
+`CMontgomery` operation agrees with the `CBigNum` operation it is the fast path
+for. ~915k assertions over every modulus the library ships (the 29 `CEcCurve`
+sets' `p` *and* `n`, plus edwards448's `p` and `L`), random odd moduli from 1
+to 32 limbs, exhaustive `[0, 2m+2]²` coverage for single-limb moduli (which
+exercise the `s == 1` path where the reduction pass's inner loop does not run
+at all), the `0`/`1`/`m-1`/`m`/`m+1`/`m²-1`/`m²+m` operand classes per modulus,
+operands at twice the modulus's bit width, and 200-step chained sequences —
+because every other check starts from freshly reduced operands and would hide
+an error that only accumulates.
+
+Negative controls, each injected, rebuilt, and restored:
+
+| injected fault | caught by |
+|---|---|
+| final conditional subtraction removed from the CIOS multiply | 2,499 failures in 6 of 7 `montgomery` test cases |
+| `n'` computed for a perturbed modulus (sanity check disabled too) | 303,591 failures in 6 of 7 cases |
+| `fromMont()` dropped from `modExp()`'s return | 48 failures, in the `modExp` case only |
+| `fromMont()` dropped from one coordinate of `toAffineFromJac()` | `crypto_asyms_kat_ecdsa` (FIPS 186-4) and `crypto_eccurve` both fail |
+
+The first of those is the one the differential test exists for: an unreduced
+result in `[m, 2m)` is correct modulo `m`, so it propagates silently and only
+disagrees with the slow path on inputs that happen to land there — about half
+of them, which a hand-picked known-answer suite can easily miss entirely.
+
+One subtlety worth naming, because it was wrong in the first draft. The CIOS
+accumulator is `limbs(m)+2` words and its final reduction has to subtract `m`
+from the low `limbs(m)` of them while also decrementing the top word *if and
+only if* that subtraction borrowed out. `CBigNum::subtractLimbs()` does not
+report its borrow, so the comparison has to be consulted *before* the
+subtraction, not after — the first version decremented the top word
+unconditionally.

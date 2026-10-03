@@ -2,6 +2,7 @@
 #define __INCLUDE_CERTPP_CRYPTO_ECCURVE_HPP__
 
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/io/array.hpp>
 #include <certpp/io/span.hpp>
 #include <certpp/crypto/keys.hpp>
@@ -136,24 +137,37 @@ namespace crypto {
          * has no complete formula -- doubling, negation (same x, opposite y), and the point at
          * infinity still need explicit special-casing, exactly like affine add()/doublePoint()
          * already do. Only scalarMul()/scalarMulBase() use this representation -- everywhere else
-         * deals in affine SEcPoint, converting at the boundary (toJacobian()/toAffineFromJac()). */
+         * deals in affine SEcPoint, converting at the boundary (toJacobian()/toAffineFromJac()).
+         *
+         * Its coordinates are held in *Montgomery* form (see CMontgomery), not as ordinary
+         * residues: that is what lets a scalar multiplication's thousands of field multiplications
+         * run without a single big-number division. toJacobian()/toAffineFromJac() are the
+         * conversion boundary in both directions, so nothing outside these five functions ever
+         * sees a Montgomery-form value. */
         struct ECPointJac {
             CBigNum x, y, z;
         };
 
-        static ECPointJac infinityJac();
-        static ECPointJac toJacobian(const SEcPoint& pt);
-        static SEcPoint toAffineFromJac(const ECPointJac& pt, const CBigNum& p);
+        static ECPointJac infinityJac(const CMontgomery& field);
+        static ECPointJac toJacobian(const SEcPoint& pt, const CMontgomery& field);
+        static SEcPoint toAffineFromJac(const ECPointJac& pt, const CMontgomery& field);
 
         /* Jacobian doubling (dbl-2007-bl, Bernstein/Lange, general a -- this library's curves
          * span both a == -3, the NIST/Brainpool r1 default, and arbitrary a for secp256k1/the
-         * Brainpool t1 curves, so the a == -3 shortcut isn't used). */
-        static ECPointJac doublePointJac(const ECPointJac& pt, const CBigNum& p, const CBigNum& a);
+         * Brainpool t1 curves, so the a == -3 shortcut isn't used). aMont is the curve's `a`
+         * coefficient in Montgomery form, which the caller converts once per scalar
+         * multiplication rather than once per doubling. */
+        static ECPointJac doublePointJac(
+            const ECPointJac& pt, const CMontgomery& field, const CBigNum& aMont
+        );
 
         /* Jacobian addition (add-2007-bl, Bernstein/Lange, general Z1/Z2). Falls back to
          * doublePointJac() when both points share the same x-coordinate and the same y (P1 ==
          * P2), and to the point at infinity when they share x but differ in y (P1 == -P2). */
-        static ECPointJac addJac(const ECPointJac& p1, const ECPointJac& p2, const CBigNum& p, const CBigNum& a);
+        static ECPointJac addJac(
+            const ECPointJac& p1, const ECPointJac& p2, const CMontgomery& field,
+            const CBigNum& aMont
+        );
 
         static void condSwapJac(bool doSwap, ECPointJac& a, ECPointJac& b);
 

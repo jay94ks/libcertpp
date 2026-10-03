@@ -12,6 +12,7 @@
 #include <certpp/utils/secure.hpp>
 #include <certpp/utils/base64.hpp>
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/utils/gf2m.hpp>
 
 #include <certpp/io/span.hpp>

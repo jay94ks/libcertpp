@@ -1,6 +1,7 @@
 #include <certpp/crypto/asyms/ed448.hpp>
 #include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
 #include <cstring>
@@ -27,7 +28,13 @@ namespace crypto {
          * y = Y/Z, with the auxiliary T = X*Y/Z maintained alongside so pointAddProj() below
          * needs no inversion. Only scalarMul() uses this representation -- everywhere else in
          * this file still deals in affine EdPoint, converting at the boundary
-         * (toProjective()/toAffine()). */
+         * (toProjective()/toAffine()).
+         *
+         * Its four coordinates are held in *Montgomery* form (see CMontgomery,
+         * utils/montgomery.hpp), not as ordinary residues: that is what lets a scalar
+         * multiplication's thousands of field multiplications run without a single big-number
+         * division. toProjective()/toAffine() are the conversion boundary in both directions, so
+         * nothing outside Edwards448's projective arithmetic ever sees a Montgomery-form value. */
         struct EdPointProj {
             CBigNum x, y, z, t;
         };
@@ -49,33 +56,61 @@ namespace crypto {
                 return d;
             }
 
+            /* The field prime's Montgomery context (utils/montgomery.hpp) -- the extended
+             * projective arithmetic below runs entirely in its domain, so a scalar multiplication
+             * never performs a big-number division where CBigNum::mulMod() would perform one per
+             * field multiply. Built once, on first use, like every other constant in this class:
+             * the context is immutable and the modulus never changes. */
+            static const CMontgomery& field() {
+                static const CMontgomery f(fieldPrime());
+                return f;
+            }
+
+            /* curveD() in Montgomery form, since pointAddProj() multiplies by it. */
+            static const CBigNum& curveDMont() {
+                static const CBigNum d = field().toMont(curveD());
+                return d;
+            }
+
             static EdPoint identityPoint() {
                 return EdPoint{ CBigNum(), CBigNum(uint64_t(1)) };
             }
 
             static EdPointProj toProjective(const EdPoint& pt) {
-                CBigNum t(pt.x);
-                t.mulMod(pt.y, fieldPrime());
-                return EdPointProj{ pt.x, pt.y, CBigNum(uint64_t(1)), std::move(t) };
+                const CMontgomery& f = field();
+
+                CBigNum x = f.toMont(pt.x);
+                CBigNum y = f.toMont(pt.y);
+
+                CBigNum t(x);
+                f.mul(t, y);
+
+                return EdPointProj{ std::move(x), std::move(y), f.one(), std::move(t) };
             }
 
             static EdPoint toAffine(const EdPointProj& pt) {
-                const CBigNum& p = fieldPrime();
+                const CMontgomery& f = field();
 
+                // --> The modular inversion is the one step with no Montgomery form, so Z leaves
+                // the domain, is inverted, and the inverse comes straight back in; the two affine
+                // coordinates are then the only values converted back out.
                 CBigNum zInv;
-                CBigNum::modInverse(pt.z, p, zInv);
+                CBigNum::modInverse(f.fromMont(pt.z), f.modulus(), zInv);
+                zInv = f.toMont(zInv);
 
                 CBigNum x(pt.x);
-                x.mulMod(zInv, p);
+                f.mul(x, zInv);
 
                 CBigNum y(pt.y);
-                y.mulMod(zInv, p);
+                f.mul(y, zInv);
 
-                return EdPoint{ std::move(x), std::move(y) };
+                return EdPoint{ f.fromMont(x), f.fromMont(y) };
             }
 
             static EdPointProj identityPointProj() {
-                return EdPointProj{ CBigNum(), CBigNum(uint64_t(1)), CBigNum(uint64_t(1)), CBigNum() };
+                // --> (0 : 1 : 1 : 0), with the two ones in Montgomery form (see EdPointProj).
+                const CMontgomery& f = field();
+                return EdPointProj{ CBigNum(), f.one(), f.one(), CBigNum() };
             }
 
             /* Extended-coordinates unified addition for a = 1 (derived directly from the affine
@@ -91,56 +126,53 @@ namespace crypto {
              * exists but isn't used here, for the same correctness/simplicity-over-performance
              * reason the rest of this module gives. */
             static EdPointProj pointAddProj(const EdPointProj& p1, const EdPointProj& p2) {
-                const CBigNum& p = fieldPrime();
-                const CBigNum& d = curveD();
+                const CMontgomery& f = field();
+                const CBigNum& d = curveDMont();
 
                 CBigNum A(p1.x);
-                A.mulMod(p2.x, p);
+                f.mul(A, p2.x);
 
                 CBigNum B(p1.y);
-                B.mulMod(p2.y, p);
+                f.mul(B, p2.y);
 
                 CBigNum C(p1.t);
-                C.mulMod(p2.t, p);
-                C.mulMod(d, p);
+                f.mul(C, p2.t);
+                f.mul(C, d);
 
                 CBigNum D(p1.z);
-                D.mulMod(p2.z, p);
+                f.mul(D, p2.z);
 
                 CBigNum x1PlusY1(p1.x);
-                x1PlusY1.add(p1.y);
-                x1PlusY1.mod(p);
+                f.add(x1PlusY1, p1.y);
 
                 CBigNum x2PlusY2(p2.x);
-                x2PlusY2.add(p2.y);
-                x2PlusY2.mod(p);
+                f.add(x2PlusY2, p2.y);
 
                 CBigNum E(x1PlusY1);
-                E.mulMod(x2PlusY2, p);
-                E.modSub(A, p);
-                E.modSub(B, p);
+                f.mul(E, x2PlusY2);
+                f.sub(E, A);
+                f.sub(E, B);
 
                 CBigNum F(D);
-                F.modSub(C, p);
+                f.sub(F, C);
 
                 CBigNum G(D);
-                G.add(C);
-                G.mod(p);
+                f.add(G, C);
 
                 CBigNum H(B);
-                H.modSub(A, p); // a = 1: H = B - a*A = B - A
+                f.sub(H, A); // a = 1: H = B - a*A = B - A
 
                 CBigNum x3(E);
-                x3.mulMod(F, p);
+                f.mul(x3, F);
 
                 CBigNum y3(G);
-                y3.mulMod(H, p);
+                f.mul(y3, H);
 
                 CBigNum t3(E);
-                t3.mulMod(H, p);
+                f.mul(t3, H);
 
                 CBigNum z3(F);
-                z3.mulMod(G, p);
+                f.mul(z3, G);
 
                 return EdPointProj{ std::move(x3), std::move(y3), std::move(z3), std::move(t3) };
             }
@@ -186,10 +218,14 @@ namespace crypto {
                 exp.add(CBigNum(uint64_t(1)));
                 exp.shr(2); // exact: p + 1 == 0 (mod 4)
 
-                CBigNum candidate = CBigNum::modExp(x2, exp, p);
+                // --> ~446 squarings and ~223 multiplies, each of which CBigNum::modExp() would
+                // follow with a long division; in the Montgomery domain none of them divides at
+                // all. This runs once per decoded point, i.e. once per verify(), and was a
+                // meaningful fraction of it.
+                CBigNum candidate = field().modExp(x2, exp);
 
                 CBigNum check(candidate);
-                check.mulMod(candidate, p);
+                field().mulMod(check, candidate);
 
                 CBigNum reducedX2(x2);
                 reducedX2.mod(p);
