@@ -227,6 +227,73 @@ ML-KEM is implicitly rejecting: a corrupted ciphertext yields a *different*
 shared secret rather than an error, by design. Do not treat
 `decapsulate()` succeeding as authentication — bind the secret to a transcript.
 
+## Make and read a certificate-signing request
+
+```cpp
+// Requester side: one key pair, and only one. There is deliberately no way to
+// name a public key separately from the private key signing for it -- if there
+// were, the signature would verify against the private key's own public half
+// rather than the one in subjectPKInfo.
+CCertRequestBuilder builder;
+CDistinguishedName::tryParse(builder.subject, CString("CN=example.com"));
+builder.subjectKeyPair = myKeyPair;
+
+CCertRequest request;
+builder.build(request);
+```
+
+```cpp
+// CA side: import verifies the self-signature and will not return ERET_OK
+// without it. Unlike a certificate's, a CSR's fields are an unauthenticated
+// claim until the signature holds -- proving possession of the private key is
+// the only thing a CSR is for.
+CCertRequest incoming;
+if (incoming.importDer(csrDer) != ERET_OK) {
+    return;     // signature did not hold, or the structure was malformed
+}
+
+CCertBuilder issuing;
+issuing.subjectFrom(incoming);      // the subject name and public key, nothing else
+```
+
+There is deliberately **no counterpart that copies requested extensions.** A CA
+that wants one reads it, checks it, and pushes it onto `extensions` itself, so
+every extension is an explicit decision. Copying wholesale is how a CA issues a
+CA certificate because the requester asked for one.
+
+## Hold a set of certificates and order them into a chain
+
+```cpp
+CCertCollection col;
+size_t idx = 0;
+col.add(leafCert, leafPrivateKey, idx);
+col.add(intermediateCert, idx);
+col.add(rootCert, idx);
+
+// Orders by who issued whom. Where an AuthorityKeyIdentifier is present it is
+// preferred over the name match, because a CA that re-keys has two
+// certificates with one subject and two keys.
+TArray<size_t> chain;
+if (col.buildChain(0, chain) == ECHAINRES_OK) {
+    // chain holds indices from the leaf up to a self-issued root
+}
+
+// Ordering is not validating. This checks each link's signature and nothing
+// else -- validity periods, basicConstraints, name constraints, revocation and
+// trust-anchor selection remain yours.
+col.verifyLinks(chain);
+
+// Confirm a private key really belongs to its certificate -- by signing, not by
+// comparing serialized keys, which only works for some algorithms.
+col.checkKeyPairing(0);
+```
+
+An incomplete chain returns `ECHAINRES_PARTIAL` and **keeps what it found** --
+that is what you need in order to go and fetch the missing issuer. A cycle is
+reported as `ECHAINRES_CYCLE` rather than `ECHAINRES_TOO_DEEP`, because the
+first says something true about your data and the second only says the walk
+gave up.
+
 ## Random bytes
 
 ```cpp
@@ -244,6 +311,10 @@ CSecure::zero(SByteSpan(secret, sizeof(secret)));         // survives /O2
 Use these rather than `memcmp` and `memset` on anything secret: `memcmp` leaks
 the matching-prefix length through timing, and a `memset` whose result is
 unread is a dead store the optimizer may delete.
+
+Where the comparison's outcome is itself a secret, use `equalsMask()` with
+`select()` instead — `equals()` narrows the mask to a `bool`, which makes that
+outcome something the caller can branch on.
 
 ## DNSSEC: key tag and DS record
 
