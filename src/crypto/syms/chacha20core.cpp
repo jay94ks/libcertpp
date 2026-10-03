@@ -275,5 +275,43 @@ namespace crypto {
         block(state, counter, out);
     }
 
+    /* HChaCha20's subkey derivation (draft-irtf-cfrg-xchacha 2.2). */
+    void ChaCha20Core::hchacha20(
+        const uint8_t key[KEY_BYTES], const uint8_t nonce[HNONCE_BYTES],
+        uint8_t out[SUBKEY_BYTES]
+    ) {
+        // Not initState(): that reserves word 12 for the counter and takes only three nonce
+        // words. Here the 128-bit nonce fills words 12 through 15 outright -- there is no
+        // counter, because HChaCha20 is called once per nonce rather than once per block.
+        SState state;
+        state.words[0] = 0x61707865u;
+        state.words[1] = 0x3320646eu;
+        state.words[2] = 0x79622d32u;
+        state.words[3] = 0x6b206574u;
+
+        for (size_t i = 0; i < 8; ++i) {
+            state.words[4 + i] = loadLE32(key + 4 * i);
+        }
+        for (size_t i = 0; i < 4; ++i) {
+            state.words[12 + i] = loadLE32(nonce + 4 * i);
+        }
+
+        // rounds() writes its third argument's word 12 from the counter it is handed, so the
+        // nonce's first word is passed there to keep the state it just built intact.
+        uint32_t working[16];
+        rounds(state, state.words[12], working);
+
+        // --> No feed-forward. block() adds the original state back here; HChaCha20 does not, and
+        // the difference is invisible to any test that only checks a round trip against itself.
+        // Then words 0-3 and 12-15 -- the constants' and nonce's positions, not the key's.
+        for (size_t i = 0; i < 4; ++i) {
+            storeLE32(out + 4 * i, working[i]);
+            storeLE32(out + 16 + 4 * i, working[12 + i]);
+        }
+
+        std::memset(working, 0, sizeof(working));
+        std::memset(&state, 0, sizeof(state));
+    }
+
 } // namespace crypto
 } // namespace certpp

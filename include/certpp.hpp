@@ -61,6 +61,7 @@
 #include <certpp/crypto/syms/des3.hpp>
 #include <certpp/crypto/poly1305.hpp>
 #include <certpp/crypto/aeads/chacha20poly1305.hpp>
+#include <certpp/crypto/aeads/xchacha20poly1305.hpp>
 #include <certpp/crypto/syms/chacha20.hpp>
 
 #include <certpp/x509/ext.hpp>
