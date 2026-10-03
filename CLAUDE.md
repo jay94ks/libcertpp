@@ -17,7 +17,9 @@ NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
 (hashing, including MD4 for NTLM/EAP-MSCHAPv2's NT hash, BLAKE2s with both its
 native keyed MAC and HMAC-BLAKE2s, and GOST R 34.11-2012 ("Streebog") at both
-digest lengths; `CSipHash`, SipHash-2-4 as RFC 9018's DNS server-cookie PRF; a
+digest lengths; `CSipHash`, SipHash-2-4 as RFC 9018's DNS server-cookie PRF;
+MACs and key derivation (`CHmac`, `CBlake2sMac`, `CPoly1305`, `CHkdf`, and
+`CPbkdf2` for the password-based case); a
 CSPRNG; asymmetric algorithms -- RSA, DSA, ECDSA over prime and binary curves
 plus ECDH key agreement over the prime ones (RFC 5903, on `CEcdsa`'s own
 context), Ed25519, Ed448, X25519, and GOST R 34.10-2012 over its nine named
@@ -36,9 +38,20 @@ SubjectKeyIdentifier, AuthorityKeyIdentifier, CRLDistributionPoints,
 AuthorityInformationAccess, CertificatePolicies, NameConstraints) under
 `x509/exts/`, each with a parse/build pair, and single-link signature
 verification (`CCert::verifyBy()`, `CCrlReader::verifyBy()`,
-`CCertRequest::verify()`). What it deliberately does *not* have is chain
-building or path validation. See
-[`docs/architecture.md`](docs/architecture.md) for the full module
+`CCertRequest::verify()`); plus certificate collections and the container
+formats over them (`CCertCollection` and `IChainFormat` in `x509/chain.hpp`,
+with `CPemChainFormat` and `CPfxFormat` -- PKCS#12 over PBES2/AES-256-CBC --
+under `x509/chain/`).
+
+What it deliberately does *not* have is **path validation**. The distinction
+matters and is easy to lose: `CCertCollection::buildChain()` orders
+certificates by who issued whom, and `verifyLinks()` checks each link's
+signature, but neither checks validity periods, `basicConstraints`,
+`keyUsage`, name constraints, policy constraints or revocation, and neither
+decides whether the root is one the caller trusts. An ordered chain out of
+this library is a validator's *input*, not its verdict.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full module
 breakdown.
 
 ## Documentation
