@@ -2408,9 +2408,9 @@ were already there: `EdPointProj` already carried extended coordinates with
 `scalarMulBase()` already built a lazily-cached fixed-base window table. This
 was a field swap inside an otherwise sound curve implementation.
 
-| min of 8 runs, each min of 3 × 20 iterations | before | after | |
+| min of 12 runs, each min of 3 × 20 iterations | before | after | |
 |---|---|---|---|
-| `sign` | 5.96 ms | **0.317 ms** | 18.8× |
+| `sign` | 5.96 ms | **0.306 ms** | 19.5× |
 | `verify` | 29.4 ms | **1.36 ms** | 21.5× |
 
 Measured on a loaded 4-core laptop, Release, same harness both times — the

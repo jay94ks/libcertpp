@@ -184,10 +184,12 @@ Key points that are easy to get wrong by defaulting to generic C++ style:
   leading underscore (`_flags`); public struct fields don't (`major`).
 - A submodule gets its own `include/certpp/<name>/` and `src/<name>/`
   subdirectory. Only give it a nested `namespace certpp { namespace <name>
-  { ... } }` block (closed with bare `}`, no trailing comment, unlike the
-  single-level `namespace certpp { ... } // namespace certpp`) if it has its
-  own naming identity distinct from the rest of the library, like `asn1` —
-  `io` is a subdirectory but its types stay directly in `certpp::`.
+  { ... } }` block if it has its own naming identity distinct from the rest
+  of the library, like `asn1` — `io` is a subdirectory but its types stay
+  directly in `certpp::`. **Every namespace close carries a trailing
+  comment naming it**, at every level: `} // namespace asn1` then
+  `} // namespace certpp`. A bare `}` can be mis-placed and still compile,
+  whereas the comment makes the nesting checkable by eye.
 - Every public declaration gets a Javadoc-style `/** ... */` block with
   `@param`/`@return`; `.cpp` definitions get a short one-line `/* ... */`
   restating the summary instead of repeating the full block.

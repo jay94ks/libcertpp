@@ -54,8 +54,8 @@ new styles.
   }
   }
   ```
-  Unlike a single-level `namespace certpp { ... }`, nested namespace closes
-  are bare `}` with no trailing `// namespace ...` comment (see
+  Every close carries a trailing comment naming the namespace it ends, at
+  every level — `} // namespace asn1` then `} // namespace certpp` (see
   "Formatting" below).
 - Not every submodule needs a nested namespace. As it stands: **`asn1`,
   `crypto` and `x509` nest** (`certpp::asn1`, `certpp::crypto`,
@@ -332,9 +332,18 @@ new styles.
   opening `{` for the body can go on its own line (see `CTag`'s private
   delegating constructor).
 - One blank line between members/methods inside a struct or class.
-- `namespace certpp { ... } // namespace certpp` — a single-level namespace
-  closes with a trailing comment naming it. A nested namespace (submodule)
-  closes each level with a bare `}` instead (see "File layout" above).
+- `namespace certpp { ... } // namespace certpp` — every namespace close
+  carries a trailing comment naming it, at a single level and at every
+  level of a nested one:
+  ```cpp
+  } // namespace asn1
+  } // namespace certpp
+  ```
+  The comment is the point: a bare `}` closing the wrong level still
+  compiles, and nothing in the file says which namespace was meant. This
+  rule changed — the convention was once a bare `}` for nested closes, and
+  three quarters of the tree never followed it, so the tree's own practice
+  won on the grounds that it is the one that can be checked.
 - Access specifiers (`private:`/`public:`) are repeated to group related
   members rather than written once each: e.g. `CTag` groups its constants
   under one `private:`, its fields under another, its public constructors
