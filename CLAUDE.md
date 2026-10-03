@@ -42,6 +42,7 @@ this file:
 - [`docs/build.md`](docs/build.md) — full CMake build/install reference, plus the examples and AddressSanitizer builds.
 - [`docs/changelog.md`](docs/changelog.md) — why things are the way they are: the work, and the bugs found and fixed, that predate this repository's git history.
 - [`docs/pqc-review.md`](docs/pqc-review.md) — post-quantum cryptography review and the roadmap the `IKem` interface came from.
+- [`docs/roadmap.md`](docs/roadmap.md) — requested algorithms not implemented yet, and the constant-time/performance work still outstanding.
 
 When you add a new subsystem or change a convention, update the relevant
 file under `docs/` (or add a new one) rather than expanding this file.
