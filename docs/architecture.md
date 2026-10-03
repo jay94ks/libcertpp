@@ -1283,6 +1283,34 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
     2*gamma2, both even, where the range is (-m/2, m/2] and m/2 itself stays
     positive. Same definition, different modulus, different edge -- hence a
     separate `modPm()`.
+- **`src/crypto/asyms/mldsacodec.hpp`/`.cpp`** define `MlDsaCodec`, FIPS 204
+  7.1-7.2's bit packing and hint encoding -- the wire format ML-DSA's keys and
+  signatures are built from. `simpleBitPack`/`simpleBitUnpack` handle
+  coefficients in [0, b]; `bitPack`/`bitUnpack` handle [-a, b] by encoding
+  `b - w_i`, so a signed range fits an unsigned field. Bits run little-endian
+  within each byte, as in ML-KEM.
+
+  **Decoding does not imply the range**, and FIPS 204 says so itself under
+  Algorithm 17: for some (a, b) there are byte strings that decode outside the
+  nominal range, which matters for untrusted input. It turns on whether the
+  range exactly fills its bit width, and for ML-DSA's uses it splits cleanly --
+  `t1`, `t0` and `z` are safe; `s1`/`s2` are not (at eta = 2 three bits decode
+  down to -5, at eta = 4 four bits reach -11), so `skDecode` has to
+  range-check; and `w1` is unsafe at b = 43 but is only ever encoded, never
+  received. `inRange()` exists for the cases that need it. This is the same
+  shape of hazard as ML-KEM's `ByteDecode_12`.
+
+  `hintBitUnpack()` is the sharpest decode trap in the standard, and rejects
+  on three *distinct* conditions: a cumulative index that moves backwards or
+  past omega; positions not strictly increasing **within one polynomial**; and
+  any non-zero leftover byte. Each one is what makes the encoding injective,
+  and implementing fewer than all three accepts malleable signatures -- which
+  is what ACVP's 36 "modified signature - hint" cases test. The
+  within-one-polynomial scope matters in both directions: positions
+  legitimately *decrease* across a polynomial boundary, so checking
+  monotonicity over the whole array instead rejects valid signatures. A
+  rejected decode leaves the caller's polynomials untouched rather than
+  half-written.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via

@@ -1218,3 +1218,77 @@ sitting on a boundary). Two negative controls confirm the suite bites:
 - Flipping the `r0 == 0` tie to step up fails 5 across 2.
 
 9 test cases, 1,849,585 assertions.
+
+## Post-quantum: ML-DSA's bit packing and hint encoding
+
+FIPS 204 7.1–7.2, as `MlDsaCodec` (`src/crypto/asyms/mldsacodec.hpp`):
+`simpleBitPack`/`simpleBitUnpack` for coefficients in [0, b],
+`bitPack`/`bitUnpack` for [−a, b] (encoding `b − w_i`, which is what lets an
+unsigned bit field carry a signed range), and `hintBitPack`/`hintBitUnpack`.
+
+### Decoding does not imply the range
+
+FIPS 204 warns about this itself, in prose directly under Algorithm 17: for
+some (a, b) there exist byte strings that decode to coefficients outside the
+nominal range, and that is a concern for input from an untrusted source. The
+Python pass worked out exactly which of ML-DSA's uses are affected, because
+the answer decides where a caller must check:
+
+| field | (a, b) | width | decodes to | safe? |
+|---|---|---|---|---|
+| `t1` | b = 2¹⁰−1 | 10 | [0, 1023] | yes |
+| `t0` | 2¹²−1, 2¹² | 13 | [−4095, 4096] | yes |
+| `z` | γ₁−1, γ₁ | 18 or 20 | exact | yes |
+| `s1`/`s2`, η=2 | 2, 2 | 3 | down to **−5** | **no** |
+| `s1`/`s2`, η=4 | 4, 4 | 4 | down to **−11** | **no** |
+| `w1`, γ₂=(q−1)/88 | b = 43 | 6 | up to **63** | **no**, but never decoded |
+
+So `skDecode` must range-check s1/s2 — which is why FIPS 204's own version
+does — while t0/t1/z need no check at all, and w1 only ever gets encoded (it
+feeds the hash; it never arrives from a peer). `inRange()` exists for the
+cases that need it. Same shape of hazard as ML-KEM's `ByteDecode_12`.
+
+### The hint decoder, and why it has three separate rejections
+
+`hintBitUnpack` is the sharpest decode trap in the standard. It must reject on
+three *distinct* conditions, each of which exists to keep the encoding
+injective — and an encoding that is not injective is a signature that can be
+modified without being invalidated:
+
+1. a cumulative index that moves backwards or exceeds ω;
+2. positions not strictly increasing **within one polynomial** (equal counts as
+   not increasing, or one coefficient could be named twice);
+3. any non-zero byte left over in the first ω after the last position read —
+   without this, arbitrary data can be stuffed into the unused tail.
+
+The scope of (2) cuts both ways, which is the part worth internalising: the
+comparison resets at each polynomial boundary, so positions legitimately
+*decrease* from the end of `h[i]` to the start of `h[i+1]`. An implementation
+that checks monotonicity across the whole array looks stricter and is simply
+broken — it rejects valid signatures.
+
+Four negative controls, each disabling one behaviour:
+
+| change | result |
+|---|---|
+| (1) cumulative-index check removed | 1 assertion fails |
+| (2) strictly-increasing check removed | 2 fail |
+| (3) leftover-byte check removed | 4 fail |
+| (2b) monotonicity across the whole array | 2 fail, and only 6339 of 14629 assertions pass — it rejects valid input |
+
+A rejected decode also leaves the caller's polynomials untouched rather than
+half-written, since the caller is about to treat `false` as "this signature is
+invalid" and a partially filled hint vector is the kind of thing that later
+gets used by accident.
+
+### Validation
+
+Written in Python against the specification text first and cross-checked
+against dilithium-py 1.4.0: packing agreed on 2400 polynomials across every
+(a, b) ML-DSA uses, unpacking on 1500, and the hint round trip over 6000
+random hint vectors spanning all three parameter sets' (k, ω). The byte layout
+is additionally pinned in the C++ tests against hand-computed bytes, including
+a 10-bit coefficient straddling a byte boundary — packing the bits big-endian
+within each byte would still round-trip and interoperate with nothing.
+
+9 test cases, 14,629 assertions; 98/98 in Debug and Release.
