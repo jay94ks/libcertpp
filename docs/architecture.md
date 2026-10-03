@@ -10,7 +10,8 @@ an `io` layer (spans, a growable array, a resizable working byte buffer
 (`CBuffer`), a fixed-size owning one (`COctet`), and a stream
 abstraction), an `asn1` module (tag encode/decode, a TLV decoder/encoder,
 sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
-`INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
+`INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, an `x509` module, and a
+`dnssec` module.
 
 `crypto` has: an `IHasher` interface with from-scratch MD4/MD5/SHA-1/SHA-224/
 SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s/
@@ -142,6 +143,10 @@ include/
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
+    dnssec/
+      name.hpp                       # CDnsName: presentation <-> canonical wire-format domain names (RFC 4034 6.2 case folding); compression pointers deliberately rejected
+      records.hpp                     # EDnsAlgorithms/EDnsDigests (IANA numbers, pinned); SDnskey (RDATA + RFC 4034 App. B key tag), SDsRecord (RDATA + the 5.1.4 digest over owner name || DNSKEY RDATA), SRrsig (RDATA + toSignedPrefix())
+      keys.hpp                         # CDnssecKeys: DNSKEY <-> IPublicKey and RRSIG signature <-> this library's encoding, per RFC 3110/5702 (RSA), 6605 (ECDSA) and 8080 (EdDSA)
 src/
   common.cpp              # namespace scaffold (no out-of-line code yet)
   version.cpp              # SVersion + GetLibraryVersion() implementation
@@ -247,6 +252,10 @@ src/
     cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
+  dnssec/
+    name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
+    records.cpp                  # SDnskey/SDsRecord/SRrsig implementation; big-endian field helpers (unlike Poly1305/ChaCha20 next door, which are little-endian)
+    keys.cpp                      # CDnssecKeys implementation; the RSA direction also swaps field order, since DNS writes exponent-then-modulus and this library's DER wants modulus-then-exponent
 tests/
   time.cpp                  # SDateTime / STimeSpan test cases
   string.cpp                 # TString<T> test cases
@@ -332,6 +341,10 @@ tests/
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
     realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS, ML-DSA)
+  dnssec/
+    name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
+    records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
+    keys.cpp                        # CDnssecKeys test cases (DNSKEY round trips per algorithm, the fixed-width r|s re-padding, and a sign/verify end to end through a converted DNSKEY)
 third-party/
   CMakeLists.txt           # exposes vendored deps as CMake targets; add_subdirectory'd only when CERTPP_BUILD_TESTS=ON
   doctest/
@@ -2426,6 +2439,65 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   file-layout/naming convention and [build.md](build.md#tests) for how to
   build and run them; both cover the vendored `doctest` framework these
   files use.
+
+### `dnssec`
+
+A separate module rather than part of `x509`, because DNSSEC shares none of
+X.509's encodings. Where a certificate carries a public key as a
+`SubjectPublicKeyInfo` and an ECDSA signature as a DER `SEQUENCE { r, s }`,
+DNSSEC writes the bare key material and the bare concatenation `r | s`. So a
+DNSKEY cannot be handed to `IAsymmetric::createPublicKey()` and an RRSIG
+signature cannot be handed to `verify()`; something has to re-encode in
+between, and that is the whole purpose of this module.
+
+- **`dnssec/name.hpp` / `src/dnssec/name.cpp`** define `CDnsName`.
+  `toWire()` always folds ASCII uppercase to lowercase, and the API
+  deliberately gives the caller no choice about it: a DS digest is taken over
+  the owner name followed by the DNSKEY RDATA, so a name reaching the digest
+  unfolded produces a DS that disagrees with every published one, and an
+  option to skip the folding would only make that reachable by accident.
+  Compression pointers (RFC 1035 4.1.4) are rejected rather than resolved,
+  since DNSSEC forbids them in signed names and a name carrying one cannot be
+  canonicalised without the rest of the message. `fromWirePrefix()` exists for
+  RRSIG RDATA, where the signer's name is followed immediately by the
+  signature with nothing to separate them.
+- **`dnssec/records.hpp` / `src/dnssec/records.cpp`** define `SDnskey`,
+  `SDsRecord` and `SRrsig`. The key tag is derived on demand rather than
+  stored, because it is a checksum over the whole RDATA rather than an
+  identifier: holding it as a field would let it disagree with the key it
+  names. `SRrsig::toSignedPrefix()` emits the RDATA with the signature field
+  omitted, which is the first thing fed to the hash (RFC 4034 3.1.8.1);
+  assembling the canonical RRset that follows it is left to the caller, since
+  this library does not model DNS RRsets. The public key stays in its DNS
+  encoding here and is converted only by `CDnssecKeys`, because the two can
+  fail independently -- RDATA can be perfectly well-formed and still hold a
+  key for an algorithm this library has no implementation of, while the key
+  tag and the DS digest are computed over the raw RDATA either way.
+- **`dnssec/keys.hpp` / `src/dnssec/keys.cpp`** define `CDnssecKeys`, which is
+  the re-encoding layer. RSA (RFC 3110) writes an exponent length, the
+  exponent, then the modulus, where this library wants a DER
+  `SEQUENCE { INTEGER modulus, INTEGER exponent }` -- note that the two
+  operands even appear in opposite order. ECDSA (RFC 6605) writes `x | y`,
+  which is the SEC1 uncompressed point less its `0x04` prefix. EdDSA
+  (RFC 8080) is already in the right form, and is handled by an explicit case
+  rather than a default, so that an algorithm nobody has implemented is
+  rejected instead of silently treated as raw. Signatures go the same way,
+  and the ECDSA direction is the one that has to be careful: a DER `INTEGER`
+  carries no leading zero octets, so writing `r` and `s` back out without
+  left-padding each to the curve's field size would shift `s` by however many
+  octets `r` was short, and RFC 6605 2 requires a fixed width.
+
+`fromPublicKey()` has to be told the DNSSEC algorithm number rather than
+inferring it, because several numbers share one key type: RSA/SHA-1,
+RSA/SHA-256 and RSA/SHA-512 all carry the same RSA key and differ only in the
+hash. `hasherOf()` reports `EHASH_UNKNOWN` for Ed25519 and Ed448 while still
+returning true, since those hash internally as part of the signature scheme
+and so have no external hash for a caller to apply first.
+
+What this module does *not* do is verify an RRset. It converts records and
+keys, computes key tags and DS digests, and hands the caller the signed
+prefix; canonical RRset construction and the verification call itself are
+outside it.
 
 ## Build model
 
