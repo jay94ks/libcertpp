@@ -58,6 +58,11 @@ namespace x509 {
         }
     };
 
+    // --> Forward declaration: CCert::subjectFrom() takes one by reference, and csr.hpp itself
+    // includes this header (it reuses CCert's own encode/decode/sign/verify helpers), so the
+    // dependency can only run this way round.
+    class CCertRequest;
+
     /* Certificate formats. */
     enum ECertFormat {
         ECERT_AUTO = 0,     /*< Automatically detect the certificate format. */
@@ -79,6 +84,8 @@ namespace x509 {
         friend class COcspResponseBuilder;
         friend class COcspRequest;
         friend class COcspRequestBuilder;
+        friend class CCertRequest;
+        friend class CCertRequestBuilder;
 
     private:
         /**
@@ -97,6 +104,40 @@ namespace x509 {
             const char* oid;
             const char* name;
             crypto::EHashers which;
+        };
+
+        /**
+         * @brief The SubjectPublicKeyInfo fields decodeSubjectPublicKeyInfo() reads out of an
+         * encoded SPKI -- grouped into one struct rather than five out-parameters because both
+         * CCert::importDer() and CCertRequest::decode() want the whole set, and a five-argument
+         * call is exactly where two call sites quietly end up passing them in different orders.
+         */
+        struct SSpkiFields {
+            /* algorithm's display name: KEY_ALGOS's own name, "EC" for id-ecPublicKey, or the
+             * OID's own dotted-decimal text for an algorithm this library doesn't implement. */
+            CString algoName;
+
+            /* algorithm.parameters' content octets (an EC namedCurve OID's content, a DSA
+             * Dss-Parms {p, q, g}'s content); empty for NULL (RSA) or absent (RFC 8410). */
+            COctet algoParams;
+
+            /* subjectPublicKey BIT STRING's packed bits, unused-bit count already stripped. */
+            COctet publicKey;
+
+            /* The algorithm resolved, meaningful only when `resolved` is true. */
+            crypto::EAsymmetrics which;
+
+            /* Whether `which` was actually resolved -- false for an algorithm this library
+             * doesn't implement, which still leaves algoName/algoParams/publicKey usable. */
+            bool resolved;
+
+            /**
+             * @brief Constructs an SSpkiFields holding nothing resolved yet.
+             */
+            SSpkiFields()
+                : which(crypto::EASYM_RSA), resolved(false)
+            {
+            }
         };
 
     private:
@@ -259,10 +300,125 @@ namespace x509 {
          * instance per Extension entry -- clearing any previous contents first. Best-effort: a
          * malformed individual Extension entry is skipped rather than aborting the whole scan
          * (extList's cursor has already moved past it regardless of what's inside its own
-         * SEQUENCE). Not static, unlike this class's other parse helpers: it writes directly
-         * into _extensions rather than an out-parameter, so importDer() only calls it once every
-         * other fallible read has already succeeded (see importDer()'s own comment on why). */
-        void parseExtensions(const COctet& extensionsRaw);
+         * SEQUENCE). Static, with an out-parameter, so CCertRequest can reuse it for the
+         * extensionRequest attribute's own Extensions value -- importDer() still only calls it
+         * once every other fallible read has already succeeded (see importDer()'s own comment on
+         * why), passing _extensions as `out`. */
+        static void parseExtensions(const COctet& extensionsRaw, std::vector<IExtensionPtr>& out);
+
+        /* Encodes one AlgorithmIdentifier ::= SEQUENCE { algorithm OBJECT IDENTIFIER, parameters
+         * ANY DEFINED BY algorithm OPTIONAL } tag-length-value, appending it to out. params is
+         * that parameters field already TLV-encoded (as resolveSigAlgoForSigning() hands it
+         * back); empty omits the field entirely. Shared by CCertBuilder::build() (which needs
+         * one for TBSCertificate.signature/Certificate.signatureAlgorithm) and
+         * CCertRequestBuilder::build() (CertificationRequest.signatureAlgorithm). */
+        static bool encodeAlgorithmIdentifier(const CString& oid, const COctet& params, CBuffer& out);
+
+        /* Encodes a complete SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
+         * subjectPublicKey BIT STRING } tag-length-value for key, appending it to out --
+         * including the per-algorithm parameters field (an EC namedCurve OID, a DSA Dss-Parms
+         * SEQUENCE split back out of key's own serialize() by splitDsaPublicKeyBlob(), an
+         * explicit NULL for RSA, nothing at all for RFC 8410/ML-DSA). The exact inverse of
+         * decodeSubjectPublicKeyInfo(). Shared by CCertBuilder::build() and
+         * CCertRequestBuilder::build(), which embed a byte-identical SPKI.
+         *
+         * @param key The public key to encode. Must be non-null.
+         * @param out The destination buffer; the SPKI is appended to whatever it already holds.
+         * @return ERET_OK on success; ERET_NOTSUP if key's algorithm has no SPKI OID this
+         * library knows; ERET_KEY_ERROR if key can't be serialized; ERET_KEY_FORMAT if a DSA
+         * key's serialization can't be split into X.509's own representation; ERET_UNKNOWN for
+         * an encoding failure.
+         */
+        static ERetCode encodeSubjectPublicKeyInfo(const crypto::IPublicKeyPtr& key, CBuffer& out);
+
+        /* Reads a SubjectPublicKeyInfo's fields via spkiSeq, a reader positioned inside the SPKI
+         * SEQUENCE, into out -- the exact inverse of encodeSubjectPublicKeyInfo(), and shared by
+         * CCert::importDer() and CCertRequest::decode(). An algorithm this library doesn't
+         * implement is not a failure (out.resolved is simply left false, out.algoName falling
+         * back to the OID's own text); false means the encoding itself was malformed, out then
+         * being left in an unspecified partially-filled state. */
+        static bool decodeSubjectPublicKeyInfo(asn1::CReader& spkiSeq, SSpkiFields& out);
+
+        /* Builds a live public key from decodeSubjectPublicKeyInfo()'s raw output -- the one
+         * place that knows DSA's X.509 representation has to go back through
+         * buildDsaPublicKeyBlob() first, so CCert::publicKey() and CCertRequest::publicKey()
+         * can't drift apart on it. Null if asym is null (an unresolved algorithm) or the bytes
+         * don't parse under it. */
+        static crypto::IPublicKeyPtr makePublicKey(
+            const crypto::IAsymmetricPtr& asym,
+            bool isDsa,
+            const COctet& params,
+            const COctet& publicKey
+        );
+
+        /* Encodes an Extensions ::= SEQUENCE OF Extension tag-length-value from extensions,
+         * appending it to out: one Extension ::= SEQUENCE { extnID, critical BOOLEAN DEFAULT
+         * FALSE, extnValue OCTET STRING } per entry, with critical DER-canonically omitted when
+         * false. Deliberately the bare Extensions SEQUENCE and not TBSCertificate's own
+         * `[3] EXPLICIT` wrapper, because PKCS#9's extensionRequest attribute carries the
+         * SEQUENCE unwrapped -- CCertBuilder::build() adds the [3] layer itself.
+         *
+         * @param extensions The extensions to encode. Must hold no null entry, and must not be
+         * empty (an empty Extensions SEQUENCE is illegal under RFC 5280 4.1.2.9; both callers
+         * omit the field entirely instead).
+         * @param out The destination buffer; the SEQUENCE is appended to whatever it holds.
+         * @return ERET_OK on success; ERET_INVAL if extensions is empty or holds a null entry;
+         * ERET_UNKNOWN for an encoding failure.
+         */
+        static ERetCode encodeExtensions(const TArray<IExtensionPtr>& extensions, CBuffer& out);
+
+        /* Signs toBeSigned with keyPair, producing the bytes a signatureValue/signature BIT
+         * STRING carries. sigHash is the digest resolveSigAlgoForSigning() picked, and
+         * EHASH_UNKNOWN there means the scheme hashes the message itself (EdDSA, ML-DSA) and
+         * toBeSigned is handed to sign() whole; rsaPss selects signPss() and is only meaningful
+         * for an RSA keyPair. Shared by CCertBuilder::build() and CCertRequestBuilder::build().
+         *
+         * @param keyPair The key pair to sign with. Must be non-empty.
+         * @param toBeSigned The exact bytes to sign (a TBSCertificate/CertificationRequestInfo).
+         * @param sigHash The digest to hash toBeSigned with first, or EHASH_UNKNOWN for a
+         * self-hashing scheme.
+         * @param rsaPss Whether to sign with RSASSA-PSS rather than EMSA-PKCS1-v1_5.
+         * @param outSignature Receives the raw signature bytes.
+         * @return ERET_OK on success; ERET_HASH_PIPE if hashing failed; ERET_NOMEM if the
+         * signature buffer couldn't be sized; ERET_UNKNOWN if no context could be created;
+         * otherwise whatever the algorithm's own sign() reported.
+         */
+        static ERetCode signTbs(
+            const crypto::SKeyPair& keyPair,
+            SReadOnlyByteSpan toBeSigned,
+            crypto::EHashers sigHash,
+            bool rsaPss,
+            COctet& outSignature
+        );
+
+        /* Checks `signature` over `signedBytes` with ctx -- the shared body behind
+         * CCert::verifyBy() and CCertRequest::verify(). keyWhich is the *verifying key's* own
+         * algorithm, which is what decides whether signedBytes is hashed first or handed over
+         * whole (see signsMessageDirectly()'s own comment on why this must never be inferred
+         * from sigHash == EHASH_UNKNOWN instead). isRsaPss/pssParams route an id-RSASSA-PSS
+         * signature through verifyPss(), and are ignored otherwise.
+         *
+         * @param ctx A context already bound to the verifying public key. Must be non-null.
+         * @param keyWhich The verifying key's own algorithm.
+         * @param signedBytes The exact bytes the signature covers.
+         * @param signature The signature to check.
+         * @param sigHash The digest the signature algorithm names, or EHASH_UNKNOWN if none.
+         * @param isRsaPss Whether the signature is RSASSA-PSS.
+         * @param pssParams The RSASSA-PSS parameters; only read when isRsaPss.
+         * @return ERET_OK if the signature verifies; ERET_NOTSUP for a hash-then-sign algorithm
+         * whose digest never resolved, or an RSASSA-PSS whose maskGenAlgorithm/trailerField
+         * verifyPss() can't express; ERET_HASH_PIPE if hashing failed; otherwise whatever the
+         * algorithm's own verify() reported.
+         */
+        static ERetCode verifySignedBlob(
+            const crypto::IAsymmetricContextPtr& ctx,
+            crypto::EAsymmetrics keyWhich,
+            SReadOnlyByteSpan signedBytes,
+            SReadOnlyByteSpan signature,
+            crypto::EHashers sigHash,
+            bool isRsaPss,
+            const SRsaPssParams& pssParams
+        );
 
         /* Builds the standalone DER SEQUENCE { p, q, g, y } DSA::createPublicKey() expects, from
          * X.509's split representation: keyAlgoParams() is Dss-Parms { p, q, g }'s own content,
@@ -914,6 +1070,34 @@ namespace x509 {
          * if subjectKey can't be serialized).
          */
         ERetCode build(CCert& out) const;
+
+        /**
+         * @brief Takes `subject` and `subjectKey` from a PKCS#10 certification request -- the
+         * CA-side half of a CSR exchange: the requester proved possession of subjectKey by
+         * self-signing the request, and this copies over exactly the two things that proof
+         * covers.
+         *
+         * It deliberately copies **nothing else**, and in particular not the request's
+         * requested extensions. A CSR is an unauthenticated wish-list from whoever generated it:
+         * a request's self-signature proves possession of a private key and says nothing
+         * whatsoever about whether its subject name or its requested BasicConstraints/KeyUsage/
+         * SubjectAlternativeName are ones this CA should be willing to certify. Copying
+         * `request.extensions()` into `extensions` wholesale is how a CA issues a CA certificate,
+         * or a certificate for a domain the requester doesn't control, because the requester
+         * asked it to. So there is no method here that does that: a CA that wants a requested
+         * extension reads the specific one it is prepared to grant (via
+         * `request.extension<CSanExtension>()` and friends), validates it against its own policy,
+         * and pushes it onto `extensions` itself -- one explicit decision per extension. The
+         * subject name itself still needs the same scrutiny; this method copies it because a
+         * certificate cannot be issued without one, not because it is trustworthy.
+         *
+         * @param request The certification request to take the subject name and key from. Its
+         * self-signature must already have been verified -- CCertRequest::decode() does that
+         * before it ever reports success, so any non-empty CCertRequest has been.
+         * @return ERET_OK on success; ERET_INVAL if request is empty; ERET_KEY_EMPTY if it
+         * exposes no usable public key (an algorithm this library doesn't implement).
+         */
+        ERetCode subjectFrom(const CCertRequest& request);
     };
 }
 }

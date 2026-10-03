@@ -1,4 +1,8 @@
 #include <certpp/x509/cert.hpp>
+// --> For CCertBuilder::subjectFrom()'s own definition, which needs CCertRequest complete.
+// csr.hpp includes cert.hpp rather than the other way round, so this include can only sit here
+// in the .cpp, which is also where the declaration's matching definition belongs.
+#include <certpp/x509/csr.hpp>
 #include <certpp/x509/exts/ski.hpp>
 #include <certpp/x509/exts/aki.hpp>
 #include <certpp/crypto/asyms/mldsa.hpp>
@@ -736,6 +740,367 @@ namespace x509 {
         return CDer::appendTlv(out, CTag::TIME_GENERAL, SReadOnlyByteSpan(content.toPtr(), written));
     }
 
+    /* Encodes one AlgorithmIdentifier SEQUENCE { algorithm, parameters OPTIONAL }. */
+    bool CCert::encodeAlgorithmIdentifier(const CString& oid, const COctet& params, CBuffer& out) {
+        size_t needed = CEncoder::encodedOidStringSize(oid);
+        if (!needed) {
+            return false;
+        }
+
+        CBuffer oidContent;
+        size_t written = 0;
+        if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), oid, written)) {
+            return false;
+        }
+
+        CBuffer body;
+        if (!CDer::appendTlv(body, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written))) {
+            return false;
+        }
+
+        // --> params arrives already TLV-encoded (resolveSigAlgoForSigning()'s own contract), so
+        // it splices in verbatim; empty means the whole OPTIONAL field is omitted, which is what
+        // DSA/ECDSA/EdDSA/ML-DSA signature AlgorithmIdentifiers want.
+        if (!params.empty() && !CDer::appendRaw(body, params.toSpan())) {
+            return false;
+        }
+
+        return CDer::appendSequence(out, body.toSpan());
+    }
+
+    /* Encodes a complete SubjectPublicKeyInfo SEQUENCE { algorithm, subjectPublicKey BIT
+     * STRING } for key -- see its own doc comment in cert.hpp. */
+    ERetCode CCert::encodeSubjectPublicKeyInfo(const crypto::IPublicKeyPtr& key, CBuffer& out) {
+        if (!key) {
+            return ERET_KEY_EMPTY;
+        }
+
+        crypto::EAsymmetrics which = key->algorithm();
+
+        CString keyOid, ecCurveOid;
+        bool keyIsDsa = false, keyIsEc = false;
+        if (!resolveKeyAlgoForBuild(which, keyOid, keyIsDsa, keyIsEc, ecCurveOid)) {
+            return ERET_NOTSUP; // --> key's algorithm has no SPKI OID this library knows.
+        }
+
+        COctet serialized;
+        if (key->serialize(serialized) != ERET_OK) {
+            return ERET_KEY_ERROR;
+        }
+
+        // DSA alone splits across the two SPKI fields: its serialize() hands back the whole
+        // SEQUENCE { p, q, g, y } createPublicKey() takes, and X.509 wants {p, q, g} in
+        // algorithm.parameters with y alone in the BIT STRING (RFC 3279 2.3.2).
+        COctet spkiParams, spkiPublicKey;
+        if (keyIsDsa) {
+            if (!splitDsaPublicKeyBlob(serialized, spkiParams, spkiPublicKey)) {
+                return ERET_KEY_FORMAT;
+            }
+        } else {
+            spkiPublicKey = move(serialized);
+        }
+
+        // algorithm.parameters, built as its own complete TLV so encodeAlgorithmIdentifier() can
+        // splice it in the same way it splices a signature algorithm's.
+        COctet algoParams;
+        {
+            CBuffer paramsTlv;
+
+            if (keyIsEc) {
+                // ECParameters ::= CHOICE { namedCurve OBJECT IDENTIFIER, ... } -- the only
+                // alternative this library produces (and effectively the only one in practice).
+                size_t curveNeeded = CEncoder::encodedOidStringSize(ecCurveOid);
+                CBuffer curveOidContent;
+                size_t curveWritten = 0;
+                if (!curveNeeded || !curveOidContent.resize(curveNeeded)
+                    || !CEncoder::encodeOidString(curveOidContent.toSpan(), ecCurveOid, curveWritten)
+                    || !CDer::appendTlv(paramsTlv, CTag::OBJ_ID, SReadOnlyByteSpan(curveOidContent.toPtr(), curveWritten)))
+                {
+                    return ERET_UNKNOWN;
+                }
+            } else if (keyIsDsa) {
+                if (!CDer::appendSequence(paramsTlv, spkiParams.toSpan())) {
+                    return ERET_UNKNOWN;
+                }
+            } else if (which == crypto::EASYM_RSA) {
+                if (!CDer::appendTlv(paramsTlv, CTag::NULL_, SReadOnlyByteSpan())) {
+                    return ERET_UNKNOWN;
+                }
+            }
+            // Ed25519/Ed448/X25519 (RFC 8410) and ML-DSA (RFC 9881) carry no parameters at all,
+            // which leaves paramsTlv empty and so omits the field entirely.
+
+            algoParams = COctet(paramsTlv.toSpan());
+        }
+
+        CBuffer body;
+        if (!encodeAlgorithmIdentifier(keyOid, algoParams, body)) {
+            return ERET_UNKNOWN;
+        }
+
+        CBuffer bitContent;
+        size_t written = 0;
+        if (!bitContent.resize(1 + spkiPublicKey.size())
+            || !CEncoder::encodeBitString(bitContent.toSpan(), spkiPublicKey.toSpan(), 0, written))
+        {
+            return ERET_UNKNOWN;
+        }
+
+        if (!CDer::appendTlv(body, CTag::STRING_BIT, SReadOnlyByteSpan(bitContent.toPtr(), written))
+            || !CDer::appendSequence(out, body.toSpan()))
+        {
+            return ERET_UNKNOWN;
+        }
+
+        return ERET_OK;
+    }
+
+    /* Reads a SubjectPublicKeyInfo's fields -- the inverse of encodeSubjectPublicKeyInfo(). */
+    bool CCert::decodeSubjectPublicKeyInfo(CReader& spkiSeq, SSpkiFields& out) {
+        CReader keyAlgoSeq;
+        if (!spkiSeq.readSequence(keyAlgoSeq)) {
+            return false;
+        }
+
+        CString keyAlgoOid;
+        if (!keyAlgoSeq.readOidString(keyAlgoOid)) {
+            return false;
+        }
+
+        // parameters ANY DEFINED BY algorithm OPTIONAL
+        if (!keyAlgoSeq.atEnd()) {
+            CTag paramTag;
+            SReadOnlyByteSpan paramContent;
+            if (!keyAlgoSeq.readNextElement(paramTag, paramContent)) {
+                return false;
+            }
+            out.algoParams = COctet(paramContent);
+        }
+
+        out.resolved = resolveKeyAlgo(keyAlgoOid, out.algoParams, out.which, out.algoName);
+
+        SReadOnlyByteSpan pkBits;
+        uint8_t pkUnusedBits = 0;
+        if (!spkiSeq.readBitString(pkBits, pkUnusedBits) || pkUnusedBits != 0) {
+            // --> A valid SubjectPublicKeyInfo is always byte-aligned; a nonzero unused-bit
+            // count here means malformed input, not a key format this library doesn't support.
+            return false;
+        }
+        out.publicKey = COctet(pkBits);
+
+        return true;
+    }
+
+    /* Builds a live public key from decodeSubjectPublicKeyInfo()'s raw output. */
+    crypto::IPublicKeyPtr CCert::makePublicKey(
+        const crypto::IAsymmetricPtr& asym,
+        bool isDsa,
+        const COctet& params,
+        const COctet& publicKey
+    ) {
+        if (!asym) {
+            return nullptr;
+        }
+
+        if (isDsa) {
+            CBuffer blob;
+            if (!buildDsaPublicKeyBlob(params, publicKey, blob)) {
+                return nullptr;
+            }
+
+            return asym->createPublicKey(blob.toSpan());
+        }
+
+        return asym->createPublicKey(publicKey);
+    }
+
+    /* Encodes an Extensions SEQUENCE OF Extension -- see its own doc comment in cert.hpp. */
+    ERetCode CCert::encodeExtensions(const TArray<IExtensionPtr>& extensions, CBuffer& out) {
+        if (extensions.empty()) {
+            return ERET_INVAL;
+        }
+
+        CBuffer extList;
+
+        for (const IExtensionPtr& ext : extensions) {
+            if (!ext) {
+                return ERET_INVAL;
+            }
+
+            CBuffer extnValue;
+            if (!ext->encode(extnValue)) {
+                return ERET_UNKNOWN;
+            }
+
+            size_t needed = CEncoder::encodedOidStringSize(ext->oid());
+            if (!needed) {
+                return ERET_UNKNOWN;
+            }
+
+            CBuffer oidContent;
+            size_t written = 0;
+            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), ext->oid(), written)) {
+                return ERET_UNKNOWN;
+            }
+
+            // Extension ::= SEQUENCE { extnID, critical BOOLEAN DEFAULT FALSE, extnValue
+            // OCTET STRING } -- critical is DER-canonically omitted when false (the
+            // default) and written only when ext->critical() is true.
+            CBuffer extBody;
+            if (!CDer::appendTlv(extBody, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written))) {
+                return ERET_UNKNOWN;
+            }
+
+            if (ext->critical()) {
+                uint8_t boolContent = 0;
+                size_t boolWritten = 0;
+                if (!CEncoder::encodeBoolean(SByteSpan(&boolContent, 1), true, boolWritten)
+                    || !CDer::appendTlv(extBody, CTag::BOOLEAN, SReadOnlyByteSpan(&boolContent, boolWritten)))
+                {
+                    return ERET_UNKNOWN;
+                }
+            }
+
+            if (!CDer::appendTlv(extBody, CTag::STRING_OCTET, extnValue.toSpan())
+                || !CDer::appendSequence(extList, extBody.toSpan()))
+            {
+                return ERET_UNKNOWN;
+            }
+        }
+
+        if (!CDer::appendSequence(out, extList.toSpan())) {
+            return ERET_UNKNOWN;
+        }
+
+        return ERET_OK;
+    }
+
+    /* Signs toBeSigned with keyPair -- see its own doc comment in cert.hpp. */
+    ERetCode CCert::signTbs(
+        const crypto::SKeyPair& keyPair,
+        SReadOnlyByteSpan toBeSigned,
+        crypto::EHashers sigHash,
+        bool rsaPss,
+        COctet& outSignature
+    ) {
+        if (keyPair.empty()) {
+            return ERET_KEY_EMPTY;
+        }
+
+        crypto::EAsymmetrics which = keyPair.privateKey->algorithm();
+
+        crypto::IAsymmetricPtr asym = crypto::IAsymmetric::builtIn(which);
+        crypto::IAsymmetricContextPtr ctx = asym ? asym->createContext() : nullptr;
+        if (!ctx) {
+            return ERET_UNKNOWN;
+        }
+
+        ctx->keyPair(keyPair);
+
+        // --> EHASH_UNKNOWN is resolveSigAlgoForSigning()'s own marker for a self-hashing scheme
+        // (EdDSA, ML-DSA), which takes the message itself rather than a digest.
+        COctet toSign;
+        if (sigHash == crypto::EHASH_UNKNOWN) {
+            toSign = COctet(toBeSigned);
+        } else {
+            crypto::IHasherPtr hasher;
+            if (crypto::IHasher::create(sigHash, hasher) != ERET_OK || !hasher) {
+                return ERET_HASH_PIPE;
+            }
+
+            CBuffer digest;
+            if (!digest.resize(hasher->byteWidth())
+                || !hasher->push(toBeSigned)
+                || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
+            {
+                return ERET_HASH_PIPE;
+            }
+
+            toSign = COctet(digest.toSpan());
+        }
+
+        CBuffer sigBuf;
+        if (!sigBuf.resize(ctx->sizeOfSign())) {
+            return ERET_NOMEM;
+        }
+
+        SByteSpan sigOut(sigBuf.toPtr(), sigBuf.size());
+        ERetCode signRc = (which == crypto::EASYM_RSA && rsaPss)
+            ? ctx->signPss(toSign.toSpan(), sigHash, toSign.size(), sigOut)
+            : ctx->sign(toSign.toSpan(), sigOut);
+        if (signRc != ERET_OK) {
+            return signRc;
+        }
+
+        outSignature = COctet(SReadOnlyByteSpan(sigOut.data, sigOut.size));
+        return ERET_OK;
+    }
+
+    /* Checks signature over signedBytes with ctx -- see its own doc comment in cert.hpp. */
+    ERetCode CCert::verifySignedBlob(
+        const crypto::IAsymmetricContextPtr& ctx,
+        crypto::EAsymmetrics keyWhich,
+        SReadOnlyByteSpan signedBytes,
+        SReadOnlyByteSpan signature,
+        crypto::EHashers sigHash,
+        bool isRsaPss,
+        const SRsaPssParams& pssParams
+    ) {
+        if (!ctx) {
+            return ERET_NOTSUP;
+        }
+
+        // --> Whether to hash first is decided by the verifying key's algorithm, never by
+        // sigHash == EHASH_UNKNOWN. That value is ambiguous: resolveSigAlgo() leaves it
+        // untouched for an OID absent from SIG_ALGOS, which is indistinguishable from EdDSA's
+        // legitimate "no separate hash" -- and reading it as EdDSA would hand the raw signed
+        // bytes to an ECDSA/DSA verify as though they were a digest, which truncates them to the
+        // order's bit length and leaves the signature covering a prefix of the plaintext rather
+        // than a hash of the message. OCSP's own verifySignature() had exactly that bug.
+        if (signsMessageDirectly(keyWhich)) {
+            // --> The signature BIT STRING's content is handed over whole. ML-DSA's signature is
+            // one opaque blob (c-tilde || z || h) with no internal ASN.1, exactly like EdDSA's
+            // R || S -- unlike ECDSA's SEQUENCE { r, s }, which createPublicKey()'s algorithm
+            // unpacks itself.
+            return ctx->verify(signedBytes, signature);
+        }
+
+        if (sigHash == crypto::EHASH_UNKNOWN) {
+            return ERET_NOTSUP;
+        }
+
+        crypto::IHasherPtr hasher;
+        if (crypto::IHasher::create(sigHash, hasher) != ERET_OK || !hasher) {
+            return ERET_HASH_PIPE;
+        }
+
+        CBuffer digest;
+        if (!digest.resize(hasher->byteWidth())
+            || !hasher->push(signedBytes)
+            || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
+        {
+            return ERET_HASH_PIPE;
+        }
+
+        if (isRsaPss) {
+            // --> verifyPss() takes a single hash algorithm and uses it for both the message
+            // digest and MGF1's own mask generation, which is the only pairing RFC 8017
+            // recommends and the only one any real issuer encodes. A signature whose
+            // maskGenAlgorithm genuinely names a different hash than hashAlgorithm -- or whose
+            // trailerField isn't trailerFieldBC, the single value RFC 4055 defines and the only
+            // one EMSA-PSS-VERIFY implements -- therefore cannot be checked here, and must fail
+            // closed: verifying it with the wrong MGF1 hash would reject every valid signature,
+            // which is indistinguishable from a forgery.
+            if (pssParams.mgfHashAlgo != pssParams.hashAlgo || pssParams.trailerField != 1) {
+                return ERET_NOTSUP;
+            }
+
+            return ctx->verifyPss(digest.toSpan(), sigHash, pssParams.saltLength, signature);
+        }
+
+        return ctx->verify(digest.toSpan(), signature);
+    }
+
     /* Encodes a CDistinguishedName as a full Name (SEQUENCE) tag-length-value. */
     bool CCert::encodeName(const CDistinguishedName& name, CBuffer& out) {
         size_t needed = CEncoder::encodedDistinguishedNameSize(name);
@@ -764,9 +1129,9 @@ namespace x509 {
      * SEQUENCE). RFC 5280 4.2 requires a certificate to include at most one instance of any
      * given extension; a repeated OID is likewise skipped (keeping only the first occurrence)
      * rather than silently accumulating an ambiguous pair that extensionOf() (first match) and a
-     * caller iterating _extensions directly (which would see both) could disagree about. */
-    void CCert::parseExtensions(const COctet& extensionsRaw) {
-        _extensions.clear();
+     * caller iterating the list directly (which would see both) could disagree about. */
+    void CCert::parseExtensions(const COctet& extensionsRaw, std::vector<IExtensionPtr>& out) {
+        out.clear();
 
         if (extensionsRaw.empty()) {
             return;
@@ -798,7 +1163,7 @@ namespace x509 {
             }
 
             bool duplicate = false;
-            for (const IExtensionPtr& existing : _extensions) {
+            for (const IExtensionPtr& existing : out) {
                 if (existing && existing->oid().compare(extnOid) == 0) {
                     duplicate = true;
                     break;
@@ -812,7 +1177,7 @@ namespace x509 {
             if (ext) {
                 ext->critical(critical);
             }
-            _extensions.push_back(std::move(ext));
+            out.push_back(std::move(ext));
         }
     }
 
@@ -1003,36 +1368,16 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CReader keyAlgoSeq;
-        if (!spkiSeq.readSequence(keyAlgoSeq)) {
+        SSpkiFields spki;
+        if (!decodeSubjectPublicKeyInfo(spkiSeq, spki)) {
             return ERET_BADREQ;
         }
 
-        CString keyAlgoOid;
-        if (!keyAlgoSeq.readOidString(keyAlgoOid)) {
-            return ERET_BADREQ;
-        }
-
-        // parameters ANY DEFINED BY algorithm OPTIONAL
-        if (!keyAlgoSeq.atEnd()) {
-            CTag paramTag;
-            SReadOnlyByteSpan paramContent;
-            if (!keyAlgoSeq.readNextElement(paramTag, paramContent)) {
-                return ERET_BADREQ;
-            }
-            keyAlgoParams = COctet(paramContent);
-        }
-
-        haveKeyAlgo = resolveKeyAlgo(keyAlgoOid, keyAlgoParams, keyAlgoWhich, keyAlgoName);
-
-        SReadOnlyByteSpan pkBits;
-        uint8_t pkUnusedBits = 0;
-        if (!spkiSeq.readBitString(pkBits, pkUnusedBits) || pkUnusedBits != 0) {
-            // --> A valid SubjectPublicKeyInfo is always byte-aligned; a nonzero unused-bit
-            // count here means malformed input, not a key format this library doesn't support.
-            return ERET_BADREQ;
-        }
-        publicKey = COctet(pkBits);
+        keyAlgoName = move(spki.algoName);
+        keyAlgoParams = move(spki.algoParams);
+        publicKey = move(spki.publicKey);
+        keyAlgoWhich = spki.which;
+        haveKeyAlgo = spki.resolved;
 
         // issuerUniqueID [1] IMPLICIT BIT STRING OPTIONAL, subjectUniqueID [2] IMPLICIT BIT
         // STRING OPTIONAL (v2/v3), extensions [3] EXPLICIT Extensions OPTIONAL (v3) -- in that
@@ -1191,7 +1536,7 @@ namespace x509 {
 
         // --> Writes directly into member state (_extensions), so it's called last, only once
         // every fallible read above has already succeeded.
-        parseExtensions(extensionsRaw);
+        parseExtensions(extensionsRaw, _extensions);
 
         return ERET_OK;
     }
@@ -1587,14 +1932,7 @@ namespace x509 {
      * library). */
     crypto::IPublicKeyPtr CCert::publicKey() const {
         if (!_cachedPub && _asym) {
-            if (_keyAlgoIsDsa) {
-                CBuffer blob;
-                if (buildDsaPublicKeyBlob(_keyAlgoParams, _publicKey, blob)) {
-                    _cachedPub = _asym->createPublicKey(blob.toSpan());
-                }
-            } else {
-                _cachedPub = _asym->createPublicKey(_publicKey);
-            }
+            _cachedPub = makePublicKey(_asym, _keyAlgoIsDsa, _keyAlgoParams, _publicKey);
         }
 
         return _cachedPub;
@@ -1772,57 +2110,13 @@ namespace x509 {
             return ERET_NOTSUP;
         }
 
-        // --> Whether to hash first is decided by the issuer's key algorithm, never by
-        // _sigHashAlgo == EHASH_UNKNOWN. That value is ambiguous: resolveSigAlgo() leaves it
-        // untouched for an OID absent from SIG_ALGOS, which is indistinguishable from EdDSA's
-        // legitimate "no separate hash" -- and reading it as EdDSA would hand the raw TBS bytes
-        // to an ECDSA/DSA verify as though they were a digest, which truncates them to the
-        // order's bit length and leaves the signature covering a prefix of the plaintext rather
-        // than a hash of the message. OCSP's own verifySignature() had exactly that bug.
-        if (signsMessageDirectly(issuerKey->algorithm())) {
-            // --> The signature BIT STRING's content is handed over whole. ML-DSA's signature is
-            // one opaque blob (c-tilde || z || h) with no internal ASN.1, exactly like EdDSA's
-            // R || S -- unlike ECDSA's SEQUENCE { r, s }, which createPublicKey()'s algorithm
-            // unpacks itself.
-            return ctx->verify(tbs, _signature.toSpan());
-        }
-
-        if (_sigHashAlgo == crypto::EHASH_UNKNOWN) {
-            return ERET_NOTSUP;
-        }
-
-        crypto::IHasherPtr hasher = createHasher();
-        if (!hasher) {
-            return ERET_HASH_PIPE;
-        }
-
-        CBuffer digest;
-        if (!digest.resize(hasher->byteWidth())
-            || !hasher->push(tbs)
-            || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
-        {
-            return ERET_HASH_PIPE;
-        }
-
-        if (_sigIsRsaPss) {
-            // --> verifyPss() takes a single hash algorithm and uses it for both the message
-            // digest and MGF1's own mask generation, which is the only pairing RFC 8017
-            // recommends and the only one any real issuer encodes. A certificate whose
-            // maskGenAlgorithm genuinely names a different hash than hashAlgorithm -- or whose
-            // trailerField isn't trailerFieldBC, the single value RFC 4055 defines and the only
-            // one EMSA-PSS-VERIFY implements -- therefore cannot be checked here, and must fail
-            // closed: verifying it with the wrong MGF1 hash would reject every valid signature,
-            // which is indistinguishable from a forgery.
-            if (_sigPssParams.mgfHashAlgo != _sigPssParams.hashAlgo || _sigPssParams.trailerField != 1) {
-                return ERET_NOTSUP;
-            }
-
-            return ctx->verifyPss(
-                digest.toSpan(), _sigHashAlgo, _sigPssParams.saltLength, _signature.toSpan()
-            );
-        }
-
-        return ctx->verify(digest.toSpan(), _signature.toSpan());
+        // --> The whole decision (hash-then-sign vs. sign-the-message, PKCS#1 v1.5 vs. PSS)
+        // lives in verifySignedBlob(), shared with CCertRequest::verify() so a CSR's
+        // self-signature can never be checked by subtly different rules than a certificate's.
+        return verifySignedBlob(
+            ctx, issuerKey->algorithm(), tbs, _signature.toSpan(),
+            _sigHashAlgo, _sigIsRsaPss, _sigPssParams
+        );
     }
 
     /* Creates a context bound to this certificate's public key, and its attached private key
@@ -2140,30 +2434,6 @@ namespace x509 {
             return ERET_INVAL;
         }
 
-        // --- subjectPublicKeyInfo: resolve subjectKey's algorithm and, for DSA, split its
-        // createPublicKey()-shaped serialize() back into X.509's split SPKI representation. ---
-        crypto::EAsymmetrics subjWhich = subjectKey->algorithm();
-
-        CString keyOid, ecCurveOid;
-        bool keyIsDsa = false, keyIsEc = false;
-        if (!CCert::resolveKeyAlgoForBuild(subjWhich, keyOid, keyIsDsa, keyIsEc, ecCurveOid)) {
-            return ERET_NOTSUP; // --> subjectKey's algorithm has no SPKI OID this library knows.
-        }
-
-        COctet subjectKeyRaw;
-        if (subjectKey->serialize(subjectKeyRaw) != ERET_OK) {
-            return ERET_KEY_ERROR;
-        }
-
-        COctet spkiParams, spkiPublicKey;
-        if (keyIsDsa) {
-            if (!CCert::splitDsaPublicKeyBlob(subjectKeyRaw, spkiParams, spkiPublicKey)) {
-                return ERET_KEY_FORMAT;
-            }
-        } else {
-            spkiPublicKey = subjectKeyRaw;
-        }
-
         // --- signature: resolve issuerKeyPair's algorithm + digestAlgo/rsaPss to a signature
         // OID + digest + AlgorithmIdentifier parameters. ---
         crypto::EAsymmetrics issuerWhich = issuerKeyPair.privateKey->algorithm();
@@ -2175,84 +2445,11 @@ namespace x509 {
             return ERET_NOTSUP; // --> e.g. issuerKeyPair is X25519, or digestAlgo has no OID for it.
         }
 
-        bool sigIsSelfHashing = (sigHash == crypto::EHASH_UNKNOWN);
-
         // AlgorithmIdentifier ::= SEQUENCE { OID, parameters ANY OPTIONAL } -- built once, since
         // TBSCertificate.signature and Certificate.signatureAlgorithm must be byte-identical.
         CBuffer sigAlgoIdTlv;
-        {
-            size_t needed = CEncoder::encodedOidStringSize(sigOid);
-            if (!needed) {
-                return ERET_UNKNOWN;
-            }
-
-            CBuffer oidContent;
-            size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), sigOid, written)) {
-                return ERET_UNKNOWN;
-            }
-
-            CBuffer body;
-            if (!CDer::appendTlv(body, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written))) {
-                return ERET_UNKNOWN;
-            }
-
-            if (!sigAlgoParams.empty() && !CDer::appendRaw(body, sigAlgoParams.toSpan())) {
-                return ERET_UNKNOWN;
-            }
-            // DSA/ECDSA/EdDSA signature AlgorithmIdentifiers carry no parameters at all.
-
-            if (!CDer::appendSequence(sigAlgoIdTlv, body.toSpan())) {
-                return ERET_UNKNOWN;
-            }
-        }
-
-        // subjectPublicKeyInfo.algorithm AlgorithmIdentifier.
-        CBuffer keyAlgoIdTlv;
-        {
-            size_t needed = CEncoder::encodedOidStringSize(keyOid);
-            if (!needed) {
-                return ERET_UNKNOWN;
-            }
-
-            CBuffer oidContent;
-            size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), keyOid, written)) {
-                return ERET_UNKNOWN;
-            }
-
-            CBuffer body;
-            if (!CDer::appendTlv(body, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written))) {
-                return ERET_UNKNOWN;
-            }
-
-            if (keyIsEc) {
-                size_t curveNeeded = CEncoder::encodedOidStringSize(ecCurveOid);
-                CBuffer curveOidContent;
-                size_t curveWritten = 0;
-                if (!curveNeeded || !curveOidContent.resize(curveNeeded)
-                    || !CEncoder::encodeOidString(curveOidContent.toSpan(), ecCurveOid, curveWritten))
-                {
-                    return ERET_UNKNOWN;
-                }
-
-                if (!CDer::appendTlv(body, CTag::OBJ_ID, SReadOnlyByteSpan(curveOidContent.toPtr(), curveWritten))) {
-                    return ERET_UNKNOWN;
-                }
-            } else if (keyIsDsa) {
-                if (!CDer::appendSequence(body, spkiParams.toSpan())) {
-                    return ERET_UNKNOWN;
-                }
-            } else if (subjWhich == crypto::EASYM_RSA) {
-                if (!CDer::appendTlv(body, CTag::NULL_, SReadOnlyByteSpan())) {
-                    return ERET_UNKNOWN;
-                }
-            }
-            // Ed25519/Ed448/X25519 carry no parameters at all (RFC 8410).
-
-            if (!CDer::appendSequence(keyAlgoIdTlv, body.toSpan())) {
-                return ERET_UNKNOWN;
-            }
+        if (!CCert::encodeAlgorithmIdentifier(sigOid, sigAlgoParams, sigAlgoIdTlv)) {
+            return ERET_UNKNOWN;
         }
 
         // --- Assemble TBSCertificate. ---
@@ -2298,81 +2495,22 @@ namespace x509 {
 
         // subjectPublicKeyInfo SEQUENCE { algorithm, subjectPublicKey BIT STRING }.
         {
-            CBuffer body;
-            if (!CDer::appendRaw(body, keyAlgoIdTlv.toSpan())) {
-                return ERET_UNKNOWN;
-            }
-
-            CBuffer bitContent;
-            size_t written = 0;
-            if (!bitContent.resize(1 + spkiPublicKey.size())
-                || !CEncoder::encodeBitString(bitContent.toSpan(), spkiPublicKey.toSpan(), 0, written))
-            {
-                return ERET_UNKNOWN;
-            }
-
-            if (!CDer::appendTlv(body, CTag::STRING_BIT, SReadOnlyByteSpan(bitContent.toPtr(), written))
-                || !CDer::appendSequence(tbsBody, body.toSpan()))
-            {
-                return ERET_UNKNOWN;
+            ERetCode rc = CCert::encodeSubjectPublicKeyInfo(subjectKey, tbsBody);
+            if (rc != ERET_OK) {
+                return rc; // --> ERET_NOTSUP/ERET_KEY_ERROR/ERET_KEY_FORMAT, see its own contract.
             }
         }
 
         // extensions [3] EXPLICIT Extensions OPTIONAL (SEQUENCE OF Extension) -- omitted
         // entirely when empty, rather than encoded as an empty SEQUENCE.
         if (!extensions.empty()) {
-            CBuffer extList;
-
-            for (const IExtensionPtr& ext : extensions) {
-                if (!ext) {
-                    return ERET_INVAL;
-                }
-
-                CBuffer extnValue;
-                if (!ext->encode(extnValue)) {
-                    return ERET_UNKNOWN;
-                }
-
-                size_t needed = CEncoder::encodedOidStringSize(ext->oid());
-                if (!needed) {
-                    return ERET_UNKNOWN;
-                }
-
-                CBuffer oidContent;
-                size_t written = 0;
-                if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), ext->oid(), written)) {
-                    return ERET_UNKNOWN;
-                }
-
-                // Extension ::= SEQUENCE { extnID, critical BOOLEAN DEFAULT FALSE, extnValue
-                // OCTET STRING } -- critical is DER-canonically omitted when false (the
-                // default) and written only when ext->critical() is true.
-                CBuffer extBody;
-                if (!CDer::appendTlv(extBody, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written))) {
-                    return ERET_UNKNOWN;
-                }
-
-                if (ext->critical()) {
-                    uint8_t boolContent = 0;
-                    size_t boolWritten = 0;
-                    if (!CEncoder::encodeBoolean(SByteSpan(&boolContent, 1), true, boolWritten)
-                        || !CDer::appendTlv(extBody, CTag::BOOLEAN, SReadOnlyByteSpan(&boolContent, boolWritten)))
-                    {
-                        return ERET_UNKNOWN;
-                    }
-                }
-
-                if (!CDer::appendTlv(extBody, CTag::STRING_OCTET, extnValue.toSpan())
-                    || !CDer::appendSequence(extList, extBody.toSpan()))
-                {
-                    return ERET_UNKNOWN;
-                }
+            CBuffer extListSeq;
+            ERetCode rc = CCert::encodeExtensions(extensions, extListSeq);
+            if (rc != ERET_OK) {
+                return rc;
             }
 
-            CBuffer extListSeq;
-            if (!CDer::appendSequence(extListSeq, extList.toSpan())
-                || !CDer::appendTlv(tbsBody, CTag(EATAG_CONTEXT_SPECIFIC, 3, true), extListSeq.toSpan()))
-            {
+            if (!CDer::appendTlv(tbsBody, CTag(EATAG_CONTEXT_SPECIFIC, 3, true), extListSeq.toSpan())) {
                 return ERET_UNKNOWN;
             }
         }
@@ -2384,45 +2522,12 @@ namespace x509 {
 
         // --- Sign the TBSCertificate: a digest for a hash-then-sign family, or the raw
         // TBSCertificate bytes directly for the self-hashing schemes (EdDSA, ML-DSA). ---
-        crypto::IAsymmetricPtr issuerAsym = crypto::IAsymmetric::builtIn(issuerWhich);
-        crypto::IAsymmetricContextPtr ctx = issuerAsym ? issuerAsym->createContext() : nullptr;
-        if (!ctx) {
-            return ERET_UNKNOWN;
-        }
-
-        ctx->keyPair(issuerKeyPair);
-
-        COctet toSign;
-        if (sigIsSelfHashing) {
-            toSign = COctet(tbsFull.toSpan());
-        } else {
-            crypto::IHasherPtr hasher;
-            if (crypto::IHasher::create(sigHash, hasher) != ERET_OK || !hasher) {
-                return ERET_HASH_PIPE;
+        COctet signature;
+        {
+            ERetCode rc = CCert::signTbs(issuerKeyPair, tbsFull.toSpan(), sigHash, rsaPss, signature);
+            if (rc != ERET_OK) {
+                return rc;
             }
-
-            CBuffer digest;
-            if (!digest.resize(hasher->byteWidth())
-                || !hasher->push(tbsFull.toSpan())
-                || !hasher->finish(SByteSpan(digest.toPtr(), digest.size())))
-            {
-                return ERET_HASH_PIPE;
-            }
-
-            toSign = COctet(digest.toSpan());
-        }
-
-        CBuffer sigBuf;
-        if (!sigBuf.resize(ctx->sizeOfSign())) {
-            return ERET_NOMEM;
-        }
-
-        SByteSpan sigOut(sigBuf.toPtr(), sigBuf.size());
-        ERetCode signRc = (issuerWhich == crypto::EASYM_RSA && rsaPss)
-            ? ctx->signPss(toSign.toSpan(), sigHash, toSign.size(), sigOut)
-            : ctx->sign(toSign.toSpan(), sigOut);
-        if (signRc != ERET_OK) {
-            return signRc;
         }
 
         // --- Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }. ---
@@ -2434,8 +2539,8 @@ namespace x509 {
         {
             CBuffer bitContent;
             size_t written = 0;
-            if (!bitContent.resize(1 + sigOut.size)
-                || !CEncoder::encodeBitString(bitContent.toSpan(), SReadOnlyByteSpan(sigOut.data, sigOut.size), 0, written))
+            if (!bitContent.resize(1 + signature.size())
+                || !CEncoder::encodeBitString(bitContent.toSpan(), signature.toSpan(), 0, written))
             {
                 return ERET_UNKNOWN;
             }
@@ -2451,6 +2556,24 @@ namespace x509 {
         }
 
         return out.importDer(COctet(certFull.toSpan()));
+    }
+
+    /* Takes `subject` and `subjectKey` from a PKCS#10 certification request -- and deliberately
+     * nothing else, extensions least of all. See its own doc comment in cert.hpp for why there
+     * is no method here that copies a request's requested extensions wholesale. */
+    ERetCode CCertBuilder::subjectFrom(const CCertRequest& request) {
+        if (request.empty()) {
+            return ERET_INVAL;
+        }
+
+        crypto::IPublicKeyPtr requestedKey = request.publicKey();
+        if (!requestedKey) {
+            return ERET_KEY_EMPTY;
+        }
+
+        subject = request.subject();
+        subjectKey = move(requestedKey);
+        return ERET_OK;
     }
 
 } // namespace x509

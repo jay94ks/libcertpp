@@ -174,7 +174,14 @@ anything.
 ## Not planned
 
 - Chain building and path validation.
-- CSR (PKCS#10) support.
 
-Both are still deliberately out of scope; see
-[`CLAUDE.md`](../CLAUDE.md).
+Still deliberately out of scope; see [`CLAUDE.md`](../CLAUDE.md).
+
+CSR (PKCS#10) support used to sit here too. It no longer does: it landed as
+`x509/csr.hpp`'s `CCertRequest`/`CCertRequestBuilder` (RFC 2986, PKCS#9
+extensionRequest included), reusing `CCert`'s own Name/SubjectPublicKeyInfo/
+AlgorithmIdentifier/Extensions encoders and its signing and verification
+helpers rather than growing a second copy of them. The CA-side half is
+`CCertBuilder::subjectFrom()`, which takes a verified request's subject name
+and key and deliberately nothing else -- see its own doc comment on why there
+is no "copy the requested extensions" method to go with it.
