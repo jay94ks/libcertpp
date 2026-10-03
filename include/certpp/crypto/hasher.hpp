@@ -16,7 +16,6 @@ namespace crypto {
     enum EHashers {
         EHASH_UNKNOWN = 0,
 
-        EHASH_MD4,         /**< MD4 hash algorithm (broken; legacy interop only) */
         EHASH_MD5,         /**< MD5 hash algorithm */
         EHASH_SHA1,        /**< SHA-1 hash algorithm */
         EHASH_SHA224,      /**< SHA-224 hash algorithm */
@@ -27,6 +26,16 @@ namespace crypto {
         EHASH_SHA3_512,    /**< SHA3-512 hash algorithm (FIPS 202) */
         EHASH_SHAKE128,    /**< SHAKE-128 hash algorithm */
         EHASH_SHAKE256,    /**< SHAKE-256 hash algorithm */
+
+        // --> New hashers are appended here, never inserted above, even where grouping them with
+        // a relative would read better -- MD4 belongs next to MD5 by every measure except the
+        // one that counts. This library ships as a shared object and is consumed as an installed
+        // package, so these values cross an ABI boundary: inserting MD4 at the top, as it
+        // originally was, moved EHASH_SHA256 from 4 to 5, and a caller compiled against the
+        // older header would then have gone on passing 4 and silently got SHA-224. Nothing
+        // inside this repository persists or casts these numbers, which is what makes the
+        // mistake invisible from in here.
+        EHASH_MD4,         /**< MD4 hash algorithm (broken; legacy interop only) */
 
         /** Marker for the maximum value of EHashers. */
         EHASH_MAX

@@ -48,12 +48,31 @@ gets answered one way or the other, so it is recorded rather than dropped.
 - **Unpadded CBC must not change padded CBC.** The existing
   `CbcTransformer` and the SP 800-38A vectors that cover it are not to be
   disturbed; unpadded mode is a selectable mode, not a new default.
-- **Prime-curve ECDH is not constant-time today.** `CEcCurve::scalarMul()`
-  branches on scalar bits and `CBigNum` has a data-dependent limb count.
-  For ephemeral keys in an online handshake that is a timing side channel.
-  Making it constant-time is a separate, larger job -- see "Constant-time
-  and performance" below -- and in the meantime the limitation gets stated
-  honestly in the API docs rather than papered over.
+- **Prime-curve ECDH is not constant-time today**, though not for the
+  reason it first appears. `CEcCurve::scalarMul()` is *not* a naive
+  `if (k.testBit(i)) add` -- it is already a branch-free-*shaped* ladder
+  that does both an `addJac` and a `doublePointJac` every iteration and
+  uses `condSwapJac()` to choose which register receives which. It is
+  nonetheless not constant-time, for three separate reasons:
+  1. the loop runs `k.bitLength()` times, so the iteration count leaks the
+     position of the scalar's top set bit;
+  2. `CBigNum::condSwap()` is a plain `if (swap) { std::swap(a, b); }` --
+     a real branch on a bit of the private scalar, taken on every limb of
+     every step. This is exactly the defect `Fe25519` was written to
+     remove on the X25519 side;
+  3. `CBigNum` trims leading zero limbs, so the cost of every underlying
+     operation depends on its operands.
+
+  `scalarMulBase()` adds a fourth: it indexes `_baseTable[windowValue]`
+  where `windowValue` is four bits of the private scalar, which is a
+  data-dependent memory access and so a cache-timing channel on top of the
+  above.
+
+  Making this constant-time is a separate, larger job -- see
+  "Constant-time and performance" below. In the meantime the limitation is
+  stated plainly in `deriveSharedSecret()`'s doc comment, naming the
+  IKEv2 ephemeral handshake as the case where it matters and pointing
+  callers at X25519 where the protocol allows a choice.
 - **MD4 is broken** and is here only to interoperate with EAP-MSCHAPv2. It
   is documented the way MD5 already is: legacy interop only, never for new
   signatures.
