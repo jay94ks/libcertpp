@@ -8,7 +8,16 @@ namespace crypto {
 
     /**
      * An element of GF(2^255 - 19), in ten signed limbs at radix 2^25.5, with every operation
-     * free of data-dependent branches, memory indices and divisions. Private to `src/`.
+     * free of data-dependent branches, memory indices and divisions. Private to `src/`, and
+     * shared by `x25519.cpp` (Curve25519's Montgomery ladder) and `ed25519.cpp` (edwards25519's
+     * point coordinates) -- the two curves are different shapes over the same field.
+     *
+     * **Only valid for p.** Ed25519 also works modulo the group order L = 2^252 +
+     * 27742317777372353535851937790883648493, for scalars; that is *not* this modulus, and
+     * reducing a scalar here produces a signature that verifies against itself and against
+     * nothing else in the world. There is deliberately no conversion between this type and
+     * `CBigNum`, in either direction, so the mistake does not compile -- see `ed25519.cpp`'s
+     * own note on keeping the two apart.
      *
      * This exists because `CBigNum` cannot be made constant-time in the shape X25519 needs.
      * `CBigNum` stores a *canonical* limb array -- leading zero limbs are trimmed -- so the
@@ -125,6 +134,16 @@ namespace crypto {
         static void mulA24(Fe25519& out, const Fe25519& a);
 
         /**
+         * out = -a.
+         *
+         * Signed limbs make this a subtraction from zero with nothing special about it -- no
+         * comparison against p, and no branch on whether a is already zero (0 - 0 is 0).
+         * @param out Receives the negation; may alias the input.
+         * @param a The operand.
+         */
+        static void neg(Fe25519& out, const Fe25519& a);
+
+        /**
          * out = a^-1, by the fixed a^(p-2) addition chain: 254 squarings and 11 multiplications
          * in the same order for every input, so the exponent leaks nothing.
          *
@@ -136,6 +155,29 @@ namespace crypto {
          * @param a The operand.
          */
         static void invert(Fe25519& out, const Fe25519& a);
+
+        /**
+         * out = a square root of a, if a has one.
+         *
+         * p is 5 mod 8, so a^((p+3)/8) is either a square root of a or sqrt(-1) times one; the
+         * second case is fixed by one multiplication, and anything left over means a is a
+         * quadratic non-residue. Both candidates are verified by squaring them back, so a
+         * non-residue is reported rather than silently returning a wrong root.
+         *
+         * Unlike every other operation here, this one *does* branch on the value: which of the
+         * two candidates is the root, and whether either is. That is deliberate and
+         * confined -- the only caller is Ed25519's point decoding, whose input is a public key or
+         * the R half of a signature, both public. Nothing secret reaches this function. The
+         * exponentiation itself is still a fixed chain.
+         *
+         * Of the two roots, this returns the one a^((p+3)/8) happens to land on; a caller that
+         * needs a particular sign (RFC 8032 5.1.3 does) picks with `isOdd()` and `neg()`.
+         * @param out Receives a square root; may alias the input, and is untouched when there is
+         *            none.
+         * @param a The operand.
+         * @return true if a is a quadratic residue mod p.
+         */
+        static bool squareRoot(Fe25519& out, const Fe25519& a);
 
         /**
          * Swaps a and b if mask is all ones, leaves them if it is zero -- without branching.
@@ -154,6 +196,29 @@ namespace crypto {
          * @return true if the value is congruent to zero mod p.
          */
         bool isZero() const;
+
+        /**
+         * Reports whether this element equals another.
+         *
+         * Compared by difference rather than limb by limb, because two limb arrays can hold the
+         * same field element without being identical -- the representation is redundant, and
+         * `memcmp` over the limbs would call equal values different.
+         * @param other The element to compare against.
+         * @return true if the two are congruent mod p.
+         */
+        bool isEqual(const Fe25519& other) const;
+
+        /**
+         * Reports the low bit of the canonical representative in [0, p) -- RFC 8032 5.1.2's
+         * "sign" of a coordinate, which its compressed point encoding carries in the top bit of
+         * the last byte.
+         *
+         * This is a property of the *canonical* value, not of limb 0: the redundant
+         * representation means an unreduced limb array can have either parity in limb 0 while
+         * standing for the same element, so the value has to be encoded first.
+         * @return true if the canonical representative is odd.
+         */
+        bool isOdd() const;
     };
 
 } // namespace crypto
