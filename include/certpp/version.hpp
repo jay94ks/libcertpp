@@ -73,7 +73,7 @@ namespace certpp {
      * Retrieves the version of the library.
      * @return The library version as an SVersion structure.
      */
-    SVersion GetLibraryVersion();
+    CERTPP_API SVersion GetLibraryVersion();
 } // namespace certpp
 
 #endif

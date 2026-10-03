@@ -8,8 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 foundational scaffolding (type aliases, the `CERTPP_API` export macro, a
 version struct), it now has: top-level `STimeSpan`/`SDateTime` calendar-time
 types (`time.hpp`); an `io` layer (`TSpan`/`TReadOnlySpan`, `TArray`,
-`CBuffer`, `COctet`, `CBase64`, the `IStream` interface with a
-memory-backed implementation); an `asn1` module
+`CBuffer`, `COctet`, the `IStream` interface with a
+memory-backed implementation); a `utils` layer (`CBase64`, `CBigNum`,
+`CGf2m`, `CMontgomery`); an `asn1` module
 (`CTag` tag encode/decode, `CDecoder`/`CEncoder` for reading/writing
 BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
