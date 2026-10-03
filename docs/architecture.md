@@ -364,11 +364,7 @@ tests/
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
-<<<<<<< HEAD
-    realcerts.cpp                # real commercial certificates on disk under certs/implemented/ (github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate), plus certs/unimplemented/ for ones whose signature algorithm importDer() cannot resolve at all (ML-DSA)
-=======
-    realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net, the IdenTrust ML-DSA-87 pilot root) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS)
->>>>>>> worktree-agent-a8132717936d67566
+    realcerts.cpp                # real commercial certificates on disk under certs/implemented/: github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate, and the IdenTrust ML-DSA-87 pilot root whose self-signature verifies end to end
   dnssec/
     name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
     records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
@@ -2626,19 +2622,6 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `resolveSigAlgo()` leaves it untouched for an unregistered OID, which is
   indistinguishable from EdDSA's legitimate "no separate hash", and reading
   it as EdDSA would hand raw TBS bytes to an ECDSA/DSA verify as though they
-<<<<<<< HEAD
-  were a digest. It is a *single-link* check: no name chaining, no validity
-  window, no constraint enforcement. An RSASSA-PSS-signed certificate is
-  routed through `IAsymmetricContext::verifyPss()` with the hash and salt
-  length its own `RSASSA-PSS-params` specify, rather than PKCS#1 v1.5's
-  `verify()`. Two encodable-but-unsupported cases fail closed with
-  `ERET_NOTSUP` rather than being approximated: a `maskGenAlgorithm` naming a
-  different hash than `hashAlgorithm` (this library's `verifyPss()` takes one
-  hash algorithm and uses it for both, the only pairing RFC 8017 recommends),
-  and a `trailerField` other than `trailerFieldBC`. Verifying with the wrong
-  MGF1 hash would reject every valid signature, which a caller cannot tell
-  apart from a forgery.
-=======
   were a digest.
 
   That decision is `CCert::signsMessageDirectly(which)`, one function rather
@@ -2657,10 +2640,17 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `SEQUENCE { r, s }` -- which the EC implementation unpacks itself rather than
   `verifyBy()` doing it.
 
-  It is a *single-link* check: no name chaining, no validity
-  window, no constraint enforcement. RSASSA-PSS-signed certificates report
-  `ERET_NOTSUP`, since `SIG_ALGOS` has no id-RSASSA-PSS entry to resolve.
->>>>>>> worktree-agent-a8132717936d67566
+  were a digest. It is a *single-link* check: no name chaining, no validity
+  window, no constraint enforcement. An RSASSA-PSS-signed certificate is
+  routed through `IAsymmetricContext::verifyPss()` with the hash and salt
+  length its own `RSASSA-PSS-params` specify, rather than PKCS#1 v1.5's
+  `verify()`. Two encodable-but-unsupported cases fail closed with
+  `ERET_NOTSUP` rather than being approximated: a `maskGenAlgorithm` naming a
+  different hash than `hashAlgorithm` (this library's `verifyPss()` takes one
+  hash algorithm and uses it for both, the only pairing RFC 8017 recommends),
+  and a `trailerField` other than `trailerFieldBC`. Verifying with the wrong
+  MGF1 hash would reject every valid signature, which a caller cannot tell
+  apart from a forgery.
 
   `importDer()` enforces several DER rules whose absence had been
   exploitable, each covered by `tests/x509/malformed.cpp`: the `Certificate`
@@ -2680,23 +2670,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   s_client`/crt.sh) are checked into `tests/x509/certs/implemented/` as
   `.der` files (read via a small `readCertFile()` test helper, located
   through a generic `CERTPP_TEST_DIR` compile-definition every test target
-<<<<<<< HEAD
-  gets -- see `CMakeLists.txt`'s test-registration loop); a certificate whose
-  signature algorithm `importDer()` cannot resolve at all (currently just the
-  ML-DSA post-quantum signature scheme) is kept separately under
-  `certs/unimplemented/`, documenting the gap rather than hiding it. That
-  directory used to hold the RSASSA-PSS intermediate as well, which was always
-  an imprecise label for it: RSA-PSS the *algorithm* has been implemented since
-  `crypto/asyms/rsa.cpp`'s `signPss()`/`verifyPss()`; what was missing was the
-  certificate path to it, and its import actually failed on an unrecognized
-  `organizationIdentifier` in the subject `Name`, before the signature
-  algorithm was read at all.
-=======
-  gets -- see `CMakeLists.txt`'s test-registration loop); certificates using
-  an algorithm this library doesn't implement yet (RSA-PSS) are kept
-  separately under `certs/unimplemented/`, documenting the gap rather than
-  hiding it.
-
+  gets -- see `CMakeLists.txt`'s test-registration loop). There is no
+  `certs/unimplemented/` directory any more. It held two certificates -- an
+  RSASSA-PSS intermediate and an ML-DSA root -- and both now import, parse and
+  verify, so both moved. The RSASSA-PSS one had always been mislabelled there:
+  RSA-PSS the *algorithm* has been implemented since `crypto/asyms/rsa.cpp`'s
+  `signPss()`/`verifyPss()`; what was missing was the certificate path to it, and
+  its import actually failed on an unrecognized `organizationIdentifier` in the
+  subject `Name`, before the signature algorithm was read at all. Recreate the
+  directory if a future certificate exercises a real gap -- the split is what
+  keeps "this is a known gap" from being indistinguishable from "nobody looked".
   One of the implemented ones carries its weight differently from the rest.
   `identrust-mldsa-root.der` is the real "IdenTrust Pilot Root TLS ML-DSA CA 1"
   (OID 2.16.840.1.101.3.4.3.19, which is **id-ml-dsa-87**; the arc runs
@@ -2709,7 +2692,6 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   carve-out, or the internal signing interface used where the external one
   belongs. A companion test case flips one bit in the TBS, in the signature and
   in the public key, and requires each to fail.
->>>>>>> worktree-agent-a8132717936d67566
 - **`x509/crl.hpp` / `src/x509/crl.cpp`** define the CRL (RFC 5280 5)
   side, split across three types rather than one read/write class:
   `CCrlRevokationInfo` is a single `revokedCertificates` entry
