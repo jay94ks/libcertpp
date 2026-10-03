@@ -16,6 +16,7 @@ namespace crypto {
     enum EHashers {
         EHASH_UNKNOWN = 0,
 
+        EHASH_MD4,         /**< MD4 hash algorithm (broken; legacy interop only) */
         EHASH_MD5,         /**< MD5 hash algorithm */
         EHASH_SHA1,        /**< SHA-1 hash algorithm */
         EHASH_SHA224,      /**< SHA-224 hash algorithm */

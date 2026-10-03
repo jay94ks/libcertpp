@@ -29,6 +29,7 @@ namespace crypto {
     /* The block size RFC 2104 uses for a given hash. */
     size_t CHmac::blockBytesOf(EHashers hasherType) {
         switch (hasherType) {
+            case EHASH_MD4:
             case EHASH_MD5:
             case EHASH_SHA1:
             case EHASH_SHA224:
