@@ -1664,3 +1664,53 @@ Two cases are checked specifically because they survive a round trip:
 7 test cases, 32,468 assertions. Checked under Clang with
 `-fno-ms-compatibility` so it does not repeat the portability breakage fixed in
 `d297767`.
+
+## X25519: a constant-time ladder, and 5-7x faster as a side effect
+
+`Curve25519`'s Montgomery ladder now runs on `Fe25519` instead of `CBigNum`,
+which closes the timing channel a downstream consumer reported. Nothing in
+`x25519.cpp` touches `CBigNum` any more, so there is no path by which a secret
+scalar reaches variable-time arithmetic.
+
+What changed, beyond swapping the field type:
+
+- **The scalar bit is read from the bytes directly**, not through
+  `CBigNum::testBit()`, whose cost depends on the value's limb count.
+- **The conditional exchange is `Fe25519::condSwap` under an arithmetic mask**,
+  replacing `CBigNum::condSwap`, which its own documentation admits is a plain
+  branch. In a ladder that condition *is* a bit of the private scalar.
+- **Clamping produces bytes, not a `CBigNum`**, and `scalarMult()` clears its
+  clamped copy before returning.
+- **`checkPrivateKey()`'s cofactor check calls `ladder()` rather than
+  `scalarMult()`**, deliberately: its scalar is the small public constant 8 and
+  must *not* be clamped, since clamping would turn it into a different scalar.
+  That distinction was implicit before, when the check passed a raw `CBigNum`;
+  it is now a visible difference between two named entry points.
+
+One check became structural rather than tested. The old code verified the
+derived u-coordinate was canonically reduced (`u >= p` rejected);
+`Fe25519::toBytes()` emits the canonical representative in [0, p) by
+construction, so that can no longer fail. The bit-255 mask is asserted in its
+place, since that is the one thing a 32-byte encoding could still carry.
+
+### The measured effect
+
+Not the point of the change, but worth recording, because `CBigNum` was
+allocating per operation and reducing against a runtime-computed prime:
+
+| | before | after |
+|---|---|---|
+| `generateKeyPair` | 4.7 ms | **0.907 ms** |
+| `deriveSharedSecret` | 2.0 ms | **0.287 ms** |
+
+All 12 X25519 test cases and 4217 assertions pass unchanged, RFC 7748's
+vectors included — which is the check that matters, since a ladder that is
+subtly wrong still produces consistent key agreement between two copies of
+itself.
+
+Still short of the 100 µs/operation the consumer asked for. Two causes are
+identified and not yet addressed: `Fe25519::mul` carries two branches per
+partial product inside a 10x10 loop that the compiler is unlikely to unroll,
+and `generateKeyPair` runs three ladders (one to derive the public key, then
+`checkPrivateKey` recomputing it plus the cofactor check) where it already has
+the first result in hand.

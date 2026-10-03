@@ -1,6 +1,6 @@
 #include <certpp/crypto/asyms/x25519.hpp>
 #include <certpp/utils/secure.hpp>
-#include <certpp/utils/bignum.hpp>
+#include "fe25519.hpp"
 #include <certpp/crypto/rng.hpp>
 #include <cstring>
 #include <utility>
@@ -10,154 +10,119 @@ namespace crypto {
 
     namespace {
 
-        /* Everything specific to implementing Curve25519/X25519 (RFC 7748): the field prime,
-         * scalar/u-coordinate decoding, and the Montgomery ladder itself -- bundled into one
-         * class rather than left as file-scope free functions, mirroring Edwards25519
-         * (ed25519.cpp), Edwards448 (ed448.cpp), and AesCore/DesCore/ChaCha20Core (crypto/syms/). */
+        /* Everything specific to implementing Curve25519/X25519 (RFC 7748): scalar clamping
+         * and the Montgomery ladder, over Fe25519 rather than CBigNum.
+         *
+         * --> This used to run on CBigNum, and that was a timing side channel rather than a
+         * theoretical one. CBigNum trims leading zero limbs, so the work every operation does
+         * depends on the value it operates on; and CBigNum::condSwap is a plain branch, whose
+         * condition in a Montgomery ladder *is* a bit of the private scalar -- leaking the key
+         * one bit per iteration. Fe25519 is fixed-width with no data-dependent branching, which
+         * is why it exists. Raised by a downstream consumer using X25519 for an online
+         * handshake with ephemeral keys, where it genuinely matters.
+         *
+         * Nothing here touches CBigNum any more, so there is no path by which a secret scalar
+         * reaches variable-time arithmetic. */
         class Curve25519 {
-        private:
-            /* The Montgomery curve coefficient A = 486662 (RFC 7748 4.1); a24 = (A - 2) / 4 =
-             * 121665, used directly in the ladder step (RFC 7748 5). */
-            static const CBigNum& a24() {
-                static const CBigNum v = CBigNum(uint64_t(121665));
-                return v;
-            }
-
         public:
-            /* The Curve25519 field prime, 2^255 - 19 (RFC 7748 4.1) -- cheaper and safer to
-             * derive than to transcribe as a 64-hex-digit literal (same reasoning as
-             * ed25519.cpp). */
-            static const CBigNum& fieldPrime() {
-                static const CBigNum p = CBigNum(uint64_t(1)).shl(255).sub(CBigNum(uint64_t(19)));
-                return p;
+            /* The base point's u-coordinate, u = 9 (RFC 7748 4.1), little-endian. */
+            static void basePointU(uint8_t out[32]) {
+                std::memset(out, 0, 32);
+                out[0] = 9;
             }
 
-            /* The Curve25519 base point's u-coordinate, u = 9 (RFC 7748 4.1) -- small enough to
-             * not need deriving or cross-checking, unlike every other constant in this module. */
-            static const CBigNum& basePointU() {
-                static const CBigNum u = CBigNum(uint64_t(9));
-                return u;
+            /* Applies RFC 7748 5's clamping to a raw 32-byte scalar. Clamping happens at every
+             * scalar-mult call site rather than once at key-creation time, so a private key's
+             * stored bytes round-trip exactly through serialize()/createPrivateKey() -- RFC
+             * 7748 5's own split between "decode scalar" and "the caller's stored secret". */
+            static void clampScalar(const uint8_t raw[32], uint8_t out[32]) {
+                std::memcpy(out, raw, 32);
+
+                out[0] = uint8_t(out[0] & 248u);
+                out[31] = uint8_t(out[31] & 127u);
+                out[31] = uint8_t(out[31] | 64u);
             }
 
-            /* Applies RFC 7748 5's clamping to a raw 32-byte scalar, producing the CBigNum the
-             * ladder actually multiplies by. Clamping is applied here, at every scalar-mult call
-             * site, rather than once at key-creation time, so a private key's stored bytes always
-             * round-trip exactly through serialize()/createPrivateKey() (RFC 7748 5's own
-             * recommended split of responsibility between "decode scalar" and "the caller's
-             * stored secret"). */
-            static CBigNum decodeScalar(const uint8_t k[32]) {
-                uint8_t clamped[32];
-                std::memcpy(clamped, k, 32);
+            /* RFC 7748 5's X25519 function: the Montgomery ladder over the u-coordinate only,
+             * in projective (X:Z) form so no per-step inversion is needed -- just one at the
+             * end. The scalar is used exactly as given; callers wanting RFC 7748's X25519 clamp
+             * it first.
+             *
+             * Every iteration performs the same operations in the same order regardless of the
+             * scalar bit: the conditional exchange is Fe25519::condSwap under a mask derived
+             * arithmetically from the bit, never an `if`. */
+            static void ladder(const uint8_t scalar[32], const uint8_t uBytes[32], uint8_t out[32]) {
+                Fe25519 x1, x2, z2, x3, z3;
+                x1.fromBytes(uBytes);
+                x2.setOne();
+                z2.setZero();
+                x3.fromBytes(uBytes);
+                z3.setOne();
 
-                clamped[0] &= 248;
-                clamped[31] &= 127;
-                clamped[31] |= 64;
-
-                CBigNum scalar = CBigNum::fromLittleEndian(SReadOnlyByteSpan(clamped, 32));
-
-                // The clamped scalar is the private key in all but encoding, and this runs on
-                // every scalar multiplication -- so the copy made here does not outlive the call.
-                CSecure::zero(SByteSpan(clamped, sizeof(clamped)));
-
-                return scalar;
-            }
-
-            /* Decodes a 32-byte little-endian u-coordinate per RFC 7748 5: the top bit is masked
-             * (it's never set for a canonical Curve25519 value, but decodeUCoordinate must still
-             * accept it per the RFC) and the result is reduced mod p -- non-canonical values are
-             * REDUCED, not rejected, unlike Ed25519's point decode. This is a spec requirement,
-             * not an inconsistency with ed25519.cpp's stricter decodePoint(). */
-            static CBigNum decodeUCoordinate(const uint8_t u[32]) {
-                uint8_t bytes[32];
-                std::memcpy(bytes, u, 32);
-                bytes[31] &= 0x7F;
-
-                CBigNum result = CBigNum::fromLittleEndian(SReadOnlyByteSpan(bytes, 32));
-                result.mod(fieldPrime());
-                return result;
-            }
-
-            /* RFC 7748 5's X25519 function: the Montgomery ladder over the u-coordinate only, in
-             * projective (X:Z) form so no per-step inversion is needed -- just one at the end. */
-            static CBigNum x25519(const CBigNum& clampedScalar, const CBigNum& u) {
-                const CBigNum& p = fieldPrime();
-
-                CBigNum x1(u);
-                CBigNum x2(uint64_t(1)), z2;
-                CBigNum x3(u), z3(uint64_t(1));
-                bool swap = false;
+                uint32_t swap = 0;
 
                 for (size_t t = 255; t-- > 0; ) {
-                    bool kt = clampedScalar.testBit(t);
-                    swap ^= kt;
-                    CBigNum::condSwap(swap, x2, x3);
-                    CBigNum::condSwap(swap, z2, z3);
-                    swap = kt;
+                    // The scalar bit, read from the bytes directly -- no CBigNum::testBit, whose
+                    // cost would depend on the scalar's limb count.
+                    const uint32_t bit = uint32_t((scalar[t >> 3] >> (t & 7u)) & 1u);
 
-                    CBigNum A(x2);
-                    A.add(z2);
-                    A.mod(p);
+                    swap ^= bit;
 
-                    CBigNum AA(A);
-                    AA.mulMod(A, p);
+                    // mask is 0 or 0xFFFFFFFF, computed rather than branched on.
+                    const uint32_t mask = uint32_t(0) - swap;
+                    Fe25519::condSwap(mask, x2, x3);
+                    Fe25519::condSwap(mask, z2, z3);
 
-                    CBigNum B(x2);
-                    B.modSub(z2, p);
+                    swap = bit;
 
-                    CBigNum BB(B);
-                    BB.mulMod(B, p);
+                    Fe25519 a, aa, b, bb, e, c, d, da, cb, scratch;
 
-                    CBigNum E(AA);
-                    E.modSub(BB, p);
+                    Fe25519::add(a, x2, z2);
+                    Fe25519::square(aa, a);
+                    Fe25519::sub(b, x2, z2);
+                    Fe25519::square(bb, b);
+                    Fe25519::sub(e, aa, bb);
+                    Fe25519::add(c, x3, z3);
+                    Fe25519::sub(d, x3, z3);
+                    Fe25519::mul(da, d, a);
+                    Fe25519::mul(cb, c, b);
 
-                    CBigNum C(x3);
-                    C.add(z3);
-                    C.mod(p);
+                    Fe25519::add(scratch, da, cb);
+                    Fe25519::square(x3, scratch);
 
-                    CBigNum D(x3);
-                    D.modSub(z3, p);
+                    Fe25519::sub(scratch, da, cb);
+                    Fe25519::square(scratch, scratch);
+                    Fe25519::mul(z3, scratch, x1);
 
-                    CBigNum DA(D);
-                    DA.mulMod(A, p);
+                    Fe25519::mul(x2, aa, bb);
 
-                    CBigNum CB(C);
-                    CB.mulMod(B, p);
-
-                    CBigNum newX3(DA);
-                    newX3.add(CB);
-                    newX3.mod(p);
-                    newX3.mulMod(newX3, p);
-
-                    CBigNum newZ3(DA);
-                    newZ3.modSub(CB, p);
-                    newZ3.mulMod(newZ3, p);
-                    newZ3.mulMod(x1, p);
-
-                    CBigNum newX2(AA);
-                    newX2.mulMod(BB, p);
-
-                    CBigNum newZ2(a24());
-                    newZ2.mulMod(E, p);
-                    newZ2.add(AA);
-                    newZ2.mod(p);
-                    newZ2.mulMod(E, p);
-
-                    x2 = std::move(newX2);
-                    z2 = std::move(newZ2);
-                    x3 = std::move(newX3);
-                    z3 = std::move(newZ3);
+                    Fe25519::mulA24(scratch, e);
+                    Fe25519::add(scratch, scratch, aa);
+                    Fe25519::mul(z2, e, scratch);
                 }
 
-                CBigNum::condSwap(swap, x2, x3);
-                CBigNum::condSwap(swap, z2, z3);
+                const uint32_t mask = uint32_t(0) - swap;
+                Fe25519::condSwap(mask, x2, x3);
+                Fe25519::condSwap(mask, z2, z3);
 
-                CBigNum z2Inv;
-                if (!CBigNum::modInverse(z2, p, z2Inv)) {
-                    return CBigNum();
-                }
+                // One inversion, by the fixed a^(p-2) chain. A zero z2 yields zero here rather
+                // than failing, which produces the all-zero output RFC 7748 6.1 already requires
+                // callers to reject -- so the degenerate case needs no branch of its own.
+                Fe25519 inverse;
+                Fe25519::invert(inverse, z2);
+                Fe25519::mul(x2, x2, inverse);
 
-                x2.mulMod(z2Inv, p);
-                return x2;
+                x2.toBytes(out);
+            }
+
+            /* RFC 7748's X25519 function proper: clamp, then multiply. */
+            static void scalarMult(const uint8_t rawScalar[32], const uint8_t uBytes[32], uint8_t out[32]) {
+                uint8_t clamped[32];
+                clampScalar(rawScalar, clamped);
+
+                ladder(clamped, uBytes, out);
+
+                CSecure::zero(SByteSpan(clamped, sizeof(clamped)));
             }
         };
 
@@ -243,13 +208,11 @@ namespace crypto {
     /* Builds the matching public key for a 32-byte raw private key (shared by
      * generateKeyPair() and createPrivateKey()). */
     IPublicKeyPtr X25519::publicKeyFromRaw(const uint8_t raw[32]) {
-        CBigNum scalar = Curve25519::decodeScalar(raw);
-        CBigNum u = Curve25519::x25519(scalar, Curve25519::basePointU());
+        uint8_t base[32];
+        Curve25519::basePointU(base);
 
         uint8_t encoded[32];
-        if (!u.toLittleEndian(SByteSpan(encoded, 32))) {
-            return nullptr;
-        }
+        Curve25519::scalarMult(raw, base, encoded);
 
         return std::make_shared<X25519PublicKey>(encoded);
     }
@@ -285,20 +248,12 @@ namespace crypto {
                     return ERET_NOSPC;
                 }
 
-                CBigNum scalar = Curve25519::decodeScalar(priv->raw());
-                CBigNum peerU = Curve25519::decodeUCoordinate(peer->encoded());
-                CBigNum secretU = Curve25519::x25519(scalar, peerU);
-
-                // scalar is the private key; secretU and the bytes below are the shared secret
-                // itself, which is what this whole exchange exists to keep.
-                scalar.secureClear();
-
+                // Fe25519::fromBytes masks bit 255 and reduces, which is RFC 7748 5's rule for
+                // a peer's u-coordinate: a non-canonical value is REDUCED, not rejected, unlike
+                // Ed25519's stricter point decode. scalarMult() clears its own clamped copy of
+                // the scalar; the secret bytes below are cleared once copied out.
                 uint8_t secretBytes[32];
-                if (!secretU.toLittleEndian(SByteSpan(secretBytes, 32))) {
-                    secretU.secureClear();
-                    return ERET_UNKNOWN;
-                }
-                secretU.secureClear();
+                Curve25519::scalarMult(priv->raw(), peer->encoded(), secretBytes);
 
                 // RFC 7748 6.1: reject an all-zero shared secret (the peer supplied a low-order
                 // point, e.g. u = 0) rather than silently returning predictable output.
@@ -380,39 +335,52 @@ namespace crypto {
             return ERET_KEY_ERROR; // this key's own linked public key is missing/wrong type
         }
 
-        CBigNum scalar = Curve25519::decodeScalar(priv->raw());
-        CBigNum u = Curve25519::x25519(scalar, Curve25519::basePointU());
+        uint8_t base[32];
+        Curve25519::basePointU(base);
+
+        uint8_t derivedEncoded[32];
+        Curve25519::scalarMult(priv->raw(), base, derivedEncoded);
 
         // The linked public key must be consistent with this private key's own raw scalar.
-        uint8_t derivedEncoded[32];
-        if (!u.toLittleEndian(SByteSpan(derivedEncoded, 32))
-            || std::memcmp(derivedEncoded, pub->encoded(), 32) != 0)
-        {
+        if (std::memcmp(derivedEncoded, pub->encoded(), 32) != 0) {
             return ERET_KEY_ERROR;
         }
 
-        const CBigNum& p = Curve25519::fieldPrime();
-
-        // 1. Field range: u must be canonically reduced (< p) -- always true for a value
-        // produced by our own Curve25519::x25519(), but checked explicitly since this validates a stored/
-        // imported key, not just a freshly generated one.
-        if (u >= p) {
+        // 1. Field range. Fe25519::toBytes() emits the canonical representative in [0, p), so a
+        // value derived here cannot be out of range any more -- what used to be a `u >= p` test
+        // is now a structural property of the encoding. Bit 255 is checked instead, since that
+        // is the one thing a 32-byte encoding could still carry.
+        if ((derivedEncoded[31] & 0x80u) != 0) {
             return ERET_KEY_PARAM;
         }
 
         // 2. "Point at infinity" analogue: RFC 7748 6.1's own "reject an all-zero output" rule,
         // applied here to key generation instead of the ECDH shared secret.
-        if (u.isZero()) {
+        uint8_t accumulator = 0;
+        for (size_t i = 0; i < 32; ++i) {
+            accumulator = uint8_t(accumulator | derivedEncoded[i]);
+        }
+        if (accumulator == 0) {
             return ERET_KEY_PARAM;
         }
 
         // 3. "Correct subgroup" analogue: reject a public key of order dividing the cofactor (8)
         // -- a low-order/twist-torsion point -- computed directly rather than via a hardcoded
         // constant list: 8*u reduces to the identity (u = 0) exactly when u itself has order
-        // dividing 8. Uses the raw (unclamped) scalar 8, since this multiplies a public value by
-        // a small constant rather than performing an actual Diffie-Hellman step.
-        CBigNum eightU = Curve25519::x25519(CBigNum(uint64_t(8)), u);
-        if (eightU.isZero()) {
+        // dividing 8. This calls ladder() rather than scalarMult() deliberately: the scalar is
+        // the small public constant 8 and must NOT be clamped, since clamping would turn it into
+        // a different scalar entirely.
+        uint8_t eight[32] = { 0 };
+        eight[0] = 8;
+
+        uint8_t eightU[32];
+        Curve25519::ladder(eight, derivedEncoded, eightU);
+
+        accumulator = 0;
+        for (size_t i = 0; i < 32; ++i) {
+            accumulator = uint8_t(accumulator | eightU[i]);
+        }
+        if (accumulator == 0) {
             return ERET_KEY_PARAM;
         }
 
