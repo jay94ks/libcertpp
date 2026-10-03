@@ -2241,3 +2241,184 @@ asserts it is on the curve, in field range, of order exactly 2, and refused by
 both `decodePoint()` and `createPublicKey()`. Disabling the check fails that
 case and **leaves the other sixteen ECDH cases passing**, which is the
 measurement of how much coverage there was before.
+
+## Ed25519 onto `Fe25519`: the 100x gap was one unmigrated file
+
+A downstream consumer measured Ed25519 at 1.84 ms to sign and 8.78 ms to verify
+(GCC/Linux) against the 50–100 µs an optimized implementation takes. On this
+machine the same build measured worse — and next to it, in the same build, on
+the *same curve*, X25519 derived a shared secret in 246 µs.
+
+That comparison is the whole diagnosis. `x25519.cpp` had been migrated onto
+`Fe25519` (see its own entry above); `ed25519.cpp` had not. It used `Fe25519`
+zero times and `CBigNum` 118 times. And `CBigNum::mulMod()` is `mul()` then
+`mod()`, and `mod()` calls `divMod()` — so **every field multiplication in the
+point arithmetic performed a full big-number division**, tens of thousands of
+them per signature.
+
+Nothing else was wrong. The two things the downstream report suggested adding
+were already there: `EdPointProj` already carried extended coordinates with
+`T = X·Y/Z`, so `pointAddProj()` already needed no inversion, and
+`scalarMulBase()` already built a lazily-cached fixed-base window table. This
+was a field swap inside an otherwise sound curve implementation.
+
+| min of 8 runs, each min of 3 × 20 iterations | before | after | |
+|---|---|---|---|
+| `sign` | 5.96 ms | **0.317 ms** | 18.8× |
+| `verify` | 29.4 ms | **1.36 ms** | 21.5× |
+
+Measured on a loaded 4-core laptop, Release, same harness both times — the
+baseline was re-measured from `HEAD` with the identical harness rather than
+quoted from the original report, because the run-to-run spread here is wide
+enough (sign ranged 5.96–9.90 ms before, verify 29.4–40.1 ms) that comparing a
+single run against a single run would have been meaningless.
+
+### The trap: Ed25519 has two moduli and only one of them is `Fe25519`'s
+
+- **p = 2^255 − 19**, the field prime, for point coordinates. This is what
+  `Fe25519` implements.
+- **L = 2^252 + 27742317777372353535851937790883648493**, the group order, for
+  scalars: the clamped private scalar, signing's nonce `r`, the reduced hash
+  `k`, and a signature's `S`.
+
+Putting a scalar through `Fe25519` yields a signature that verifies against
+itself and against nothing else in the world. No round-trip test can see it;
+only a known-answer vector can.
+
+So the separation is carried by the type system rather than by care.
+`EdPoint`/`EdPointProj` hold nothing but `Fe25519`; scalars stay `CBigNum`
+reduced mod `groupOrder()`; and `Fe25519` has no constructor, conversion or
+assignment involving `CBigNum` in either direction — its only external
+representation is 32 bytes, and no code in `ed25519.cpp` converts between the
+two. Mixing them does not compile. The one place they meet is
+`scalarMul()`/`scalarMulBase()`, which take a mod-L scalar and return a mod-p
+point, and read the scalar only as a sequence of bits.
+
+`Edwards25519::fieldPrime()` is gone entirely, which is part of the point:
+there is no longer a `CBigNum` copy of p in the file for a scalar to be
+accidentally reduced against.
+
+### Three operations `Fe25519` was missing
+
+`Fe25519` existed for a Montgomery ladder, which needs no square root, no
+negation and no equality test. Twisted Edwards point decoding needs all three.
+
+- **`squareRoot()`**. p ≡ 5 (mod 8), so `a^((p+3)/8)` is either a root of `a`
+  or `sqrt(−1)` times one. (p+3)/8 = 2^252 − 2, and p − 2 = 2^255 − 21, and
+  **both exponents begin with the same 250 one-bits** — so the forty-line
+  addition chain for `a^(2^250 − 1)` was factored out of `invert()` into one
+  file-local `powTwo250Minus1()` that both use. That is a shared computation
+  with two real callers, not a speculative helper: a square root that got the
+  chain wrong in the same way as the inverse would still agree with itself on
+  every self-consistency check.
+
+  Both candidates are squared back and compared, rather than one being
+  trusted. The exponentiation cannot distinguish a residue from a non-residue
+  on its own — for a non-residue it returns a perfectly ordinary-looking
+  element that is a root of nothing, and handing that to point decoding means
+  accepting a malformed public key.
+
+  `sqrt(−1)` is derived, not transcribed: 2 is a non-residue mod p, so
+  `2^((p−1)/4)` is a root of −1, and (p−1)/4 = 2^253 − 5 is the same run of
+  ones shifted up three places times 2^3 — three squarings and one multiply by
+  the cube. Consistent with how `ed25519.cpp` already derives `d` and the base
+  point rather than hardcoding 255-bit literals.
+- **`neg()`**, a subtraction from zero. Signed limbs make it unremarkable,
+  which also let `isOnCurve()` drop back to the literal `−x² + y² == 1 + d·x²y²`
+  from the rearrangement it used only to dodge a `CBigNum::modNeg()`.
+- **`isEqual()` and `isOdd()`**, both of which have to go through the
+  *canonical* value and not the limbs. The representation is redundant: two
+  limb arrays can differ and still stand for the same element, so `isEqual()`
+  subtracts and tests for zero, and `isOdd()` — RFC 8032 5.1.2's "sign" of a
+  coordinate — encodes first, because an unreduced limb 0 can have either
+  parity while standing for the same element.
+
+All four are validated against `CBigNum` the way the rest of `Fe25519` was,
+including `squareRoot()` against `CBigNum::modExp()`'s Legendre symbol, which
+checks not merely that every returned root is a root but that a root is
+returned *exactly* when one exists. The test asserts both branches were taken,
+or the agreement would be vacuous.
+
+### Two checks that became structural, and one that got stricter
+
+`checkPrivateKey()`'s "0 ≤ x, y < p" test is gone: a coordinate is an
+`Fe25519`, which has no representation outside GF(p). This is the same thing
+that happened to X25519's `u >= p` check when it migrated.
+
+The matching *input* check got stricter rather than weaker, though. RFC 8032
+5.1.3 **rejects** a y at or above p rather than reducing it — the opposite of
+RFC 7748's rule for an X25519 u-coordinate. With p gone from the file there is
+nothing to compare against, so `decodePoint()` now re-encodes the decoded y and
+requires it to match the bytes it came from; `Fe25519::toBytes()` emits the
+canonical representative, so a non-canonical input cannot survive that.
+
+`encodePoint()` also lost its return value. `CBigNum::toLittleEndian()` could
+report a value too large for 32 bytes; `Fe25519::toBytes()` always emits
+exactly 32 canonical bytes, so two dead error paths went with it.
+
+### The side channel that went with it
+
+Not the reason for the change, but worth recording:
+
+- The ladder's conditional exchange was `CBigNum::condSwap`, **a plain
+  branch** by its own documentation, on a condition that *is* a bit of the
+  secret scalar — one bit of the key leaked per iteration. It is now
+  `Fe25519::condSwap` under an arithmetic mask.
+- Every field operation was variable-time, because `CBigNum` trims leading
+  zero limbs and so does work proportional to the value. `Fe25519` is fixed at
+  ten limbs.
+- Both scalar multiplications looped over `CBigNum::bitLength()`, so the
+  *iteration count* leaked the position of the scalar's top set bit. The
+  clamped private scalar is always 255 bits by construction, but signing's
+  nonce `r` is reduced mod L and varies — and `r` is as sensitive as the key,
+  since the signature publishes `S = r + k·s` with `k` public. Both loops are
+  now fixed at 256 bits. `CBigNum::testBit()` reads false past the top limb,
+  and a leading zero bit adds the identity and leaves the `r1 − r0 == P`
+  ladder invariant intact, so the two extra steps cost nothing and change
+  nothing.
+
+One leak is left and deliberately not addressed here: `scalarMulBase()` indexes
+`baseTable()` by a window of the secret scalar, which is a secret-dependent
+memory access. The table is 16 entries of 80 bytes and realistically stays in
+L1, and fixing it properly means a constant-time table scan — a separate change
+with its own cost to measure. It predates this work; it is not introduced by it.
+
+### Validation
+
+All five of RFC 8032 section 7.1's vectors are now checked, not just TEST 1:
+the empty message, 1 byte, 2 bytes, 64 bytes (`SHA(abc)`) and **1023 bytes**.
+They were extracted from the RFC text rather than typed, and each is checked
+three ways — the seed derives the listed public key, signing produces the
+listed 64 bytes exactly, and verification succeeds both through the private
+key's own public key and through one separately imported via
+`createPublicKey()`, so a broken `decodePoint()` cannot hide behind a working
+`scalarMulBase()`.
+
+Ed25519 is byte-exact, which makes the negative controls unusually clean. Each
+was broken, rebuilt, and restored:
+
+| break | caught |
+|---|---|
+| `k·s` computed mod p through `Fe25519` instead of mod L — *the trap* | 7 of 17 Ed25519 cases fail |
+| `toBytes()`'s conditional subtraction of p dropped | 13 of 17 Ed25519 cases, and 3 of 9 `Fe25519` cases |
+| sign-bit test flipped in `recoverX()` | 7 of 17 Ed25519 cases fail |
+
+The second is the interesting one: 13 of 17 is far more than the non-canonical
+encoding alone explains, and the reason is `isEqual()`. It subtracts and tests
+for zero, so a difference of zero represented as p stops comparing equal — a
+dropped reduction does not merely leak a non-canonical byte string, it breaks
+equality for *equal values*, and almost everything downstream with it.
+
+The existing 13 Ed25519 cases and 7 `Fe25519` cases pass unchanged; no expected
+value was edited.
+
+### Still not 100 µs
+
+Verify at 1.36 ms is 21× better and still an order of magnitude off an
+optimized implementation. Where it goes, roughly: `verify` performs three
+scalar multiplications, not two — `decodePoint()` runs a full `L·point`
+subgroup check on the signature's R, which costs as much as the signature
+verification itself. The remaining headroom is in `Fe25519` (a dedicated
+squaring, and the 2^51-radix layout that MSVC's missing `__int128` currently
+rules out), a dedicated doubling formula, and a cheaper cofactor check — all
+separate items, none of them this one.

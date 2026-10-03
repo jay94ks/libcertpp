@@ -236,9 +236,11 @@ src/
       dsa.cpp                      # DSA implementation, plus the private DsaPublicKey/DsaPrivateKey/DsaContext classes
       ecdsa.cpp                     # CEcdsa implementation (incl. EcContext::deriveSharedSecret(), prime-curve ECDH), plus the private EcPublicKey/EcPrivateKey/EcContext classes
       ecdsa2.cpp                    # CEcdsa2 implementation, plus the private Ec2PublicKey/Ec2PrivateKey/Ec2Context classes
-      ed25519.cpp                    # Ed25519 implementation (edwards25519 field/point arithmetic, EdDSA logic), plus the private EdPublicKey/EdPrivateKey/EdContext classes
+      fe25519.hpp                    # Fe25519: private, GF(2^255 - 19) in ten signed limbs at radix 2^25.5 -- constant-time and division-free, shared by ed25519.cpp and x25519.cpp
+      fe25519.cpp
+      ed25519.cpp                    # Ed25519 implementation (edwards25519 point arithmetic over Fe25519, scalar arithmetic mod L over CBigNum, EdDSA logic), plus the private EdPublicKey/EdPrivateKey/EdContext classes
       ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
-      x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
+      x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication over Fe25519, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
       gost3410.cpp                      # CGost3410 implementation, plus the private GostPublicKey/GostPrivateKey/GostContext classes
   x509/
     ext.cpp                    # UnknownExtension (fallback IExtension) + IExtension::create()'s OID-dispatch table
@@ -300,7 +302,8 @@ tests/
       bpool192t1.cpp, bpool224t1.cpp, bpool256t1.cpp, bpool320t1.cpp,
       bpool384t1.cpp, bpool512t1.cpp
                                      # the 14 Brainpool curves (RFC 5639), each: same coverage as p192.cpp
-      ed25519.cpp                    # Ed25519 keygen/round-trip/sign-verify test cases, incl. the RFC 8032 TEST 1 known-answer vector (signing is deterministic, so an exact byte match validates the whole pipeline at once)
+      fe25519.cpp                    # Fe25519 test cases, every operation checked against CBigNum as an exact oracle (random values, the carry-chain edges exhaustively paired, aliasing, inversion, square root vs. CBigNum's Legendre symbol) -- compiles fe25519.cpp into its own executable, see CERTPP_TEST_PRIVATE_SOURCES
+      ed25519.cpp                    # Ed25519 keygen/round-trip/sign-verify test cases, incl. all five of RFC 8032 section 7.1's known-answer vectors (empty, 1-, 2-, 64- and 1023-byte messages; signing is deterministic, so an exact byte match validates the whole pipeline at once)
       ed448.cpp                      # Ed448: same coverage as ed25519.cpp, incl. its own RFC 8032 TEST 1 known-answer vector
       x25519.cpp                     # X25519 keygen/round-trip/deriveSharedSecret test cases, incl. RFC 7748 5.2's Diffie-Hellman and iterated-scalar-multiplication known-answer vectors (independently re-derived via a standalone Python implementation before hardcoding, not just transcribed from a single fetch)
       b163.cpp, k163.cpp, b233.cpp, k233.cpp, b283.cpp, k283.cpp,
@@ -1999,8 +2002,26 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   (which only models short-Weierstrass curves; edwards25519 is a twisted
   Edwards curve, with a different, unconditionally-complete addition
   law -- one formula handles both point addition and doubling, unlike
-  `CEcCurve::add()`/`doublePoint()`). Every curve constant (the field
-  prime `2^255 - 19`, the equation parameter `d = -121665/121666 mod p`,
+  `CEcCurve::add()`/`doublePoint()`).
+
+  **Two moduli, two types.** Ed25519 works modulo the field prime `p =
+  2^255 - 19` for point coordinates and modulo the group order `L = 2^252 +
+  0x14DEF9DEA2F79CD65812631A5CF5D3ED` for scalars, and the two are kept
+  apart by the type system rather than by discipline. Coordinates are
+  `Fe25519` (`src/crypto/asyms/fe25519.hpp`, shared with `X25519`), which
+  implements `p` and nothing else; scalars -- the clamped private scalar,
+  signing's nonce `r`, the reduced hash `k`, a signature's `S` -- are
+  `CBigNum` reduced mod `groupOrder()`. `EdPoint`/`EdPointProj` hold nothing
+  but `Fe25519`, and `Fe25519` has no conversion to or from `CBigNum`
+  (its only external representation is 32 bytes), so a scalar cannot reach
+  field arithmetic or a coordinate reach mod-`L` arithmetic without code
+  that does not compile. The distinction matters because reducing a scalar
+  mod `p` produces a signature that verifies against itself and against
+  nothing else in the world -- a failure no self-consistency test can see,
+  which is why all five of RFC 8032 section 7.1's byte-exact vectors are
+  checked.
+
+  Every curve constant (the equation parameter `d = -121665/121666 mod p`,
   the base point) is *derived* at first use from small integers rather
   than hardcoded as a 255-bit literal, except the group order's addend
   (`0x14DEF9DEA2F79CD65812631A5CF5D3ED`, independently confirmed against a
@@ -2012,7 +2033,8 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   every other algorithm in this library. Keys and signatures serialize as
   RFC 8032's own raw byte encodings (32/32/64 bytes), with no DER
   structure, since that's what the format already is. Verified against
-  RFC 8032's TEST 1 known-answer vector -- EdDSA signing is deterministic
+  all five of RFC 8032 section 7.1's known-answer vectors (the empty
+  message, 1, 2, 64 and 1023 bytes) -- EdDSA signing is deterministic
   (no per-signature randomness), so an exact signature byte match
   validates the whole pipeline (arithmetic, derived constants, clamping,
   and the signing algorithm itself) far more strongly than a
@@ -2032,7 +2054,11 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   lazily-built, process-lifetime-cached table of small multiples of `B`
   (`baseTable()`, a 4-bit window) -- unlike `CEcCurve`'s per-`CEcCurve`-
   instance table, this file's base point is a single, fixed, file-scope
-  constant, so one process-wide table suffices.
+  constant, so one process-wide table suffices. Both read the scalar over a
+  fixed 256 bits rather than over `CBigNum::bitLength()`, so the number of
+  iterations does not depend on how large a secret scalar happens to be;
+  `CBigNum::testBit()` reads false past the top limb, and a leading zero bit
+  adds the identity and leaves the ladder invariant intact.
 - **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`** define
   `Ed448` (EdDSA over edwards448/"Ed448-Goldilocks", RFC 8032) --
   structurally `Ed25519`'s twin, with its own field/point arithmetic (a
@@ -2067,10 +2093,12 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   -1`.
 - **`crypto/asyms/x25519.hpp` / `src/crypto/asyms/x25519.cpp`** define
   `X25519` (Diffie-Hellman key agreement over Curve25519, RFC 7748) --
-  same field prime as `Ed25519` (`2^255 - 19`), but Montgomery-form curve
-  arithmetic rather than twisted-Edwards, since X25519 only ever needs the
-  u-coordinate Montgomery ladder (RFC 7748 5), not full affine point
-  addition. `sign()`/`verify()` are left at `IAsymmetricContext`'s
+  same field prime as `Ed25519` (`2^255 - 19`), and in fact the same field
+  *implementation* (`Fe25519`, `src/crypto/asyms/fe25519.hpp`), but
+  Montgomery-form curve arithmetic rather than twisted-Edwards, since
+  X25519 only ever needs the u-coordinate Montgomery ladder (RFC 7748 5),
+  not full affine point addition. `sign()`/`verify()` are left at
+  `IAsymmetricContext`'s
   `ERET_NOTSUP` defaults (no signing operation exists); only
   `deriveSharedSecret()` is overridden. A private key's raw 32 bytes are
   stored unclamped and clamped at each scalar-mult call site instead

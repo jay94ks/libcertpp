@@ -48,6 +48,107 @@ namespace crypto {
             }
         }
 
+        /* out250 = a^(2^250 - 1) and out11 = a^11.
+         *
+         * The long run of one-bits that the two fixed exponents this file needs both start with:
+         * the inversion's p - 2 == 2^255 - 21, and the square root's (p + 3) / 8 == 2^252 - 2.
+         * 249 squarings and 11 multiplications, in the same order for every input, so neither the
+         * value nor any property of it affects the control flow.
+         *
+         * Shared rather than written out twice. It is a forty-line addition chain, and a square
+         * root that got it wrong in exactly the same way as the inverse would still agree with
+         * itself on every self-consistency check -- one copy, checked against CBigNum, is one
+         * thing to be sure of rather than two. a^11 comes back alongside because the inversion's
+         * tail needs it and the chain computes it on the way regardless. */
+        void powTwo250Minus1(Fe25519& out250, Fe25519& out11, const Fe25519& a) {
+            Fe25519 z2, z9, z2_5_0, z2_10_0, z2_20_0, z2_50_0, z2_100_0, work;
+
+            Fe25519::square(z2, a);                             // 2
+            Fe25519::square(work, z2);                          // 4
+            Fe25519::square(work, work);                        // 8
+            Fe25519::mul(z9, work, a);                          // 9
+            Fe25519::mul(out11, z9, z2);                        // 11
+
+            Fe25519::square(work, out11);                       // 22
+            Fe25519::mul(z2_5_0, work, z9);                     // 2^5 - 2^0
+
+            Fe25519::square(work, z2_5_0);
+            for (int i = 1; i < 5; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(z2_10_0, work, z2_5_0);                // 2^10 - 2^0
+
+            Fe25519::square(work, z2_10_0);
+            for (int i = 1; i < 10; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(z2_20_0, work, z2_10_0);               // 2^20 - 2^0
+
+            Fe25519::square(work, z2_20_0);
+            for (int i = 1; i < 20; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(work, work, z2_20_0);                  // 2^40 - 2^0
+
+            Fe25519::square(work, work);
+            for (int i = 1; i < 10; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(z2_50_0, work, z2_10_0);               // 2^50 - 2^0
+
+            Fe25519::square(work, z2_50_0);
+            for (int i = 1; i < 50; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(z2_100_0, work, z2_50_0);              // 2^100 - 2^0
+
+            Fe25519::square(work, z2_100_0);
+            for (int i = 1; i < 100; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(work, work, z2_100_0);                 // 2^200 - 2^0
+
+            Fe25519::square(work, work);
+            for (int i = 1; i < 50; ++i) {
+                Fe25519::square(work, work);
+            }
+            Fe25519::mul(out250, work, z2_50_0);                // 2^250 - 2^0
+        }
+
+        /* sqrt(-1) mod p, the constant the second square-root candidate is multiplied by.
+         *
+         * Derived rather than transcribed as a 255-bit literal, the same choice ed25519.cpp makes
+         * for the curve's d and base point: 2 is a quadratic non-residue mod p, so 2^((p-1)/4) is
+         * a square root of -1. (p - 1) / 4 == 2^253 - 5, which is the run of ones above shifted
+         * up three places (2^253 - 8) times 2^3 -- three squarings and one multiply by the cube.
+         *
+         * Computed once on first use and kept for the life of the process, like ed25519.cpp's own
+         * derived constants. */
+        const Fe25519& sqrtMinusOne() {
+            static const Fe25519 value = [] {
+                Fe25519 one, two;
+                one.setOne();
+                Fe25519::add(two, one, one);
+
+                Fe25519 chain, unused11;
+                powTwo250Minus1(chain, unused11, two);          // 2^(2^250 - 1)
+
+                Fe25519 result;
+                Fe25519::square(result, chain);
+                Fe25519::square(result, result);
+                Fe25519::square(result, result);                // 2^(2^253 - 8)
+
+                Fe25519 cube;
+                Fe25519::square(cube, two);
+                Fe25519::mul(cube, cube, two);                  // 2^3
+
+                Fe25519::mul(result, result, cube);             // 2^(2^253 - 5)
+                return result;
+            }();
+
+            return value;
+        }
+
     } // namespace
 
     /* Zero. */
@@ -273,64 +374,21 @@ namespace crypto {
         store(out, t);
     }
 
+    /* out = -a. */
+    void Fe25519::neg(Fe25519& out, const Fe25519& a) {
+        Fe25519 zero;
+        zero.setZero();
+        sub(out, zero, a);
+    }
+
     /* out = a^-1, via the fixed a^(p-2) chain. */
     void Fe25519::invert(Fe25519& out, const Fe25519& a) {
         // p - 2 is 250 one-bits followed by 01101, so the exponentiation is a fixed sequence of
         // 254 squarings and 11 multiplications. It runs identically for every input -- including
         // zero, which simply yields zero -- so neither the value nor any property of it affects
         // the control flow.
-        Fe25519 z2, z9, z11, z2_5_0, z2_10_0, z2_20_0, z2_50_0, z2_100_0, work;
-
-        square(z2, a);                                  // 2
-        square(work, z2);                               // 4
-        square(work, work);                             // 8
-        mul(z9, work, a);                               // 9
-        mul(z11, z9, z2);                               // 11
-
-        square(work, z11);                              // 22
-        mul(z2_5_0, work, z9);                          // 2^5 - 2^0
-
-        square(work, z2_5_0);
-        for (int i = 1; i < 5; ++i) {
-            square(work, work);
-        }
-        mul(z2_10_0, work, z2_5_0);                     // 2^10 - 2^0
-
-        square(work, z2_10_0);
-        for (int i = 1; i < 10; ++i) {
-            square(work, work);
-        }
-        mul(z2_20_0, work, z2_10_0);                    // 2^20 - 2^0
-
-        square(work, z2_20_0);
-        for (int i = 1; i < 20; ++i) {
-            square(work, work);
-        }
-        mul(work, work, z2_20_0);                       // 2^40 - 2^0
-
-        square(work, work);
-        for (int i = 1; i < 10; ++i) {
-            square(work, work);
-        }
-        mul(z2_50_0, work, z2_10_0);                    // 2^50 - 2^0
-
-        square(work, z2_50_0);
-        for (int i = 1; i < 50; ++i) {
-            square(work, work);
-        }
-        mul(z2_100_0, work, z2_50_0);                   // 2^100 - 2^0
-
-        square(work, z2_100_0);
-        for (int i = 1; i < 100; ++i) {
-            square(work, work);
-        }
-        mul(work, work, z2_100_0);                      // 2^200 - 2^0
-
-        square(work, work);
-        for (int i = 1; i < 50; ++i) {
-            square(work, work);
-        }
-        mul(work, work, z2_50_0);                       // 2^250 - 2^0
+        Fe25519 work, z11;
+        powTwo250Minus1(work, z11, a);                  // 2^250 - 2^0
 
         square(work, work);
         square(work, work);
@@ -338,6 +396,41 @@ namespace crypto {
         square(work, work);
         square(work, work);
         mul(out, work, z11);                            // 2^255 - 21 == p - 2
+    }
+
+    /* out = a square root of a, if a has one. */
+    bool Fe25519::squareRoot(Fe25519& out, const Fe25519& a) {
+        // (p + 3) / 8 == 2^252 - 2, which is the shared chain's 2^250 - 1 squared (2^251 - 2),
+        // times a (2^251 - 1), squared again.
+        Fe25519 chain, unused11;
+        powTwo250Minus1(chain, unused11, a);            // 2^250 - 1
+
+        Fe25519 candidate;
+        square(candidate, chain);                       // 2^251 - 2
+        mul(candidate, candidate, a);                   // 2^251 - 1
+        square(candidate, candidate);                   // 2^252 - 2 == (p + 3) / 8
+
+        // --> Both candidates are squared back and compared, rather than one being trusted. The
+        // exponentiation alone cannot tell a residue from a non-residue: for a non-residue it
+        // returns a perfectly ordinary-looking element that is a root of nothing. Skipping the
+        // check would hand Ed25519's point decoding an x that does not satisfy the curve
+        // equation, i.e. accept a malformed public key.
+        Fe25519 check;
+        square(check, candidate);
+        if (check.isEqual(a)) {
+            out = candidate;
+            return true;
+        }
+
+        mul(candidate, candidate, sqrtMinusOne());
+
+        square(check, candidate);
+        if (check.isEqual(a)) {
+            out = candidate;
+            return true;
+        }
+
+        return false;
     }
 
     /* Swaps a and b under a mask, without branching. */
@@ -366,6 +459,23 @@ namespace crypto {
         }
 
         return accumulator == 0;
+    }
+
+    /* Whether this element equals another. */
+    bool Fe25519::isEqual(const Fe25519& other) const {
+        // By difference, not by limbs: the representation is redundant, so two limb arrays can
+        // differ and still stand for the same element.
+        Fe25519 difference;
+        sub(difference, *this, other);
+        return difference.isZero();
+    }
+
+    /* The low bit of the canonical representative. */
+    bool Fe25519::isOdd() const {
+        uint8_t encoded[BYTES];
+        toBytes(encoded);
+
+        return (encoded[0] & 1u) != 0;
     }
 
 } // namespace crypto

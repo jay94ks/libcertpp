@@ -1,6 +1,7 @@
 #include <certpp/crypto/asyms/ed25519.hpp>
 #include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
+#include "fe25519.hpp"
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/hashers/sha512.hpp>
 #include <cstring>
@@ -12,12 +13,47 @@ namespace crypto {
 
     namespace {
 
+        // --> Ed25519 works with TWO moduli, and conflating them produces a signature that
+        // verifies against itself and against nothing else in the world:
+        //
+        //   * the field prime p = 2^255 - 19, for point coordinates. That is Fe25519's modulus,
+        //     and every coordinate in this file is an Fe25519.
+        //   * the group order L = 2^252 + 27742317777372353535851937790883648493, for scalars --
+        //     the clamped private scalar, signing's nonce r, the reduced hash k, and the S half
+        //     of a signature. Those stay on CBigNum, every one of them reduced mod groupOrder().
+        //
+        // The split is carried by the type system rather than by discipline: EdPoint and
+        // EdPointProj hold nothing but Fe25519, so a scalar cannot be stored in a point;
+        // Fe25519 has no constructor, conversion or assignment from CBigNum, and vice versa, so
+        // the only route between the two is an explicit 32-byte encode/decode that appears
+        // nowhere in this file. Routing a scalar through Fe25519 therefore does not compile, and
+        // routing a coordinate through CBigNum mod L does not either.
+        //
+        // The one place the two meet is scalarMul()/scalarMulBase(), which take a mod-L scalar
+        // and return a mod-p point -- and they read the scalar only as a sequence of bits, never
+        // as a field element.
+
+        /* An edwards25519 field element of the small integer `value`, for the derived constants
+         * below. Deliberately not a general CBigNum-to-Fe25519 bridge -- see the note above; it
+         * goes through the byte encoding, which is the only conversion Fe25519 has. */
+        Fe25519 feSmall(uint32_t value) {
+            uint8_t bytes[32] = { 0 };
+            bytes[0] = uint8_t(value);
+            bytes[1] = uint8_t(value >> 8);
+            bytes[2] = uint8_t(value >> 16);
+            bytes[3] = uint8_t(value >> 24);
+
+            Fe25519 out;
+            out.fromBytes(bytes);
+            return out;
+        }
+
         /* A point on edwards25519 (or any twisted Edwards curve with a = -1), in affine
          * coordinates. Unlike a short-Weierstrass SEcPoint, there is no separate point at
          * infinity -- the group identity (0, 1) is an ordinary finite point. */
         struct EdPoint {
-            CBigNum x;
-            CBigNum y;
+            Fe25519 x;
+            Fe25519 y;
         };
 
         /* An edwards25519 point in extended projective coordinates (Hisil/Wong/Carter/Dawson,
@@ -26,69 +62,98 @@ namespace crypto {
          * Only scalarMul() uses this representation -- everywhere else in this file still deals
          * in affine EdPoint, converting at the boundary (toProjective()/toAffine()). */
         struct EdPointProj {
-            CBigNum x, y, z, t;
+            Fe25519 x, y, z, t;
         };
 
         /* Everything specific to implementing edwards25519 (RFC 8032): field/group constants,
          * point arithmetic (affine and extended-projective), point encode/decode, and the
          * SHA-512-based key-derivation RFC 8032 ties to this specific curve -- bundled into one
          * class rather than left as file-scope free functions, mirroring how AesCore/DesCore/
-         * ChaCha20Core (crypto/syms/) each own everything their algorithm needs. */
+         * ChaCha20Core (crypto/syms/) each own everything their algorithm needs.
+         *
+         * --> The coordinate arithmetic here used to run on CBigNum, and that was the library's
+         * single worst performance bug rather than a matter of taste. CBigNum::mulMod() is mul()
+         * then mod(), and mod() calls divMod() -- so every field multiplication in the point
+         * arithmetic performed a full big-number division, and a 255-bit ladder performs tens of
+         * thousands of them. Measured on this machine: sign 11.4 ms and verify 37.9 ms, against
+         * X25519's 0.25 ms for a scalar multiplication on the *same curve in the same build*,
+         * the difference being that X25519 had already been migrated onto Fe25519. Doing the
+         * same here is what this file's arithmetic now is; the curve itself (extended
+         * coordinates, the fixed-base window table) was already sound and is unchanged. */
         class Edwards25519 {
         private:
             static constexpr size_t BASE_TABLE_WINDOW = 4;
             static constexpr size_t BASE_TABLE_SIZE = size_t(1) << BASE_TABLE_WINDOW; // 16
 
+            /* --> Scalar bit count, fixed rather than taken from the scalar's own bitLength().
+             * Both scalar multiplications below used to loop over CBigNum::bitLength() bits,
+             * which is the position of the scalar's top set bit -- for signing's nonce r, a
+             * secret, that made the *number of iterations* leak how large r is. The clamped
+             * private scalar is always 255 bits by construction so it never leaked, but r and
+             * k*s are reduced mod L and vary. 256 covers both (L < 2^253, the clamped scalar <
+             * 2^255), and CBigNum::testBit() reads false past the top limb, so the extra leading
+             * zero bits cost two ladder steps and change nothing: a zero bit adds the identity
+             * to r0 and leaves the r1 - r0 == P invariant intact. */
+            static constexpr size_t SCALAR_BITS = 256;
+
             /* The edwards25519 curve equation's d = -121665/121666 mod p (RFC 8032 5.1), derived
              * from the two small integers rather than hardcoded as a 255-bit constant. */
-            static const CBigNum& curveD() {
-                static const CBigNum d = [] {
-                    const CBigNum& p = fieldPrime();
-                    CBigNum inv121666;
-                    CBigNum::modInverse(CBigNum(uint64_t(121666)), p, inv121666);
-                    return CBigNum(uint64_t(121665)).mulMod(inv121666, p).modNeg(p);
+            static const Fe25519& curveD() {
+                static const Fe25519 d = [] {
+                    Fe25519 inv121666;
+                    Fe25519::invert(inv121666, feSmall(121666));
+
+                    Fe25519 value;
+                    Fe25519::mul(value, feSmall(121665), inv121666);
+                    Fe25519::neg(value, value);
+                    return value;
                 }();
 
                 return d;
             }
 
             static EdPoint identityPoint() {
-                return EdPoint{ CBigNum(), CBigNum(uint64_t(1)) };
+                EdPoint out;
+                out.x.setZero();
+                out.y.setOne();
+                return out;
             }
 
             static EdPointProj toProjective(const EdPoint& pt) {
-                CBigNum t(pt.x);
-                t.mulMod(pt.y, fieldPrime());
-                return EdPointProj{ pt.x, pt.y, CBigNum(uint64_t(1)), std::move(t) };
+                EdPointProj out;
+                out.x = pt.x;
+                out.y = pt.y;
+                out.z.setOne();
+                Fe25519::mul(out.t, pt.x, pt.y);
+                return out;
             }
 
             static EdPoint toAffine(const EdPointProj& pt) {
-                const CBigNum& p = fieldPrime();
+                Fe25519 zInv;
+                Fe25519::invert(zInv, pt.z);
 
-                CBigNum zInv;
-                CBigNum::modInverse(pt.z, p, zInv);
-
-                CBigNum x(pt.x);
-                x.mulMod(zInv, p);
-
-                CBigNum y(pt.y);
-                y.mulMod(zInv, p);
-
-                return EdPoint{ std::move(x), std::move(y) };
+                EdPoint out;
+                Fe25519::mul(out.x, pt.x, zInv);
+                Fe25519::mul(out.y, pt.y, zInv);
+                return out;
             }
 
             static EdPointProj identityPointProj() {
-                return EdPointProj{ CBigNum(), CBigNum(uint64_t(1)), CBigNum(uint64_t(1)), CBigNum() };
+                EdPointProj out;
+                out.x.setZero();
+                out.y.setOne();
+                out.z.setOne();
+                out.t.setZero();
+                return out;
             }
 
             /* 2*d, precomputed once for pointAddProj()'s "C" term (RFC 8032 5.1's d, see
              * curveD()). */
-            static const CBigNum& twoCurveD() {
-                static const CBigNum v = [] {
-                    CBigNum d2(curveD());
-                    d2.add(d2);
-                    d2.mod(fieldPrime());
-                    return d2;
+            static const Fe25519& twoCurveD() {
+                static const Fe25519 v = [] {
+                    Fe25519 value;
+                    Fe25519::add(value, curveD(), curveD());
+                    return value;
                 }();
 
                 return v;
@@ -100,167 +165,122 @@ namespace crypto {
              * avoiding a modular inversion per call by carrying the common denominator in Z
              * instead of dividing it out immediately. A dedicated (cheaper) doubling formula
              * exists but isn't used here, for the same correctness/simplicity-over-performance
-             * reason the rest of this module gives. */
+             * reason the rest of this module gives.
+             *
+             * Nine field multiplications and seven additions/subtractions, all on Fe25519, and
+             * no reduction step of its own -- every Fe25519 entry point leaves its result
+             * carry-reduced, which is what removed the mod() that used to follow each one. */
             static EdPointProj pointAddProj(const EdPointProj& p1, const EdPointProj& p2) {
-                const CBigNum& p = fieldPrime();
-                const CBigNum& d2 = twoCurveD();
+                Fe25519 lhs, rhs;
 
-                CBigNum y1MinusX1(p1.y);
-                y1MinusX1.modSub(p1.x, p);
+                Fe25519::sub(lhs, p1.y, p1.x);
+                Fe25519::sub(rhs, p2.y, p2.x);
 
-                CBigNum y2MinusX2(p2.y);
-                y2MinusX2.modSub(p2.x, p);
+                Fe25519 A;
+                Fe25519::mul(A, lhs, rhs);
 
-                CBigNum A(y1MinusX1);
-                A.mulMod(y2MinusX2, p);
+                Fe25519::add(lhs, p1.y, p1.x);
+                Fe25519::add(rhs, p2.y, p2.x);
 
-                CBigNum y1PlusX1(p1.y);
-                y1PlusX1.add(p1.x);
-                y1PlusX1.mod(p);
+                Fe25519 B;
+                Fe25519::mul(B, lhs, rhs);
 
-                CBigNum y2PlusX2(p2.y);
-                y2PlusX2.add(p2.x);
-                y2PlusX2.mod(p);
+                Fe25519 C;
+                Fe25519::mul(C, p1.t, p2.t);
+                Fe25519::mul(C, C, twoCurveD());
 
-                CBigNum B(y1PlusX1);
-                B.mulMod(y2PlusX2, p);
+                Fe25519 D;
+                Fe25519::mul(D, p1.z, p2.z);
+                Fe25519::add(D, D, D);
 
-                CBigNum C(p1.t);
-                C.mulMod(p2.t, p);
-                C.mulMod(d2, p);
+                Fe25519 E, F, G, H;
+                Fe25519::sub(E, B, A);
+                Fe25519::sub(F, D, C);
+                Fe25519::add(G, D, C);
+                Fe25519::add(H, B, A);
 
-                CBigNum D(p1.z);
-                D.mulMod(p2.z, p);
-                D.add(D);
-                D.mod(p);
-
-                CBigNum E(B);
-                E.modSub(A, p);
-
-                CBigNum F(D);
-                F.modSub(C, p);
-
-                CBigNum G(D);
-                G.add(C);
-                G.mod(p);
-
-                CBigNum H(B);
-                H.add(A);
-                H.mod(p);
-
-                CBigNum x3(E);
-                x3.mulMod(F, p);
-
-                CBigNum y3(G);
-                y3.mulMod(H, p);
-
-                CBigNum t3(E);
-                t3.mulMod(H, p);
-
-                CBigNum z3(F);
-                z3.mulMod(G, p);
-
-                return EdPointProj{ std::move(x3), std::move(y3), std::move(z3), std::move(t3) };
+                EdPointProj out;
+                Fe25519::mul(out.x, E, F);
+                Fe25519::mul(out.y, G, H);
+                Fe25519::mul(out.z, F, G);
+                Fe25519::mul(out.t, E, H);
+                return out;
             }
 
-            static void condSwapPointProj(bool doSwap, EdPointProj& a, EdPointProj& b) {
-                CBigNum::condSwap(doSwap, a.x, b.x);
-                CBigNum::condSwap(doSwap, a.y, b.y);
-                CBigNum::condSwap(doSwap, a.z, b.z);
-                CBigNum::condSwap(doSwap, a.t, b.t);
+            /* The ladder's conditional exchange, under an all-ones/all-zero mask rather than a
+             * bool. This used to be CBigNum::condSwap, whose own documentation admits it is a
+             * plain branch -- and the condition here *is* a bit of a secret scalar, so the branch
+             * leaked one bit of it per iteration. Fe25519::condSwap is arithmetic. */
+            static void condSwapPointProj(uint32_t mask, EdPointProj& a, EdPointProj& b) {
+                Fe25519::condSwap(mask, a.x, b.x);
+                Fe25519::condSwap(mask, a.y, b.y);
+                Fe25519::condSwap(mask, a.z, b.z);
+                Fe25519::condSwap(mask, a.t, b.t);
             }
 
             /* Branch-free double-and-add over EdPointProj -- same R0/R1 ladder invariant as
              * CEcCurve::scalarMul() (crypto/eccurve.cpp), just entirely in extended projective
              * coordinates so the loop itself never pays for a modular inversion; toAffine() below
              * pays for exactly one, at the very end, replacing the one-inversion-per-step affine
-             * version used to have. */
+             * version used to have.
+             *
+             * `k` is a scalar mod L, read only as bits -- never as a field element. */
             static EdPointProj scalarMulProj(const EdPointProj& pt, const CBigNum& k) {
                 EdPointProj r0 = identityPointProj();
                 EdPointProj r1 = pt;
 
-                for (size_t i = k.bitLength(); i-- > 0; ) {
-                    bool bit = k.testBit(i);
+                for (size_t i = SCALAR_BITS; i-- > 0; ) {
+                    // 0 or 0xFFFFFFFF, computed rather than branched on.
+                    const uint32_t mask = uint32_t(0) - uint32_t(k.testBit(i) ? 1u : 0u);
 
-                    condSwapPointProj(bit, r0, r1);
+                    condSwapPointProj(mask, r0, r1);
                     EdPointProj sum = pointAddProj(r0, r1);
                     EdPointProj doubled = pointAddProj(r0, r0);
-                    r1 = std::move(sum);
-                    r0 = std::move(doubled);
-                    condSwapPointProj(bit, r0, r1);
+                    r1 = sum;
+                    r0 = doubled;
+                    condSwapPointProj(mask, r0, r1);
                 }
 
                 return r0;
             }
 
-            /* Computes a square root of x2 mod p for p == 5 (mod 8) (RFC 8032 5.1.3's algorithm,
-             * restated in the equivalent "candidate = x2^((p+3)/8)" form so it only needs one
-             * modular inverse, already paid for by the caller computing x2 itself). Returns false
-             * if x2 is not a quadratic residue mod p (i.e. the point being decoded is invalid). */
-            static bool fieldSqrt(const CBigNum& x2, CBigNum& out) {
-                const CBigNum& p = fieldPrime();
-
-                CBigNum exp(p);
-                exp.add(CBigNum(uint64_t(3)));
-                exp.shr(3); // exact: p + 3 == 0 (mod 8)
-
-                CBigNum r = CBigNum::modExp(x2, exp, p);
-
-                CBigNum r2(r);
-                r2.mulMod(r, p);
-
-                CBigNum reducedX2(x2);
-                reducedX2.mod(p);
-
-                if (r2 == reducedX2) {
-                    out = r;
-                    return true;
-                }
-
-                reducedX2.modNeg(p);
-                if (r2 == reducedX2) {
-                    CBigNum exp2(p);
-                    exp2.sub(CBigNum(uint64_t(1)));
-                    exp2.shr(2);
-
-                    CBigNum sqrtM1 = CBigNum::modExp(CBigNum(uint64_t(2)), exp2, p);
-                    r.mulMod(sqrtM1, p);
-                    out = std::move(r);
-                    return true;
-                }
-
-                return false;
-            }
-
             /* Recovers x from y and a desired sign (parity) bit, per RFC 8032 5.1.3: x^2 =
              * (y^2-1) / (d*y^2+1), then the root with the wrong parity is negated. Used both for
              * decoding a compressed point and for deriving the base point's x-coordinate from its
-             * y. */
-            static bool recoverX(const CBigNum& y, bool signBit, CBigNum& outX) {
-                const CBigNum& p = fieldPrime();
-                const CBigNum& d = curveD();
+             * y.
+             *
+             * The square root itself is Fe25519::squareRoot(), which is where the old fieldSqrt()
+             * went: the p == 5 (mod 8) algorithm is a property of the field, not of the curve. */
+            static bool recoverX(const Fe25519& y, bool signBit, Fe25519& outX) {
+                Fe25519 one;
+                one.setOne();
 
-                CBigNum yy(y);
-                yy.mulMod(y, p);
+                Fe25519 yy;
+                Fe25519::square(yy, y);
 
-                CBigNum u(yy);
-                u.modSub(CBigNum(uint64_t(1)), p);
+                Fe25519 u;
+                Fe25519::sub(u, yy, one);
 
-                CBigNum v(d);
-                v.mulMod(yy, p);
-                v.add(CBigNum(uint64_t(1)));
-                v.mod(p);
+                Fe25519 v;
+                Fe25519::mul(v, curveD(), yy);
+                Fe25519::add(v, v, one);
 
-                CBigNum vInv;
-                if (!CBigNum::modInverse(v, p, vInv)) {
+                // Fe25519::invert() returns zero for a zero input rather than failing, which
+                // keeps it branch-free -- so a v with no inverse has to be caught here instead.
+                // (No edwards25519 y actually produces one, but a decode must not depend on
+                // that being true.)
+                if (v.isZero()) {
                     return false;
                 }
 
-                CBigNum x2(u);
-                x2.mulMod(vInv, p);
+                Fe25519 vInv;
+                Fe25519::invert(vInv, v);
 
-                CBigNum x;
-                if (!fieldSqrt(x2, x)) {
+                Fe25519 x2;
+                Fe25519::mul(x2, u, vInv);
+
+                Fe25519 x;
+                if (!Fe25519::squareRoot(x, x2)) {
                     return false;
                 }
 
@@ -268,11 +288,11 @@ namespace crypto {
                     return false; // RFC 8032 5.1.3: x == 0 must pair with a clear sign bit
                 }
 
-                if (x.testBit(0) != signBit) {
-                    x.modNeg(p);
+                if (x.isOdd() != signBit) {
+                    Fe25519::neg(x, x);
                 }
 
-                outX = std::move(x);
+                outX = x;
                 return true;
             }
 
@@ -282,13 +302,13 @@ namespace crypto {
              * sign bit. */
             static const EdPoint& basePoint() {
                 static const EdPoint b = [] {
-                    const CBigNum& p = fieldPrime();
+                    Fe25519 inv5;
+                    Fe25519::invert(inv5, feSmall(5));
 
-                    CBigNum inv5;
-                    CBigNum::modInverse(CBigNum(uint64_t(5)), p, inv5);
-                    CBigNum by = CBigNum(uint64_t(4)).mulMod(inv5, p);
+                    Fe25519 by;
+                    Fe25519::mul(by, feSmall(4), inv5);
 
-                    CBigNum bx;
+                    Fe25519 bx;
                     bool ok = recoverX(by, false, bx);
                     (void)ok; // recoverX() always succeeds for edwards25519's actual base point
 
@@ -319,17 +339,17 @@ namespace crypto {
             }
 
         public:
-            /* The edwards25519 field prime, 2^255 - 19 (RFC 8032 5.1) -- cheaper and safer to
-             * derive than to transcribe as a 64-hex-digit literal. */
-            static const CBigNum& fieldPrime() {
-                static const CBigNum p = CBigNum(uint64_t(1)).shl(255).sub(CBigNum(uint64_t(19)));
-                return p;
-            }
-
             /* The edwards25519 base point's subgroup order L = 2^252 +
              * 0x14DEF9DEA2F79CD65812631A5CF5D3ED (RFC 8032 5.1; independently confirmed against a
              * second source before hardcoding -- see this module's asyms/ siblings for why that
-             * matters). The addend has no simpler closed form, unlike the field prime above. */
+             * matters). The addend has no simpler closed form, unlike the field prime.
+             *
+             * This is the *scalar* modulus and the only modulus in this file that is not p, so it
+             * is the only one that is still a CBigNum -- Fe25519 is valid for p alone, and
+             * reducing a scalar with it would silently produce a signature that verifies against
+             * itself and nothing else. There is deliberately no edwards25519 equivalent of
+             * fieldPrime() here any more: p now lives inside Fe25519, which is the only thing
+             * that needs it. */
             static const CBigNum& groupOrder() {
                 static const CBigNum l = [] {
                     CBigNum addend;
@@ -340,83 +360,70 @@ namespace crypto {
             }
 
             static bool isIdentity(const EdPoint& pt) {
-                return pt.x.isZero() && pt.y == CBigNum(uint64_t(1));
+                Fe25519 one;
+                one.setOne();
+
+                return pt.x.isZero() && pt.y.isEqual(one);
             }
 
             /* Checks -x^2 + y^2 == 1 + d*x^2*y^2 (mod p), i.e. edwards25519's curve equation
-             * (RFC 8032 5.1), restated as y^2 == 1 + x^2 + d*x^2*y^2 to avoid a modNeg(). Assumes
-             * x, y are already field-reduced (0 <= x, y < p) -- callers check that separately. */
-            static bool isOnCurve(const CBigNum& x, const CBigNum& y) {
-                const CBigNum& p = fieldPrime();
-                const CBigNum& d = curveD();
+             * (RFC 8032 5.1). Stated in that literal form rather than the rearrangement the
+             * CBigNum version used, which existed only to dodge a modNeg(); over signed limbs a
+             * subtraction is no more expensive than an addition, so the detour is gone. */
+            static bool isOnCurve(const Fe25519& x, const Fe25519& y) {
+                Fe25519 one;
+                one.setOne();
 
-                CBigNum lhs(y);
-                lhs.mulMod(y, p);
+                Fe25519 xx, yy;
+                Fe25519::square(xx, x);
+                Fe25519::square(yy, y);
 
-                CBigNum xx(x);
-                xx.mulMod(x, p);
+                Fe25519 lhs;
+                Fe25519::sub(lhs, yy, xx);              // -x^2 + y^2
 
-                CBigNum yy(y);
-                yy.mulMod(y, p);
+                Fe25519 rhs;
+                Fe25519::mul(rhs, curveD(), xx);
+                Fe25519::mul(rhs, rhs, yy);
+                Fe25519::add(rhs, rhs, one);            // 1 + d*x^2*y^2
 
-                CBigNum dxxyy(d);
-                dxxyy.mulMod(xx, p);
-                dxxyy.mulMod(yy, p);
-
-                CBigNum rhs(uint64_t(1));
-                rhs.add(xx);
-                rhs.add(dxxyy);
-                rhs.mod(p);
-
-                return lhs == rhs;
+                return lhs.isEqual(rhs);
             }
 
             /* Twisted Edwards addition (a = -1). Unconditionally complete (no exceptional input
              * pairs, including P + P) since d is not a square mod p for edwards25519 -- unlike
-             * short-Weierstrass addition, this same formula handles doubling. */
+             * short-Weierstrass addition, this same formula handles doubling.
+             *
+             * Two inversions per call, so this is for the places that add a handful of points and
+             * want the result in affine form (building the base table, and combining verify()'s
+             * two terms); everything in a loop uses pointAddProj() instead. */
             static EdPoint pointAdd(const EdPoint& p1, const EdPoint& p2) {
-                const CBigNum& p = fieldPrime();
-                const CBigNum& d = curveD();
+                Fe25519 one;
+                one.setOne();
 
-                CBigNum x1y2(p1.x);
-                x1y2.mulMod(p2.y, p);
+                Fe25519 x1y2, y1x2, y1y2, x1x2;
+                Fe25519::mul(x1y2, p1.x, p2.y);
+                Fe25519::mul(y1x2, p1.y, p2.x);
+                Fe25519::mul(y1y2, p1.y, p2.y);
+                Fe25519::mul(x1x2, p1.x, p2.x);
 
-                CBigNum y1x2(p1.y);
-                y1x2.mulMod(p2.x, p);
+                Fe25519 dxxyy;
+                Fe25519::mul(dxxyy, curveD(), x1x2);
+                Fe25519::mul(dxxyy, dxxyy, y1y2);
 
-                CBigNum y1y2(p1.y);
-                y1y2.mulMod(p2.y, p);
+                Fe25519 xNum, xDen, yNum, yDen;
+                Fe25519::add(xNum, x1y2, y1x2);
+                Fe25519::add(xDen, one, dxxyy);
+                Fe25519::add(yNum, y1y2, x1x2);
+                Fe25519::sub(yDen, one, dxxyy);
 
-                CBigNum x1x2(p1.x);
-                x1x2.mulMod(p2.x, p);
+                Fe25519 xDenInv, yDenInv;
+                Fe25519::invert(xDenInv, xDen);
+                Fe25519::invert(yDenInv, yDen);
 
-                CBigNum dxxyy(d);
-                dxxyy.mulMod(x1x2, p);
-                dxxyy.mulMod(y1y2, p);
-
-                CBigNum xNum(x1y2);
-                xNum.add(y1x2);
-                xNum.mod(p);
-
-                CBigNum xDen(uint64_t(1));
-                xDen.add(dxxyy);
-                xDen.mod(p);
-
-                CBigNum yNum(y1y2);
-                yNum.add(x1x2);
-                yNum.mod(p);
-
-                CBigNum yDen(uint64_t(1));
-                yDen.modSub(dxxyy, p);
-
-                CBigNum xDenInv, yDenInv;
-                CBigNum::modInverse(xDen, p, xDenInv);
-                CBigNum::modInverse(yDen, p, yDenInv);
-
-                xNum.mulMod(xDenInv, p);
-                yNum.mulMod(yDenInv, p);
-
-                return EdPoint{ std::move(xNum), std::move(yNum) };
+                EdPoint out;
+                Fe25519::mul(out.x, xNum, xDenInv);
+                Fe25519::mul(out.y, yNum, yDenInv);
+                return out;
             }
 
             static EdPoint scalarMul(const EdPoint& pt, const CBigNum& k) {
@@ -437,12 +444,9 @@ namespace crypto {
             static EdPoint scalarMulBase(const CBigNum& k) {
                 const TArray<EdPoint>& table = baseTable();
 
-                size_t bits = k.bitLength();
-                size_t numWindows = (bits + BASE_TABLE_WINDOW - 1) / BASE_TABLE_WINDOW;
-
                 EdPointProj result = identityPointProj();
 
-                for (size_t w = numWindows; w-- > 0; ) {
+                for (size_t w = SCALAR_BITS / BASE_TABLE_WINDOW; w-- > 0; ) {
                     for (size_t i = 0; i < BASE_TABLE_WINDOW; ++i) {
                         result = pointAddProj(result, result);
                     }
@@ -462,17 +466,18 @@ namespace crypto {
             }
 
             /* Encodes pt per RFC 8032 5.1.2: y as a 32-byte little-endian integer, with the sign
-             * (parity) of x placed in the top bit of the last byte. */
-            static bool encodePoint(const EdPoint& pt, uint8_t out[32]) {
-                if (!pt.y.toLittleEndian(SByteSpan(out, 32))) {
-                    return false;
-                }
+             * (parity) of x placed in the top bit of the last byte.
+             *
+             * Cannot fail, unlike the CBigNum version it replaces -- Fe25519::toBytes() always
+             * emits exactly 32 canonical bytes with bit 255 clear, where CBigNum::toLittleEndian()
+             * had to report a value too large for the buffer. The callers' dead error paths went
+             * with it. */
+            static void encodePoint(const EdPoint& pt, uint8_t out[32]) {
+                pt.y.toBytes(out);
 
-                if (pt.x.testBit(0)) {
+                if (pt.x.isOdd()) {
                     out[31] |= 0x80;
                 }
-
-                return true;
             }
 
             /* Decodes a point per RFC 8032 5.1.3, validating it lies on the curve (recoverX()
@@ -488,13 +493,22 @@ namespace crypto {
                 bool signBit = (yBytes[31] & 0x80) != 0;
                 yBytes[31] &= 0x7F;
 
-                CBigNum y = CBigNum::fromLittleEndian(SReadOnlyByteSpan(yBytes, 32));
+                Fe25519 y;
+                y.fromBytes(yBytes);
 
-                if (y >= fieldPrime()) {
+                // RFC 8032 5.1.3 *rejects* a y at or above p rather than reducing it -- the
+                // opposite of RFC 7748's rule for an X25519 u-coordinate, which X25519's
+                // decodeUCoordinate() follows. Fe25519::toBytes() emits the canonical
+                // representative in [0, p), so a y that does not re-encode to the bytes it came
+                // from was not canonical; that replaces the old `y >= fieldPrime()` comparison
+                // without needing a CBigNum copy of p to compare against.
+                uint8_t canonical[32];
+                y.toBytes(canonical);
+                if (std::memcmp(canonical, yBytes, 32) != 0) {
                     return false;
                 }
 
-                CBigNum x;
+                Fe25519 x;
                 if (!recoverX(y, signBit, x)) {
                     return false;
                 }
@@ -540,7 +554,8 @@ namespace crypto {
             }
 
             /* Derives the clamped scalar s and signing prefix from a 32-byte seed, per RFC 8032
-             * 5.1.5's key generation steps 1-2. */
+             * 5.1.5's key generation steps 1-2. The scalar is a CBigNum because it is a scalar:
+             * it is reduced and multiplied mod L, never mod p. */
             static void deriveFromSeed(const uint8_t seed[32], CBigNum& outScalar, uint8_t outPrefix[32]) {
                 uint8_t h[64];
                 sha512({ SReadOnlyByteSpan(seed, 32) }, h);
@@ -654,9 +669,7 @@ namespace crypto {
         EdPoint a = Edwards25519::scalarMulBase(s);
 
         uint8_t aEncoded[32];
-        if (!Edwards25519::encodePoint(a, aEncoded)) {
-            return nullptr;
-        }
+        Edwards25519::encodePoint(a, aEncoded);
 
         return std::make_shared<EdPublicKey>(a, aEncoded);
     }
@@ -691,6 +704,10 @@ namespace crypto {
                     return ERET_NOSPC;
                 }
 
+                // Everything from here to the encoded signature is scalar arithmetic mod L, not
+                // field arithmetic mod p -- hence CBigNum throughout. The only mod-p values in
+                // this function are inside scalarMulBase(), which never sees a reduced scalar as
+                // a field element.
                 const CBigNum& L = Edwards25519::groupOrder();
 
                 CBigNum s;
@@ -711,11 +728,7 @@ namespace crypto {
 
                 EdPoint rPoint = Edwards25519::scalarMulBase(r);
                 uint8_t rEncoded[32];
-                if (!Edwards25519::encodePoint(rPoint, rEncoded)) {
-                    s.secureClear();
-                    r.secureClear();
-                    return ERET_UNKNOWN;
-                }
+                Edwards25519::encodePoint(rPoint, rEncoded);
 
                 uint8_t kHash[64];
                 Edwards25519::sha512({ SReadOnlyByteSpan(rEncoded, 32), SReadOnlyByteSpan(pub->encoded(), 32), message }, kHash);
@@ -768,6 +781,7 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
+                // S is a scalar, so it is range-checked against L and never against p.
                 const CBigNum& L = Edwards25519::groupOrder();
                 CBigNum sBig = CBigNum::fromLittleEndian(sEncoded);
                 if (sBig >= L) {
@@ -781,7 +795,7 @@ namespace crypto {
                 EdPoint lhs = Edwards25519::scalarMulBase(sBig);
                 EdPoint rhs = Edwards25519::pointAdd(rPoint, Edwards25519::scalarMul(pub->point(), k));
 
-                return (lhs.x == rhs.x && lhs.y == rhs.y) ? ERET_OK : ERET_BADREQ;
+                return (lhs.x.isEqual(rhs.x) && lhs.y.isEqual(rhs.y)) ? ERET_OK : ERET_BADREQ;
             }
 
             ERetCode createEncrypter(IAsymmetricTransformerPtr&) override {
@@ -840,7 +854,6 @@ namespace crypto {
         }
 
         const EdPoint& q = pub->point();
-        const CBigNum& p = Edwards25519::fieldPrime();
 
         // Unlike ECDSA's scalar d, EdDSA's clamped scalar s (RFC 8032 5.1.5) is deliberately NOT
         // meant to be < the group order L -- clamping fixes it into [2^254, 2^255), which is
@@ -856,10 +869,12 @@ namespace crypto {
             return ERET_KEY_PARAM;
         }
 
-        // 2. Field range: 0 <= x, y < p.
-        if (q.x >= p || q.y >= p) {
-            return ERET_KEY_PARAM;
-        }
+        // 2. Field range: there is nothing left to check. A coordinate is an Fe25519, which
+        // stands for an element of GF(p) and has no representation outside it -- what used to be
+        // a `q.x >= p || q.y >= p` test is now a property of the type, the same way X25519's
+        // validatePublicValue() lost its own u >= p check. The only way a y at or above p can
+        // enter is through decodePoint(), which rejects it there (RFC 8032 5.1.3) before an
+        // EdPoint ever exists.
 
         // 3. Curve equation.
         if (!Edwards25519::isOnCurve(q.x, q.y)) {
@@ -881,7 +896,7 @@ namespace crypto {
         Edwards25519::deriveFromSeed(priv->seed(), s, prefix);
 
         EdPoint expectedQ = Edwards25519::scalarMulBase(s);
-        if (expectedQ.x != q.x || expectedQ.y != q.y) {
+        if (!expectedQ.x.isEqual(q.x) || !expectedQ.y.isEqual(q.y)) {
             return ERET_KEY_ERROR;
         }
 

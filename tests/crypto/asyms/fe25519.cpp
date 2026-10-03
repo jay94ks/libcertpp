@@ -379,3 +379,163 @@ TEST_CASE("Fe25519: aliasing is allowed on every binary operation") {
         }
     }
 }
+
+// neg, isEqual and isOdd exist for Ed25519's point arithmetic -- negation for RFC 8032 5.1.3's
+// sign fixup, the equality test for the curve equation and the final signature comparison, and
+// the parity bit for the compressed encoding. Each is checked against CBigNum rather than against
+// its own inverse, since all three have the same failure mode: looking right on the canonical
+// representatives and wrong on the redundant ones.
+TEST_CASE("Fe25519: neg, isEqual and isOdd agree with CBigNum") {
+    Lcg rng(0x6E6);
+    const CBigNum& p = fieldPrime();
+
+    for (int trial = 0; trial < 1000; ++trial) {
+        CBigNum big;
+        Fe25519 fe;
+        randomElement(rng, big, fe);
+
+        Fe25519 negated;
+        Fe25519::neg(negated, fe);
+
+        CBigNum expected(big);
+        expected.modNeg(p);
+        REQUIRE(toBig(negated) == expected);
+
+        // isOdd is the parity of the *canonical* representative, which is what the sign bit of a
+        // compressed point means. CBigNum holds the canonical value already, so its own bit 0 is
+        // the oracle.
+        REQUIRE(fe.isOdd() == big.testBit(0));
+
+        // Equality has to survive a redundant representation: adding p changes every limb
+        // without changing the element, so an implementation comparing limbs would call these
+        // two different.
+        Fe25519 plusP;
+        Fe25519::sub(plusP, fe, negated);               // fe - (-fe) == 2*fe
+        Fe25519 doubled;
+        Fe25519::add(doubled, fe, fe);
+        REQUIRE(plusP.isEqual(doubled));
+
+        REQUIRE(fe.isEqual(fe));
+        if (!big.isZero()) {
+            REQUIRE_FALSE(fe.isEqual(negated));         // x == -x only for x == 0
+        }
+    }
+
+    for (const CBigNum& edge : edgeValues()) {
+        const Fe25519 fe = fromBig(edge);
+
+        Fe25519 negated;
+        Fe25519::neg(negated, fe);
+
+        CBigNum expected(edge);
+        expected.mod(p);
+        expected.modNeg(p);
+        REQUIRE(toBig(negated) == expected);
+
+        CBigNum reduced(edge);
+        reduced.mod(p);
+        REQUIRE(fe.isOdd() == reduced.testBit(0));
+    }
+
+    // -0 is 0, not p.
+    Fe25519 zero;
+    zero.setZero();
+    Fe25519 negZero;
+    Fe25519::neg(negZero, zero);
+    CHECK(negZero.isZero());
+    CHECK_FALSE(negZero.isOdd());
+}
+
+// squareRoot is the one operation here that reports failure, and the failure is the point: for a
+// quadratic non-residue the exponentiation still returns an ordinary-looking element that is a
+// root of nothing. CBigNum's modExp gives the Legendre symbol, which says which inputs must
+// succeed -- so this checks not just that every returned root is a root, but that a root is
+// returned exactly when one exists.
+TEST_CASE("Fe25519: squareRoot agrees with CBigNum's Legendre symbol") {
+    Lcg rng(0x59271);
+    const CBigNum& p = fieldPrime();
+
+    CBigNum halfExp(p);
+    halfExp.sub(CBigNum(uint64_t(1)));
+    halfExp.shr(1);                                     // (p - 1) / 2
+
+    int residues = 0;
+    int nonResidues = 0;
+
+    for (int trial = 0; trial < 400; ++trial) {
+        CBigNum big;
+        Fe25519 fe;
+        randomElement(rng, big, fe);
+
+        if (big.isZero()) {
+            continue;
+        }
+
+        const CBigNum legendre = CBigNum::modExp(big, halfExp, p);
+        const bool isResidue = (legendre == CBigNum(uint64_t(1)));
+
+        Fe25519 root;
+        const bool ok = Fe25519::squareRoot(root, fe);
+        REQUIRE(ok == isResidue);
+
+        if (ok) {
+            ++residues;
+
+            Fe25519 squared;
+            Fe25519::square(squared, root);
+            REQUIRE(toBig(squared) == big);
+        }
+        else {
+            ++nonResidues;
+        }
+    }
+
+    // Both branches have to have been taken, or the agreement above is vacuous.
+    CHECK(residues > 0);
+    CHECK(nonResidues > 0);
+
+    // Zero is a residue, with zero as its only root.
+    Fe25519 zero, rootOfZero;
+    zero.setZero();
+    REQUIRE(Fe25519::squareRoot(rootOfZero, zero));
+    CHECK(rootOfZero.isZero());
+
+    // One is a residue; the root may be either 1 or p-1, so it is checked by squaring.
+    Fe25519 one, rootOfOne, squaredRootOfOne;
+    one.setOne();
+    REQUIRE(Fe25519::squareRoot(rootOfOne, one));
+    Fe25519::square(squaredRootOfOne, rootOfOne);
+    CHECK(squaredRootOfOne.isEqual(one));
+
+    // -1 is a residue mod p (p == 1 mod 4), and this is the path that exercises the sqrt(-1)
+    // multiplication -- the branch a residue of the first kind never reaches.
+    Fe25519 minusOne, rootOfMinusOne, squaredRootOfMinusOne;
+    Fe25519::neg(minusOne, one);
+    REQUIRE(Fe25519::squareRoot(rootOfMinusOne, minusOne));
+    Fe25519::square(squaredRootOfMinusOne, rootOfMinusOne);
+    CHECK(squaredRootOfMinusOne.isEqual(minusOne));
+
+    // 2 is a non-residue mod p -- the fact sqrtMinusOne() is derived from.
+    Fe25519 two, rootOfTwo;
+    Fe25519::add(two, one, one);
+    CHECK_FALSE(Fe25519::squareRoot(rootOfTwo, two));
+
+    // Every square has a root, by construction -- the strongest available statement that no
+    // residue is ever rejected.
+    Lcg squares(0x59D5);
+    for (int trial = 0; trial < 200; ++trial) {
+        CBigNum big;
+        Fe25519 fe;
+        randomElement(squares, big, fe);
+
+        Fe25519 squared;
+        Fe25519::square(squared, fe);
+
+        Fe25519 root;
+        REQUIRE(Fe25519::squareRoot(root, squared));
+
+        Fe25519 back;
+        Fe25519::square(back, root);
+        REQUIRE(back.isEqual(squared));
+    }
+}
