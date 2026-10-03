@@ -183,6 +183,12 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        if(CERTPP_TEST_REL STREQUAL "crypto/asyms/fe25519")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/fe25519.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsaparams")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp

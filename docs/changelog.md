@@ -1592,3 +1592,75 @@ counter is rejected, and that the opposite direction's key cannot open it.
 All six new/changed units were additionally checked with Clang under
 `-fno-ms-compatibility`, so they do not repeat the portability breakage fixed
 in `d297767`.
+
+## Fe25519: a constant-time field for X25519
+
+Raised downstream alongside the AEAD request: X25519's own test comments note
+that the big-number arithmetic underneath it is not constant-time, which for an
+online handshake with ephemeral keys is a live side channel rather than a
+theoretical one. This is the substrate for fixing it; the ladder rewrite
+follows.
+
+`Fe25519` (`src/crypto/asyms/fe25519.hpp`) implements GF(2^255 − 19) in ten
+signed limbs at radix 2^25.5, with no data-dependent branches, memory indices
+or divisions.
+
+### Why `CBigNum` cannot be made to do this
+
+`CBigNum` stores a *canonical* limb array — leading zero limbs are trimmed —
+so the number of limbs, and therefore the work done, depends on the value.
+Every add, multiply and reduction over it leaks something about its operands
+through timing. For certificate verification that is tolerable; for a
+handshake it is not. `Fe25519`'s limb count is fixed at ten regardless of the
+value.
+
+`CBigNum::condSwap` is the sharpest example: its own documentation admits it
+is a plain branch. In a Montgomery ladder the swap condition *is* a bit of the
+private scalar, so that branch leaks the key one bit per iteration.
+
+### Why radix 2^25.5 and not 2^51
+
+A 51-bit radix is the faster layout and what most 64-bit implementations use,
+but its products need 128-bit arithmetic and **MSVC has no `__int128`**. With
+alternating 26- and 25-bit limbs every product fits `int64_t`: the worst-case
+multiply accumulator is 10 × (2^26−1)² × 38 = **2^60**, three bits of headroom,
+and the test asserts that bound so a future change to the radix cannot
+silently overflow it.
+
+Limbs are *signed*, which is load-bearing rather than incidental: `sub()` then
+needs no borrow handling, since a limb simply goes negative and the next carry
+pass propagates it through an arithmetic shift. Unsigned limbs would require
+either adding a multiple of p before every subtraction or branching on the
+sign — and the second is exactly what this class exists to avoid.
+
+### The error the Python pass caught
+
+Validated against exact arithmetic before any C++ was written, and the first
+version of the multiply was wrong on **every** input. Because the radix is not
+a whole number of bits, `OFFSET[i] + OFFSET[j]` is one bit above
+`OFFSET[i+j]` whenever *both* indices are odd — two half-bit offsets adding to
+a whole one. I had applied that doubling only to the products that wrap past
+2^255, where it is also needed, and not to the rest. Exact arithmetic found it
+in one run; a round-trip test never would have, since a packer and unpacker
+consistently wrong in the same way agree with each other.
+
+### Testing
+
+`CBigNum` is the oracle — heavily tested, shares no code with this unit, and
+exact. `add`/`sub`/`mul`/`square`/`mulA24`/`invert` are checked against it over
+3000 random pairs, plus **every pair of ten edge values** (0, 1, 2, 19, 38,
+p−1, p−2, 2^254, 2^128, (p−1)/2), where the carry chain and the 19× wrap are
+most strained and where random sampling essentially never lands.
+
+Two cases are checked specifically because they survive a round trip:
+
+- `toBytes()`'s conditional subtraction of p only matters for values in
+  [p, 2^255), which decode back to the same element either way. The test feeds
+  unreduced representatives directly and requires the canonical bytes.
+- `invert()` is checked by `x · x⁻¹ == 1` rather than against a reference
+  inverse, so a wrong addition chain cannot agree with itself by construction —
+  and then against `CBigNum::modInverse` as well.
+
+7 test cases, 32,468 assertions. Checked under Clang with
+`-fno-ms-compatibility` so it does not repeat the portability breakage fixed in
+`d297767`.
