@@ -13,7 +13,7 @@ new styles.
 
 ## File layout
 
-- Every header uses an include guard, not `#pragma once`:
+- Every header uses a header guard, not `#pragma once`:
   ```cpp
   #ifndef __INCLUDE_CERTPP_<PATH>_HPP__
   #define __INCLUDE_CERTPP_<PATH>_HPP__
@@ -85,7 +85,7 @@ new styles.
   of `include/certpp/` — e.g. `src/io/memstream.hpp`/`.cpp` define
   `MemStream`, the concrete backing for `IStream::createMemory(...)`, which
   consumers only ever see through the `IStream` interface.
-- Its include guard is `__SRC_<PATH>_HPP__` (path relative to `src/`), not
+- Its header guard is `__SRC_<PATH>_HPP__` (path relative to `src/`), not
   `__INCLUDE_CERTPP_...` — e.g. `src/io/memstream.hpp` ->
   `__SRC_IO_MEMSTREAM_HPP__`. This keeps it visibly distinct from a public
   guard even if the two ever collided.
@@ -95,7 +95,7 @@ new styles.
 - It still includes whichever public header it implements using the
   `<certpp/...>` form (`src/io/memstream.hpp` includes
   `<certpp/io/stream.hpp>`), since that part *is* public API.
-- The public-API type-prefix rules (`S`/`C`/`I`/`E`, see "Types" below) do
+- The public-API type-prefix rules (`S`/`T`/`C`/`I`/`E`, see "Types" below) do
   not apply to it — see "Types" for why.
 
 ## Types
@@ -278,8 +278,11 @@ new styles.
   (`IStream`), `E` for enums (`ETagClass`); see "Types" above. An internal
   implementation type under `src/` (e.g. `MemStream`) is `PascalCase` with
   no prefix.
-- Enumerators: `SCREAMING_SNAKE_CASE`, prefixed with the enum's `E`-stripped
-  abbreviation (`EATAG_UNIVERSAL`, `EAUTAG_BOOLEAN`) — see "Types" above.
+- Enumerators: `SCREAMING_SNAKE_CASE`, prefixed with a short uppercase
+  abbreviation of the enum name, which keeps the leading `E`
+  (`ETagClass` -> `EATAG_UNIVERSAL`, `EAsn1UniversalTag` -> `EAUTAG_BOOLEAN`).
+  The abbreviation is not a formula -- check the sibling enums in the same
+  header for the one already in use -- see "Types" above.
 - Free functions: `PascalCase` (`GetLibraryVersion`). A `static` helper
   that's local to one header/translation unit rather than part of the
   public API may use `camelCase` instead (`checkEncodingRule` in

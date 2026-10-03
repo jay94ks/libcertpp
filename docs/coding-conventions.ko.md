@@ -13,7 +13,7 @@
 
 ## 파일 구성
 
-- 모든 헤더는 `#pragma once`가 아니라 인클루드 가드를 사용합니다:
+- 모든 헤더는 `#pragma once`가 아니라 헤더 가드를 사용합니다:
   ```cpp
   #ifndef __INCLUDE_CERTPP_<PATH>_HPP__
   #define __INCLUDE_CERTPP_<PATH>_HPP__
@@ -84,7 +84,7 @@
   둡니다 — 예컨대 `src/io/memstream.hpp`/`.cpp`는
   `IStream::createMemory(...)`의 구체적 뒷받침인 `MemStream`을 정의하며,
   사용자는 이를 언제나 `IStream` 인터페이스를 통해서만 봅니다.
-- 이 헤더의 인클루드 가드는 `__INCLUDE_CERTPP_...`가 아니라
+- 이 헤더의 헤더 가드는 `__INCLUDE_CERTPP_...`가 아니라
   `__SRC_<PATH>_HPP__`입니다(경로는 `src/` 기준 상대 경로) — 예:
   `src/io/memstream.hpp` -> `__SRC_IO_MEMSTREAM_HPP__`. 이렇게 하면 둘이
   혹시 충돌하는 일이 생겨도 공개 가드와 눈에 띄게 구별됩니다.
@@ -94,7 +94,7 @@
 - 다만 자신이 구현하는 공개 헤더는 여전히 `<certpp/...>` 형태로
   포함합니다(`src/io/memstream.hpp`는 `<certpp/io/stream.hpp>`를 포함합니다).
   그 부분은 *실제로* 공개 API이기 때문입니다.
-- 공개 API 타입 접두사 규칙(`S`/`C`/`I`/`E`, 아래 "타입" 참고)은 이 타입에는
+- 공개 API 타입 접두사 규칙(`S`/`T`/`C`/`I`/`E`, 아래 "타입" 참고)은 이 타입에는
   적용되지 않습니다 — 이유는 "타입"을 참고하십시오.
 
 ## 타입
@@ -186,7 +186,7 @@
 
 ## 버퍼 처리
 
-- `TArray`/`CBuffer`/원시 배열의 byte 또는 원소 범위를 루프에서 한 원소씩
+- `TArray`/`CBuffer`/원시 배열의 바이트 또는 원소 범위를 루프에서 한 원소씩
   채우거나 복사하지 마십시오. 원시 포인터를 얻어서(`toPtr()`/`begin()` 중 그
   타입이 노출하는 것) 채울 때는 `std::memset`, 복사할 때는
   `std::memcpy`/`std::memmove`를 사용하십시오 — 원소 단위 루프는 같은 의도를
@@ -197,7 +197,7 @@
   절반뿐입니다. 루프가 정말로 루프로 남아야 하는 경우(아래 목록)에도, 매 반복마다
   컨테이너의 `operator[]`를 거치는 대신 루프 밖으로 끌어올린 원시 포인터를
   통해 데이터에 접근합니다 — `CbcTransformer::processBuffered()`가 그 실제
-  예입니다: 그 CBC XOR 결합과 constant-time 패딩 스캔은 여전히 명시적인 byte
+  예입니다: 그 CBC XOR 결합과 constant-time 패딩 스캔은 여전히 명시적인 바이트
   단위 루프지만, 그 모두가 맨 위에서 한 번 얻은 `uint8_t*`를 인덱싱합니다.
 - 일괄 호출 쪽 절반은 다음에는 **적용되지 않습니다**:
   - constant-time/분기 없는 코드(`CSecure::equalsMask`/`select`,
@@ -215,10 +215,10 @@
   - 진짜 뒤집기(`out[i] = in[N-1-i]`)나 제자리 교환
     (`CBigNum::reverseBytesInPlace`) — `memcpy`/`memmove`는 순서를 보존하는
     복사만 할 수 있어서 둘 중 어느 것도 표현할 수 없습니다.
-  - 조건부/필터링된 복사, 예컨대 `CRng::fillNonZero()`의 0 byte 거부
+  - 조건부/필터링된 복사, 예컨대 `CRng::fillNonZero()`의 0 바이트 거부
     루프 — 무조건적이지 않으므로 `memcpy`가 아닙니다.
   - 라운드별로 인덱싱되는 스케줄 데이터(AES/DES/3DES 라운드 키 배열)가 평평한
-    byte 버퍼로 취급되는 것이 아니라 정말로 라운드로 인덱싱되는 경우. 그런
+    바이트 버퍼로 취급되는 것이 아니라 정말로 라운드로 인덱싱되는 경우. 그런
     배열을 인덱스 대 인덱스로 그대로 복사하는 것은 여전히 `memcpy` 대상이지만,
     그것을 *재배열*하는 것(DES/3DES 복호화 측 키 스케줄 역순)은 위 항목에 따라
     뒤집기입니다.
@@ -230,7 +230,7 @@
 - `TArray`, `CBuffer`, `COctet`은 습관으로 골라 쓰는 서로 맞바꿀 수 있는
   컨테이너가 아닙니다 — 그 데이터가 어쩌다 달고 있는 RFC/명세 단계 이름이
   아니라, 실제 호출 지점에서 데이터가 맡는 역할에 따라 고르십시오:
-  - `CBuffer`는 결과로 가는 중간에 있는 작업용 byte 버퍼를 위한 것입니다: 한 번
+  - `CBuffer`는 결과로 가는 중간에 있는 작업용 바이트 버퍼를 위한 것입니다: 한 번
     (또는 적고 한정된 횟수만) 크기를 조정하고, 채우거나 `memcpy`로 써넣고,
     span으로 다시 읽습니다. 이렇게 쓰이는 `TArray<uint8_t>` — 즉 서로 구별되는
     원소들의 논리적 수열이 아니라 버퍼로 쓰이는 것 — 은 `CBuffer`로 타입을
@@ -238,7 +238,7 @@
   - `COctet`은 `encode`/`decode` 연산의 결정적 결과 *그 자체*이거나, 하나의
     단위로 저장/적재되는 고정 길이 데이터(키 blob, 다이제스트, 직렬화된 TLV의
     내용)를 위한 것입니다.
-  - `TArray<T>`는 byte 버퍼가 아니라 논리적으로 구별되는 원소들의 실제
+  - `TArray<T>`는 바이트 버퍼가 아니라 논리적으로 구별되는 원소들의 실제
     수열(예: `TArray<SKeySizeSpec>`)일 때 `TArray<T>`로 남습니다.
 
 ## span 매개변수
@@ -268,8 +268,11 @@
   `T`(`TSpan<T>`), 클래스에는 `C`(`CTag`), 인터페이스에는 `I`(`IStream`),
   열거형에는 `E`(`ETagClass`). 위 "타입"을 참고하십시오. `src/` 아래의 내부
   구현 타입(예: `MemStream`)은 접두사 없는 `PascalCase`입니다.
-- 열거자: `SCREAMING_SNAKE_CASE`이며, 열거형 이름에서 `E`를 뗀 약칭을 접두사로
-  붙입니다(`EATAG_UNIVERSAL`, `EAUTAG_BOOLEAN`) — 위 "타입"을 참고하십시오.
+- 열거자: `SCREAMING_SNAKE_CASE`이며, 열거형 이름의 짧은 대문자 약칭을 접두사로
+  붙이되 선행 `E`는 유지합니다(`ETagClass` -> `EATAG_UNIVERSAL`,
+  `EAsn1UniversalTag` -> `EAUTAG_BOOLEAN`). 이 약칭에 정해진 공식은 없으므로,
+  같은 헤더의 형제 열거형들이 이미 쓰고 있는 약칭을 확인하십시오 — 위 "타입"을
+  참고하십시오.
 - 자유 함수: `PascalCase`(`GetLibraryVersion`). 공개 API의 일부가 아니라 한
   헤더/번역 단위에 지역적인 `static` 헬퍼는 대신
   `camelCase`를 써도 됩니다(`asn1/decoder.hpp`의 `checkEncodingRule`) —

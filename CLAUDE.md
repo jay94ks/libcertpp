@@ -83,7 +83,15 @@ named `<name>.ko.md` — `README.md`/`README.ko.md`,
   `임의 정밀도 정수` — Korean gloss in parentheses after the English term,
   or a settled Korean rendering where one exists. Do not invent a Korean
   word for something that is normally written in English (`span`, `nonce`,
-  `salt`, `padding` stay as they are).
+  `salt`, `padding`, `constant-time` stay as they are). Words that *do*
+  have a settled Korean form are written in Korean: `바이트`, `비트`,
+  `해시`, `서명`, `검증`, `인증서`. The test is whether a Korean developer
+  would write it that way unprompted, not whether a translation exists.
+- **Keep terminology consistent across the whole set.** The guard is a
+  헤더 가드 in every file, not sometimes an 인클루드 가드; a byte is 바이트
+  everywhere. When one document picks a rendering, the rest follow it — the
+  point of the glossary above is that two translated files should never
+  disagree about the same word.
 - **Prose style is formal `-습니다`**, matching `README.ko.md`.
 
 `examples/README.md` currently has no Korean counterpart; it is the one
