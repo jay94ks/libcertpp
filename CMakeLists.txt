@@ -16,9 +16,9 @@ endif()
 
 option(CERTPP_BUILD_SHARED "Build certpp as a shared library" ON)
 option(CERTPP_RNG_FALLBACK "Allow crypto::CRng to fall back to std::random_device if the OS CSPRNG is unavailable" OFF)
-option(CERTPP_DISABLE_HWACCEL_SIMD "Disable CPU SIMD/extended-instruction hardware acceleration (PCLMULQDQ for CGf2m, ADX/BMI2 for CBigNum -- and, transitively, every asymmetric algorithm built on them), always using the portable implementation instead" OFF)
+option(CERTPP_DISABLE_HWACCEL_SIMD "Disable CPU SIMD/extended-instruction hardware acceleration (PCLMULQDQ for CGf2m and GHASH, ADX/BMI2 for CBigNum, SSE2 for ChaCha20's keystream -- and, transitively, every asymmetric algorithm built on them, plus both AEADs), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
-option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI for the AES block cipher), always using the portable implementation instead" OFF)
+option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
 
 file(GLOB_RECURSE CERTPP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
@@ -180,6 +180,15 @@ if(CERTPP_BUILD_TESTS)
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsacodec.cpp
+            )
+        endif()
+
+        # GHASH's two multiply paths are chosen per call behind a CPUID check, so the only way to
+        # compare them is to call each directly -- and Ghash has no public header and no
+        # CERTPP_API, so there is nothing to import from the shared object.
+        if(CERTPP_TEST_REL STREQUAL "crypto/aeads/ghash")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/aeads/ghash.cpp
             )
         endif()
 

@@ -49,7 +49,7 @@ namespace crypto {
                 std::memcpy(keys, _roundKeys, sizeof(keys));
 
                 out = std::make_shared<CbcTransformer>(
-                    shared_from_this(), true, DES_BLOCK_BYTES, iv().toSpan(),
+                    shared_from_this(), true, DES_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         DesCore::processBlock(in, o, keys);
                     }
@@ -71,7 +71,7 @@ namespace crypto {
                 }
 
                 out = std::make_shared<CbcTransformer>(
-                    shared_from_this(), false, DES_BLOCK_BYTES, iv().toSpan(),
+                    shared_from_this(), false, DES_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         DesCore::processBlock(in, o, keys);
                     }

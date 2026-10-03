@@ -22,9 +22,11 @@ P-521, secp256k1, or the 14 Brainpool curves (RFC 5639), plus ECDH key
 agreement over the same curves (RFC 5903 / SP 800-56A); `CEcdsa2`, ECDSA
 over the 10 NIST binary/Koblitz curves B-163/K-163 .. B-571/K-571;
 `Ed25519`/`Ed448`, EdDSA (RFC 8032); and `X25519`, Diffie-Hellman key
-agreement (RFC 7748)); and an `ISymmetric` interface with four concrete
-implementations (`AES`, `DES`, `TripleDES` -- all CBC/PKCS#7 -- and the
-`ChaCha20` stream cipher) -- all from scratch, no third-party dependency.
+agreement (RFC 7748)); an `ISymmetric` interface with four concrete
+implementations (`AES`, `DES`, `TripleDES` -- all CBC, PKCS#7-padded or
+unpadded -- and the `ChaCha20` stream cipher); and two AEADs outside that
+interface, `CChaCha20Poly1305` (RFC 8439 2.8) and `CAesGcm` (NIST SP
+800-38D) -- all from scratch, no third-party dependency.
 
 `x509` parses (and, for `CCert`, also builds/self-signs) DER-encoded
 `Certificate` (`CCert`/`CCertBuilder`), `CertificateList`/CRL
@@ -108,10 +110,14 @@ include/
       transform.hpp                # ITransformer: generic streaming transform interface shared by IAsymmetricTransformer and ISymmetricTransformer
       sym.hpp                      # ISymmetric (algorithm descriptor/factory) + ISymmetricContext (bound-key encrypter/decrypter factory) + ISymmetricTransformer
       syms/                        # concrete ISymmetric implementations, one file each (mirrors asyms/)
-        aes.hpp                        # AES: FIPS-197 keygen (128/192/256-bit) + CBC/PKCS#7 encrypt/decrypt
+        aes.hpp                        # AES: FIPS-197 keygen (128/192/256-bit) + CBC encrypt/decrypt, PKCS#7-padded or unpadded per ISymmetricContext::padding()
         des.hpp                         # DES: FIPS 46-3 keygen (64-bit) + CBC/PKCS#7 encrypt/decrypt -- legacy/interop only
         des3.hpp                         # TripleDES: two-/three-key EDE keygen + CBC/PKCS#7 encrypt/decrypt, built on DES's own block core
         chacha20.hpp                      # ChaCha20: RFC 8439 stream cipher, keygen + encrypt/decrypt (the same XOR operation either way)
+      poly1305.hpp                 # CPoly1305: RFC 8439 one-time MAC, streaming push()/finish() + a one-shot compute()
+      aeads/                       # AEADs: one seal()/open() pair each, not part of the ISymmetric surface (which has nowhere to put AAD or a tag)
+        chacha20poly1305.hpp           # CChaCha20Poly1305: RFC 8439 2.8, 256-bit key, 96-bit nonce, 128-bit tag
+        aesgcm.hpp                      # CAesGcm: NIST SP 800-38D, 128/192/256-bit key, 96-bit IV, 96..128-bit tag
     x509/
       ext.hpp                    # IExtension: concrete base for a decoded extension (oid()/value()), IExtensionPtr, IExtension::create() OID-dispatch factory
       generalname.hpp             # CGeneralName (GeneralName CHOICE, RFC 5280 4.2.1.6), EGeneralNameType; CGeneralSubtree (NameConstraints' GeneralSubtree)
@@ -188,14 +194,24 @@ src/
     sym.cpp                      # ISymmetric::builtIn() factory dispatch
     syms/
       symkey.hpp                     # SymRawKey: private, shared raw-byte ISymmetricKey (no validation beyond length)
-      cbctransformer.hpp              # CbcTransformer: private, shared CBC-mode/PKCS#7 buffering+chaining+padding, used by aes.cpp/des.cpp/des3.cpp
+      cbctransformer.hpp              # CbcTransformer: private, shared CBC-mode buffering+chaining+padding (PKCS#7 or none, per ESymPaddings), used by aes.cpp/des.cpp/des3.cpp
       cbctransformer.cpp
-      aes.cpp                          # AES: AesCore block cipher (own S-box/key schedule, AES-NI accelerated path behind CERTPP_DISABLE_HWACCEL_AES) + CbcTransformer
+      aescore.hpp                      # AesCore: private, shared AES block cipher (own S-box/key schedule, AES-NI accelerated path behind CERTPP_DISABLE_HWACCEL_AES), used by aes.cpp/aeads/aesgcm.cpp
+      aescore.cpp
+      aes.cpp                          # AES: AesCore + CbcTransformer
       descore.hpp                      # DesCore: private, shared DES block cipher (key schedule + Feistel network), used by des.cpp/des3.cpp
       descore.cpp
       des.cpp                           # DES: DesCore + CbcTransformer
       des3.cpp                          # TripleDES: TripleDesCore (DES-EDE3 composition over DesCore) + CbcTransformer
       chacha20.cpp                      # ChaCha20: from-scratch quarter-round/block function + keystream XOR transformer
+      chacha20core.hpp                   # ChaCha20Core: private, shared ChaCha20 block function, used by chacha20.cpp/aeads/chacha20poly1305.cpp
+      chacha20core.cpp
+    poly1305.cpp                 # CPoly1305 implementation (130-bit accumulator over 26-bit limbs)
+    aeads/
+      chacha20poly1305.cpp           # CChaCha20Poly1305: ChaCha20Core + CPoly1305, RFC 8439 2.8's framing
+      ghash.hpp                       # Ghash: private GHASH + GCM's GF(2^128) multiply (bit-reflected; PCLMULQDQ path behind CERTPP_DISABLE_HWACCEL_SIMD), used only by aesgcm.cpp
+      ghash.cpp
+      aesgcm.cpp                       # CAesGcm: AesCore (counter mode) + Ghash, SP 800-38D 7.1's framing
     eccurve.cpp                  # CEcCurve/SEcPoint implementation, plus CEcCurve::_knownCurves' definition (the P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool domain parameters, in EEcKnownCurves order)
     ec2curve.cpp                 # CEc2Curve/SEc2Point implementation, plus CEc2Curve::_knownCurves' definition (the 10 B-*/K-* domain parameters, in EEc2KnownCurves order -- each independently verified on-curve and order-checked before hardcoding, see this module's doc comment)
     asym.cpp                   # IAsymmetric::builtIn(): dispatches EAsymmetrics to a concrete asyms/ implementation
@@ -284,10 +300,14 @@ tests/
     rng.cpp                       # CRng::fill() test cases
     siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
     syms/
-      aes.cpp                      # AES test cases (NIST SP 800-38A CBC known-answer vectors, round-trip, tamper, error paths)
+      aes.cpp                      # AES test cases (NIST SP 800-38A CBC known-answer vectors incl. F.2's four-block one unpadded, round-trip, tamper, error paths)
       des.cpp                       # DES test cases (the classic FIPS-46 vector)
       des3.cpp                       # TripleDES test cases (DES-composition cross-check)
       chacha20.cpp                    # ChaCha20 test cases (RFC 8439 Appendix A.1 block function, chunked keystream)
+    aeads/
+      chacha20poly1305.cpp          # CPoly1305 + CChaCha20Poly1305 test cases (RFC 8439 2.5.2/2.6.2/2.8.2)
+      aesgcm.cpp                     # CAesGcm test cases (the GCM spec's Appendix B 96-bit-IV cases 1-4/7-10/13-16, aliasing, tag truncation, tamper, error paths)
+      ghash.cpp                       # Ghash test cases (field identities in GCM's bit order, multiply-by-x against the shift, chunking, portable-vs-PCLMULQDQ differential)
     eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)
     ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, SEC1 encoding, group-order check)
   x509/
@@ -1462,6 +1482,69 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   (`Inner` in the `.cpp`) that keys a stack `CChaCha20Poly1305` and zeroes the
   subkey in its destructor, which keeps the no-allocation contract without a
   `mutable` member or a non-const `seal()`.
+- **`crypto/aeads/aesgcm.hpp` / `src/crypto/aeads/aesgcm.cpp`** define
+  `CAesGcm`, NIST SP 800-38D, with AES-128/192/256 and a 96-bit IV. It matches
+  `CChaCha20Poly1305`'s shape deliberately -- a keyed context, `seal()`/`open()`
+  per record, no per-call allocation, `out` may alias `in`, and `open()` verifies
+  before writing a plaintext byte -- because the same consumer (IKEv2) picks one
+  or the other by negotiation and should not have to restructure around the
+  choice. The differences are the ones the algorithms force: the tag may be
+  truncated (SP 800-38D 5.2.1.2 permits 128/120/112/104 or 96 bits, which is
+  every byte length from `MIN_TAG_BYTES` to `TAG_BYTES`, and nothing shorter),
+  and the key may be any of three lengths rather than one.
+
+  **Only a 96-bit IV is accepted.** SP 800-38D allows any length, but anything
+  else derives the initial counter block by running the IV through GHASH instead
+  of using it directly -- a second code path with its own ways to be subtly
+  wrong, and no caller needs it: IKEv2 (RFC 4106/5282), TLS and SSH all use
+  exactly 96 bits, which is also what SP 800-38D 8.2 recommends.
+
+  `deriveSubkey()` exposes `H = E_K(0^128)` for the same reason
+  `CChaCha20Poly1305::deriveOneTimeKey()` exists: the GCM specification
+  publishes `H` per test case, and it is the one intermediate value that
+  separates "the key schedule is wrong" from "the hash is wrong".
+- **`src/crypto/aeads/ghash.hpp`/`.cpp`** define `Ghash`, GHASH (SP 800-38D 6.4)
+  and GCM's `GF(2^128)` multiplication. It is **not** built on `CGf2m`, whose
+  PCLMULQDQ-accelerated multiply would otherwise look like the obvious reuse,
+  for three independent reasons:
+
+  - GCM's field is **bit-reflected**: the most significant bit of a block's
+    first byte is the `x^0` coefficient (SP 800-38D 6.3), the opposite of the
+    polynomial-basis convention `CGf2m` and the rest of the library use. Handing
+    `CGf2m` the bytes as they arrive yields a product that is self-consistent in
+    every algebraic respect and is not GHASH -- the classic way to get this
+    wrong, and one only a published vector catches.
+  - `H` is **secret**, so the multiply must be constant-time; `CGf2m` documents
+    that it has none, which is the right trade for ECDSA's public curve
+    arithmetic and the wrong one for a MAC key.
+  - `CGf2m` is sized for other fields: 9 limbs and a generic pentanomial
+    reduction over an 18-limb product, where GHASH is two 64-bit words with one
+    fixed modulus, once per 16 bytes of message.
+
+  The portable multiply is SP 800-38D's own Algorithm 1 with every branch
+  replaced by a mask, and no table -- the key-dependent indices of the usual
+  windowed GHASH are what leak `H` through the cache. The accelerated path
+  (PCLMULQDQ, behind `CERTPP_DISABLE_HWACCEL_SIMD` and a runtime CPUID check,
+  exactly as `CGf2m`'s is) does **not** multiply in the reflected convention:
+  it converts both operands into the ordinary one with a dozen SSE2
+  instructions, where the reduction is the textbook `x^128 = x^7 + x^2 + x + 1`,
+  rather than carrying the shift-by-one-plus-mirrored-constants trick whose
+  correctness cannot be eyeballed.
+
+  Published vectors cannot tell the two paths apart -- whichever one this CPU
+  takes is the only one they ever reach -- so `tests/crypto/aeads/ghash.cpp`
+  compares them directly over thousands of random and structured operands, and
+  checks the field identities that pin the bit order down (the multiplicative
+  identity is the block `80 00 ... 00`, not `00 ... 00 01`). `Ghash` has no
+  public header and no `CERTPP_API`, so that test compiles `ghash.cpp` into
+  itself via `CERTPP_TEST_PRIVATE_SOURCES`.
+- **`src/crypto/syms/aescore.hpp`/`.cpp`** define `AesCore`, AES's key schedule
+  and single-block encrypt/decrypt (with the AES-NI path behind
+  `CERTPP_DISABLE_HWACCEL_AES`), extracted from `aes.cpp` so GCM can share it --
+  the arrangement `DesCore` and `ChaCha20Core` already have. GCM is not a mode
+  `ISymmetricContext` can express: it needs the raw forward block function at
+  arbitrary counter blocks *and* at the all-zero block (for `H`), and never uses
+  the inverse cipher at all.
 - **`src/crypto/syms/chacha20core.hpp`/`.cpp`** define `ChaCha20Core`, the
   block function, extracted from the stream cipher so the AEAD can share it --
   the arrangement `DesCore` and `KeccakCore` already have. The AEAD needs it at
@@ -1992,14 +2075,28 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `des.cpp`/`des3.cpp`** define `AES` (FIPS-197, 128/192/256-bit keys),
   `DES` (FIPS 46-3, legacy/interop only), and `TripleDES` (two- or
   three-key EDE, built directly on the same DES block core). All three
-  `ISymmetricContext`s operate in CBC mode with PKCS#7 padding (RFC 5652
-  6.3) -- the only mode this library's block ciphers implement -- via the
+  `ISymmetricContext`s operate in CBC mode -- the only mode this library's
+  `ISymmetric` block ciphers implement -- via the
   shared `src/crypto/syms/cbctransformer.hpp`/`.cpp` (`CbcTransformer`, not
   part of the public API): buffering, CBC chaining, and padding add/strip
   factored out once rather than duplicated per algorithm, parameterized by
   a per-block encrypt/decrypt callback and the block size. Decrypting always
   holds back the most recently completed block instead of emitting it
   immediately, since it might turn out to be the final (padded) one.
+
+  Padding is PKCS#7 (RFC 5652 6.3) by default and `ESYMPAD_NONE` on request,
+  selected per context through `ISymmetricContext::padding()` and read when a
+  transformer is created. Unpadded CBC exists for a protocol that pads for
+  itself -- IKEv2 (RFC 7296 3.14) builds pad-length-terminated padding into the
+  payload, so a PKCS#7 block underneath it would be a second, unexpected one.
+  Unpadded, there is nothing to strip and nothing special about the last block,
+  so every whole block is emitted as it completes and no block is held back;
+  `transformFinal()` produces nothing and returns `ERET_BADREQ` if a partial
+  block is left over, rather than quietly rounding the length up. `padding()`
+  is deliberately *not* cleared by `reset()` or `key()`, unlike the key, IV and
+  block size: it is a mode choice rather than key material, and clearing it
+  would make `padding(ESYMPAD_NONE)` followed by `key(...)` silently revert to
+  PKCS#7, which is a very quiet way to emit a ciphertext a peer rejects.
   Padding validation (`transformFinal()`'s decrypt path) is written to run
   every byte comparison unconditionally, with no early exit on the first
   mismatch and no branch on the pad value itself, specifically to avoid a
@@ -2009,10 +2106,11 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   module where timing-side-channel hardening is treated as load-bearing
   rather than out of scope (contrast `CEcCurve`'s/`CBigNum`'s own
   correctness-over-constant-time stance elsewhere in `crypto/`). `AesCore`
-  (`aes.cpp`), `DesCore` (shared private `descore.hpp`/`.cpp`, used by both
+  (shared private `aescore.hpp`/`.cpp`, used by both `aes.cpp` and
+  `aeads/aesgcm.cpp`), `DesCore` (shared private `descore.hpp`/`.cpp`, used by both
   `des.cpp` and `des3.cpp`), and `TripleDesCore` (`des3.cpp`) hold each
   algorithm's own block-cipher math, kept private since nothing outside
-  that TU needs them (`SymRawKey`, a trivial raw-byte `ISymmetricKey` with
+  module needs them (`SymRawKey`, a trivial raw-byte `ISymmetricKey` with
   no validation beyond length, is shared the same way via
   `src/crypto/syms/symkey.hpp`).
 

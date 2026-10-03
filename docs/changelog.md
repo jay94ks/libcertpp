@@ -1848,3 +1848,112 @@ derive is 1.7x off. The dominant remaining cost is that a 2^25.5 radix needs
 it is why 64-bit implementations use it. It needs 128-bit products, which MSVC
 can do via `_umul128` even without `__int128`. With that plus a squaring,
 100 µs is comfortably reachable; without it, it is not.
+
+## AES-GCM and unpadded CBC, for an IKEv2 consumer
+
+An IKEv2 implementation needs the two transforms RFC 7296/4106/5282 actually
+negotiate: AES-GCM as an AEAD, and AES-CBC over a payload the protocol has
+already padded itself.
+
+- `CAesGcm` (`crypto/aeads/aesgcm.hpp`) — NIST SP 800-38D, AES-128/192/256, a
+  96-bit IV, and a 96- to 128-bit tag. Its API matches
+  `CChaCha20Poly1305`'s deliberately: the same consumer picks one or the other
+  by negotiation and should not have to restructure around the choice.
+- `Ghash` (`src/crypto/aeads/ghash.hpp`) — GHASH and GCM's `GF(2^128)`, private
+  to `src/`.
+- `AesCore` extracted from `crypto/syms/aes.cpp` into its own private unit, the
+  way `DesCore` and `ChaCha20Core` already were.
+- `ESymPaddings` on `ISymmetricContext` — `ESYMPAD_PKCS7` (the default,
+  unchanged) or `ESYMPAD_NONE`.
+
+### Why GHASH is not `CGf2m`
+
+`CGf2m` already multiplies in `GF(2^m)` with a PCLMULQDQ path, and GHASH's
+modulus `x^128 + x^7 + x^2 + x + 1` would even fit its pentanomial
+`SGf2mField`. It was still the wrong tool, for three independent reasons, and
+the first is the one that matters:
+
+**GCM's field is bit-reflected.** The most significant bit of a block's first
+byte is the `x^0` coefficient (SP 800-38D 6.3) — the opposite of the
+polynomial-basis convention `CGf2m` and the rest of this library use. Handing
+`CGf2m` the bytes as they arrive produces a product that is commutative,
+associative, distributive and perfectly self-consistent, and is not GHASH.
+Nothing but a published vector catches that, which is this repository's
+recurring failure mode (the transposed SHA-3 rotation table, the transcribed
+P-521 digits, the ChaCha20 vector path no RFC vector was long enough to reach).
+
+The other two: `H` is secret, so the multiply has to be constant-time, and
+`CGf2m` documents that it is not hardened at all — the right trade for ECDSA's
+public curve arithmetic, the wrong one for a MAC key. And `CGf2m` carries nine
+limbs through a generic pentanomial reduction over an eighteen-limb product,
+where GHASH is two 64-bit words with one fixed modulus, once per 16 bytes.
+
+### Python first, then C++
+
+SP 800-38D was implemented in Python — AES included, so nothing was taken on
+trust — and checked against the GCM specification's Appendix B test cases
+before a line of C++ was written. All twelve of the cases that use a 96-bit IV
+(1–4, 7–10, 13–16: three key sizes, an empty plaintext, an empty AAD, and a
+60-byte plaintext with a 20-byte AAD) matched, including each case's published
+subkey `H`. The same script also confirmed that those vectors *can* see each
+error class before relying on them to. The C++ then passed all twelve on its
+first run.
+
+### The accelerated path does not use the reflected convention
+
+The textbook PCLMULQDQ GHASH multiplies in GCM's own reflected representation,
+which needs a shift-by-one across the 256-bit product plus a reduction whose
+constants (`slli_epi32` by 31, 30, 25, then 1, 2, 7) are easy to transcribe and
+impossible to check by eye. This one instead converts both operands out of the
+reflected convention with twelve SSE2 instructions — reversing the bits within
+each byte, which is the whole of the conversion, since little-endian byte order
+is what a load already gives — multiplies in the ordinary one, where the
+reduction is the textbook `x^128 = x^7 + x^2 + x + 1` (`0x87`), and converts the
+product back. Slower in principle than the mirrored form; derivable on paper,
+which was worth more.
+
+Published vectors cannot tell the two paths apart: the dispatch is a runtime
+CPUID check, so whichever one this CPU takes is the only one they ever reach.
+`tests/crypto/aeads/ghash.cpp` therefore compares them directly over 2048
+random operand pairs plus every single-bit block, and pins the bit order down
+with the field identities — in GCM's order the multiplicative identity is the
+block `80 00 … 00`, so `X ⊗ 80 00 … 00 == X` fails for any unreflected
+multiply however self-consistent it is elsewhere. `Ghash` has no public header
+and no `CERTPP_API`, so that test compiles `ghash.cpp` into itself through
+`CERTPP_TEST_PRIVATE_SOURCES`.
+
+### Negative controls
+
+Each was introduced, built, and confirmed to fail a test before being reverted:
+
+| break | caught by |
+| --- | --- |
+| payload counter starts at `J0`, not `J0 + 1` | `aesgcm` (the Appendix B ciphertexts) |
+| length block in bytes, not bits | `aesgcm` |
+| length block little-endian, not big-endian | `aesgcm` |
+| reflection dropped in the portable multiply | `ghash` (identity + differential) |
+| reflection dropped in the PCLMULQDQ multiply | `ghash` *and* `aesgcm` |
+| AAD left out of the hash | `aesgcm` (the tampered-AAD subcase) |
+
+The le64-vs-be64 one is worth noting: ChaCha20-Poly1305's otherwise analogous
+length footer is little-endian (RFC 8439 2.8), and GCM's is big-endian. Two
+AEADs in one directory with the same-shaped footer and opposite endianness is
+exactly the kind of neighbour that invites a copy.
+
+### Unpadded CBC, without changing what already worked
+
+`CbcTransformer` always padded, and the SP 800-38A tests plus every other
+caller depend on that, so `ESYMPAD_NONE` is an opt-in rather than a change of
+default. Unpadded, nothing is held back and nothing is stripped: every whole
+block is emitted as it completes, and `transformFinal()` returns `ERET_BADREQ`
+on a partial block rather than quietly rounding the length up.
+
+`padding()` is deliberately *not* cleared by `reset()` or `key()`, unlike the
+key, IV and block size. It is a mode choice, not key material, and clearing it
+would make `padding(ESYMPAD_NONE)` followed by `key(...)` silently revert to
+PKCS#7 — a very quiet way to emit a ciphertext the peer rejects.
+
+A side benefit: unpadded CBC is the first thing in this library that can be
+held against SP 800-38A F.2's *four-block* CBC vector. Padded CBC appends a
+fifth all-16s block, so until now only the single-block, all-zero-IV reduction
+of F.2 was checked, which exercises no chaining at all.
