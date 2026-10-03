@@ -340,7 +340,7 @@ tests/
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
-    realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS, ML-DSA)
+    realcerts.cpp                # real commercial certificates on disk under certs/implemented/ (github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate), plus certs/unimplemented/ for ones whose signature algorithm importDer() cannot resolve at all (ML-DSA)
   dnssec/
     name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
     records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
@@ -628,9 +628,20 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   pentanomials) were independently confirmed irreducible of the correct
   degree via a standalone check (Python's `sympy`) before hardcoding.
 - **`name.hpp` / `src/name.cpp`** define `CName`, one component of an X.509
-  distinguished name (e.g. a single `CN=...` or `OU=...`), and `ENameType`
-  (`ENAME_CN`/`ENAME_OU`/`ENAME_O`/`ENAME_L`/`ENAME_ST`/`ENAME_C`, bounded by
-  `ENAME_MAX`). Content is expected to be ASCII; `reset()` (private --
+  distinguished name (e.g. a single `CN=...` or `OU=...`), and `ENameType`:
+  the six basic X.520 types (`ENAME_CN`/`ENAME_OU`/`ENAME_O`/`ENAME_L`/
+  `ENAME_ST`/`ENAME_C`), then `ENAME_OI` (`organizationIdentifier`, 2.5.4.97
+  -- ETSI EN 319 412, routine on EU-regulated certificates), `ENAME_SERIAL`,
+  `ENAME_TITLE`, `ENAME_GN`, `ENAME_SURNAME`, `ENAME_PSEUDONYM`, `ENAME_DNQ`
+  and `ENAME_DC`, all bounded by `ENAME_MAX`. These values cross the
+  shared-library ABI boundary, so a new type is *appended* immediately before
+  `ENAME_MAX` and never inserted -- inserting one silently shifts every
+  enumerator after it for a caller compiled against the older header. The
+  same `ENAME_MAX` sizes `TYPE_KEYS`/`TYPE_LABELS`/`TYPE_OIDS`, and a C++
+  array with fewer initializers than its declared size compiles without a
+  word, leaving the tail default-constructed; `tests/name.cpp` therefore
+  walks every enumerator from `ENAME_NONE + 1` to `ENAME_MAX` and requires an
+  entry in each of the three. Content is expected to be ASCII; `reset()` (private --
   called only from the `CName(ENameType, const char*, size_t limit)`
   constructor) escapes any byte > 127 with a leading `\` when storing it,
   tracked by a `FLAG_ESCAPED` bit packed into the same `uint16_t` as
@@ -643,9 +654,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   (member) map a type to its DN attribute key (`"CN"`, `"OU"`, ...) and
   human-readable label (`"Common Name"`, ...) via the
   `TYPE_KEYS`/`TYPE_LABELS` tables; `attributeOid()`/`attributeTypeOf()`
-  (static) map a type to/from its X.520 attribute OID arcs (e.g. `ENAME_CN`
+  (static) map a type to/from its DN attribute OID arcs (e.g. `ENAME_CN`
   <-> `{2, 5, 4, 3}`) via the `TYPE_OIDS` table, used by the `asn1` module
-  to encode/decode a `CDistinguishedName`'s components (see below).
+  to encode/decode a `CDistinguishedName`'s components (see below). That
+  table is an `SAttributeOid { count, arcs[MAX_OID_ARCS] }` per type rather
+  than a flat `[4]` row, because `ENAME_DC`'s OID
+  (`0.9.2342.19200300.100.1.25`, RFC 4519) is the one recognized attribute
+  outside the 2.5.4 `attributeType` arc and is 10 arcs long. `typeOf()`
+  compares `strlen(key) + 1` bytes, so the table key's own NUL takes part:
+  comparing only `strlen(key)` made the lookup a *prefix* match, and
+  `"organizationIdentifier"` resolved to `ENAME_O`.
   `compare()` orders by `type()` first, then by content; `equals()`/
   `operator==` pre-checks `type()` + a precomputed `CDjb::computeAsLower()`
   hash (exposed via `hash()`) + length before an exact `memcmp`, so most
@@ -842,9 +860,14 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   a multi-valued RDN is rejected outright, since `CDistinguishedName` only
   ever holds one `CName` per `ENameType`, so keeping just the first value
   and silently dropping the rest would be the wrong failure mode. `type`
-  must resolve via `CName::attributeTypeOf()`; `value` must be a
-  PrintableString or UTF8String (the two kinds `CEncoder::
-  encodeDistinguishedName()` ever writes -- see below), decoded via
+  must resolve via `CName::attributeTypeOf()` -- an attribute type it can't
+  name fails the whole `Name`, which is why one `organizationIdentifier`
+  used to make a real EU-regulated certificate unimportable, and why
+  `ENameType` had to grow rather than the decoder learn to skip (dropping an
+  unnamed attribute would make two different DNs compare equal, and DN
+  equality is what a future chain builder matches issuer to subject on);
+  `value` must be a PrintableString, UTF8String or IA5String (the three kinds
+  `CEncoder::encodeDistinguishedName()` ever writes -- see below), decoded via
   `decodeString<wchar_t>()` and converted to narrow via
   `TString<wchar_t>::convertTo<char>()` before constructing the `CName`
   (mirroring `CDistinguishedName::tryParse(CWideString)`'s same conversion
@@ -895,7 +918,10 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `value` from the component's *unescaped* text
   (`CName::toString<wchar_t>(false)`) encoded via `encodeString<wchar_t>()`
   (genuine, locale-independent UTF-8), tried first as a PrintableString and,
-  only if that charset check fails, as a UTF8String instead. The private
+  only if that charset check fails, as a UTF8String instead. `ENAME_DC` is
+  the one exception: RFC 4519 2.4 gives `domainComponent` IA5String as its
+  syntax with no alternative, so it is written that way and fails outright
+  rather than falling back. The private
   `buildAttributeTypeAndValue()`/`buildDistinguishedNameContent()` helpers
   build the full nested TLV bytes into a scratch `TArray<uint8_t>`
   bottom-up (OID TLV + value TLV -> AttributeTypeAndValue SEQUENCE TLV ->
@@ -2308,6 +2334,24 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   g, y}` blob `DSA::createPublicKey()` expects via `buildDsaPublicKeyBlob()`,
   the one algorithm needing this extra step.
 
+  `signatureAlgorithm`'s `parameters` field is read for exactly one
+  algorithm, id-RSASSA-PSS (1.2.840.113549.1.1.10, RFC 4055) -- the only
+  signature algorithm here whose parameters carry information the verifier
+  needs rather than a NULL placeholder, since the OID itself names no digest.
+  `parseRsaPssParams()` (the inverse of `buildRsaPssParams()`) reads
+  `RSASSA-PSS-params` into `SRsaPssParams`, exposed by `rsaPssParams(out)`,
+  and `_sigHashAlgo` is then set from its `hashAlgorithm` so `createHasher()`
+  and `verifyBy()` work as they do for every other algorithm. All four fields
+  are `DEFAULT`ed and DER omits a field equal to its default, so the parse
+  starts from `SRsaPssParams`' own constructor -- which holds exactly those
+  defaults (SHA-1, MGF1-SHA-1, salt 20, `trailerFieldBC`) -- and an absent
+  field is reported as its default rather than as "absent", because under DER
+  those are the same statement. Parameters that *don't* parse follow the same
+  best-effort contract as an unresolved OID: `signAlgo()` still reads
+  `rsassaPss`, but `_sigHashAlgo` stays `EHASH_UNKNOWN`, so `verifyBy()`
+  reports `ERET_NOTSUP` instead of falling back to those SHA-1 defaults --
+  which would be a guess at what a signature covers.
+
   `publicKey()`/`privateKey()` are genuinely lazy: `_cachedPub`/`_cachedPvt`
   (`mutable`) are cleared (not rebuilt) by `importDer()`, and only actually
   constructed the first time each accessor is called -- a caller that never
@@ -2352,8 +2396,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   indistinguishable from EdDSA's legitimate "no separate hash", and reading
   it as EdDSA would hand raw TBS bytes to an ECDSA/DSA verify as though they
   were a digest. It is a *single-link* check: no name chaining, no validity
-  window, no constraint enforcement. RSASSA-PSS-signed certificates report
-  `ERET_NOTSUP`, since `SIG_ALGOS` has no id-RSASSA-PSS entry to resolve.
+  window, no constraint enforcement. An RSASSA-PSS-signed certificate is
+  routed through `IAsymmetricContext::verifyPss()` with the hash and salt
+  length its own `RSASSA-PSS-params` specify, rather than PKCS#1 v1.5's
+  `verify()`. Two encodable-but-unsupported cases fail closed with
+  `ERET_NOTSUP` rather than being approximated: a `maskGenAlgorithm` naming a
+  different hash than `hashAlgorithm` (this library's `verifyPss()` takes one
+  hash algorithm and uses it for both, the only pairing RFC 8017 recommends),
+  and a `trailerField` other than `trailerFieldBC`. Verifying with the wrong
+  MGF1 hash would reject every valid signature, which a caller cannot tell
+  apart from a forgery.
 
   `importDer()` enforces several DER rules whose absence had been
   exploitable, each covered by `tests/x509/malformed.cpp`: the `Certificate`
@@ -2373,10 +2425,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   s_client`/crt.sh) are checked into `tests/x509/certs/implemented/` as
   `.der` files (read via a small `readCertFile()` test helper, located
   through a generic `CERTPP_TEST_DIR` compile-definition every test target
-  gets -- see `CMakeLists.txt`'s test-registration loop); certificates using
-  an algorithm this library doesn't implement yet (RSA-PSS, the ML-DSA
-  post-quantum signature scheme) are kept separately under
-  `certs/unimplemented/`, documenting the gap rather than hiding it.
+  gets -- see `CMakeLists.txt`'s test-registration loop); a certificate whose
+  signature algorithm `importDer()` cannot resolve at all (currently just the
+  ML-DSA post-quantum signature scheme) is kept separately under
+  `certs/unimplemented/`, documenting the gap rather than hiding it. That
+  directory used to hold the RSASSA-PSS intermediate as well, which was always
+  an imprecise label for it: RSA-PSS the *algorithm* has been implemented since
+  `crypto/asyms/rsa.cpp`'s `signPss()`/`verifyPss()`; what was missing was the
+  certificate path to it, and its import actually failed on an unrecognized
+  `organizationIdentifier` in the subject `Name`, before the signature
+  algorithm was read at all.
 - **`x509/crl.hpp` / `src/x509/crl.cpp`** define the CRL (RFC 5280 5)
   side, split across three types rather than one read/write class:
   `CCrlRevokationInfo` is a single `revokedCertificates` entry

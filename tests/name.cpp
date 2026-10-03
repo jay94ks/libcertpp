@@ -614,22 +614,41 @@ TEST_CASE("CDistinguishedName::tryParse(CWideString) trims whitespace around key
 }
 
 TEST_CASE("CName::attributeOid / attributeTypeOf round-trip for every recognized name type") {
-    const ENameType types[] = { ENAME_CN, ENAME_OU, ENAME_O, ENAME_L, ENAME_ST, ENAME_C };
+    // Every enumerator between ENAME_NONE and ENAME_MAX, so a type appended to ENameType without
+    // a matching TYPE_OIDS/TYPE_KEYS/TYPE_LABELS entry fails here rather than silently reading a
+    // zeroed one -- a C++ array with fewer initializers than its declared size compiles without
+    // a word, leaving the remainder default-constructed.
+    for (int i = ENAME_NONE + 1; i < ENAME_MAX; ++i) {
+        const ENameType type = ENameType(i);
+        CAPTURE(i);
 
-    for (ENameType type : types) {
-        CAPTURE(int(type));
-
-        uint32_t arcs[4] = {};
+        uint32_t arcs[CName::MAX_OID_ARCS] = {};
         size_t arcCount = 0;
-        REQUIRE(CName::attributeOid(type, TSpan<uint32_t>(arcs, 4), arcCount));
-        REQUIRE(arcCount == 4);
+        REQUIRE(CName::attributeOid(type, TSpan<uint32_t>(arcs, CName::MAX_OID_ARCS), arcCount));
 
-        // Every X.520 DN attribute OID is under the joint-iso-ccitt.ds.attributeType arc (2.5.4).
-        CHECK(arcs[0] == 2);
-        CHECK(arcs[1] == 5);
-        CHECK(arcs[2] == 4);
+        if (type == ENAME_DC) {
+            // domainComponent is the one recognized attribute outside the X.520 arc: it lives
+            // under RFC 4519's 0.9.2342.19200300.100.1.25, which is 10 arcs rather than 4.
+            REQUIRE(arcCount == 10);
+            CHECK(arcs[0] == 0);
+            CHECK(arcs[1] == 9);
+            CHECK(arcs[2] == 2342);
+        }
+        else {
+            // Every X.520 DN attribute OID is under the joint-iso-ccitt.ds.attributeType arc.
+            REQUIRE(arcCount == 4);
+            CHECK(arcs[0] == 2);
+            CHECK(arcs[1] == 5);
+            CHECK(arcs[2] == 4);
+        }
 
-        CHECK(CName::attributeTypeOf(TReadOnlySpan<uint32_t>(arcs, 4)) == type);
+        CHECK(CName::attributeTypeOf(TReadOnlySpan<uint32_t>(arcs, arcCount)) == type);
+
+        REQUIRE(CName::keyOf(type));
+        REQUIRE(CName::labelOf(type));
+        CHECK(CName::keyOf(type)[0] != '\0');
+        CHECK(CName::labelOf(type)[0] != '\0');
+        CHECK(CName::typeOf(CName::keyOf(type)) == type);
     }
 }
 
@@ -654,6 +673,58 @@ TEST_CASE("CName::attributeOid known values match X.520") {
 
     REQUIRE(CName::attributeOid(ENAME_C, TSpan<uint32_t>(arcs, 4), arcCount));
     CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 6)); // 2.5.4.6
+
+    REQUIRE(CName::attributeOid(ENAME_OI, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 97)); // 2.5.4.97
+
+    REQUIRE(CName::attributeOid(ENAME_SERIAL, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 5)); // 2.5.4.5
+
+    REQUIRE(CName::attributeOid(ENAME_TITLE, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 12)); // 2.5.4.12
+
+    REQUIRE(CName::attributeOid(ENAME_GN, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 42)); // 2.5.4.42
+
+    REQUIRE(CName::attributeOid(ENAME_SURNAME, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 4)); // 2.5.4.4
+
+    REQUIRE(CName::attributeOid(ENAME_PSEUDONYM, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 65)); // 2.5.4.65
+
+    REQUIRE(CName::attributeOid(ENAME_DNQ, TSpan<uint32_t>(arcs, 4), arcCount));
+    CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 46)); // 2.5.4.46
+
+    // domainComponent needs all 10 arcs, so a 4-arc span is genuinely too small for it.
+    CHECK_FALSE(CName::attributeOid(ENAME_DC, TSpan<uint32_t>(arcs, 4), arcCount));
+
+    uint32_t dcArcs[CName::MAX_OID_ARCS] = {};
+    REQUIRE(CName::attributeOid(ENAME_DC, TSpan<uint32_t>(dcArcs, CName::MAX_OID_ARCS), arcCount));
+    REQUIRE(arcCount == 10);
+
+    const uint32_t expectedDc[10] = { 0, 9, 2342, 19200300, 100, 1, 25, 0, 0, 0 };
+    for (size_t i = 0; i < 10; ++i) {
+        CAPTURE(i);
+        CHECK(dcArcs[i] == expectedDc[i]);
+    }
+}
+
+TEST_CASE("CName::typeOf matches a whole key, not a prefix of one") {
+    // "organizationIdentifier" starts with "O": comparing only as many characters as the table's
+    // own key is long made it resolve to ENAME_O, silently mislabelling the attribute.
+    CHECK(CName::typeOf("organizationIdentifier") == ENAME_OI);
+    CHECK(CName::typeOf("O") == ENAME_O);
+    CHECK(CName::typeOf("OU") == ENAME_OU);
+    CHECK(CName::typeOf("CN") == ENAME_CN);
+
+    CHECK(CName::typeOf("CNX") == ENAME_NONE);
+    CHECK(CName::typeOf("organization") == ENAME_NONE);
+    CHECK(CName::typeOf("surnamed") == ENAME_NONE);
+    CHECK(CName::typeOf("") == ENAME_NONE);
+
+    // Still case-insensitive, as it always was.
+    CHECK(CName::typeOf("organizationidentifier") == ENAME_OI);
+    CHECK(CName::typeOf("cn") == ENAME_CN);
 }
 
 TEST_CASE("CName::attributeOid rejects ENAME_NONE, out-of-range types, and too-small outArcs") {

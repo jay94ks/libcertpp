@@ -774,14 +774,17 @@ namespace asn1 {
                 return false;
             }
 
-            if (countOidArcs(oidContent) != 4) {
-                return false; // Every X.520 DN attribute OID CName::attributeTypeOf() knows is exactly 4 arcs.
+            const size_t oidArcs = countOidArcs(oidContent);
+            if (!oidArcs || oidArcs > CName::MAX_OID_ARCS) {
+                return false; // Longer than any DN attribute OID CName::attributeTypeOf() knows.
             }
 
-            uint32_t arcs[4];
+            uint32_t arcs[CName::MAX_OID_ARCS];
             size_t arcCount = 0;
 
-            if (!decodeOid(oidContent, TSpan<uint32_t>(arcs, 4), arcCount) || arcCount != 4) {
+            if (!decodeOid(oidContent, TSpan<uint32_t>(arcs, CName::MAX_OID_ARCS), arcCount)
+                || arcCount != oidArcs)
+            {
                 return false;
             }
 
@@ -797,8 +800,13 @@ namespace asn1 {
                 return false; // Missing value, or trailing content after it.
             }
 
-            // Only accept the two kinds CEncoder::encodeDistinguishedName() ever writes.
-            if (valueTag != CTag(EAUTAG_STRING_P, false) && valueTag != CTag(EAUTAG_STRING_UTF8, false)) {
+            // Only accept the three kinds CEncoder::encodeDistinguishedName() ever writes:
+            // PrintableString/UTF8String for every attribute, plus IA5String, which is
+            // domainComponent's own mandatory syntax (RFC 4519 2.4).
+            if (valueTag != CTag(EAUTAG_STRING_P, false)
+                && valueTag != CTag(EAUTAG_STRING_UTF8, false)
+                && valueTag != CTag(EAUTAG_STRING_IA5, false))
+            {
                 return false;
             }
 

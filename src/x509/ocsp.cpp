@@ -952,9 +952,10 @@ namespace x509 {
 
         // --> Whether to hash first is decided by the key that will actually do the verifying,
         // not by _sigHashAlgo == EHASH_UNKNOWN. That value is ambiguous: resolveSigAlgo() leaves
-        // it untouched for an OID absent from SIG_ALGOS (id-RSASSA-PSS, the SHA-3 family,
-        // anything malformed), which is indistinguishable from EdDSA's legitimate "no separate
-        // hash". Reading it as EdDSA handed the raw tbsResponseData to an ECDSA/DSA verify as
+        // it untouched for the SHA-3 family, anything malformed, or any other OID absent from
+        // SIG_ALGOS -- and for id-RSASSA-PSS, whose digest lives in its AlgorithmIdentifier
+        // parameters, which only CCert::importDer() reads (this responder never does). All of
+        // that is indistinguishable from EdDSA's legitimate "no separate hash". Reading it as EdDSA handed the raw tbsResponseData to an ECDSA/DSA verify as
         // though it were a digest -- which truncates it to the order's bit length, so the
         // signature covered a prefix of the plaintext instead of a collision-resistant hash of
         // the whole message. An unrecognized algorithm must fail closed instead.

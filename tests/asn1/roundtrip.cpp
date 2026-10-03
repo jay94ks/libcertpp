@@ -282,7 +282,7 @@ TEST_CASE("CDecoder::decodeDistinguishedName rejects an unrecognized attribute O
     CHECK_FALSE(CDecoder::decodeDistinguishedName(SReadOnlyByteSpan(buf.data(), written), decoded));
 }
 
-TEST_CASE("CDecoder::decodeDistinguishedName rejects a value that isn't PrintableString/UTF8String") {
+TEST_CASE("CDecoder::decodeDistinguishedName rejects a value that isn't PrintableString/UTF8String/IA5String") {
     CDistinguishedName dn;
     REQUIRE(dn.trySet(CName(ENAME_C, "US")));
 
@@ -290,14 +290,51 @@ TEST_CASE("CDecoder::decodeDistinguishedName rejects a value that isn't Printabl
     size_t written = 0;
     REQUIRE(CEncoder::encodeDistinguishedName(TSpan<uint8_t>(buf.data(), buf.size()), dn, written));
 
-    // The value TLV's tag byte is 0x13 (PrintableString) at a known fixed offset; retag it as
-    // IA5String (0x16) -- a kind this library never writes for a DN value, so it must be rejected.
+    // The value TLV's tag byte is 0x13 (PrintableString) at a known fixed offset.
     const size_t valueTagOffset = 9; // SET tag+len (2) + SEQUENCE tag+len (2) + OID TLV (5)
     REQUIRE(buf[valueTagOffset] == 0x13);
+
+    // TeletexString (0x14), VisibleString (0x1a) and BMPString (0x1e) are kinds this library
+    // never writes for a DN value, so each must be rejected.
+    const uint8_t rejected[] = { 0x14, 0x1a, 0x1e };
+    for (uint8_t tag : rejected) {
+        CAPTURE(int(tag));
+        buf[valueTagOffset] = tag;
+
+        CDistinguishedName decoded;
+        CHECK_FALSE(CDecoder::decodeDistinguishedName(SReadOnlyByteSpan(buf.data(), written), decoded));
+    }
+
+    // IA5String (0x16) is accepted: it's domainComponent's own mandatory syntax (RFC 4519 2.4),
+    // so encodeDistinguishedName() writes it for ENAME_DC and the decoder has to take it back.
     buf[valueTagOffset] = 0x16;
 
     CDistinguishedName decoded;
-    CHECK_FALSE(CDecoder::decodeDistinguishedName(SReadOnlyByteSpan(buf.data(), written), decoded));
+    REQUIRE(CDecoder::decodeDistinguishedName(SReadOnlyByteSpan(buf.data(), written), decoded));
+
+    CName out;
+    REQUIRE(decoded.tryGet(ENAME_C, out));
+    CHECK(out == CName(ENAME_C, "US"));
+}
+
+TEST_CASE("CDecoder/CEncoder round-trip a domainComponent DN (10-arc OID, IA5String value)") {
+    // domainComponent is the one recognized attribute outside the 2.5.4 attributeType arc
+    // (0.9.2342.19200300.100.1.25, 10 arcs rather than 4) and the one written as an IA5String.
+    CDistinguishedName dn;
+    REQUIRE(dn.trySet(CName(ENAME_DC, "example")));
+    REQUIRE(dn.trySet(CName(ENAME_CN, "host")));
+
+    std::vector<uint8_t> buf(CEncoder::encodedDistinguishedNameSize(dn));
+    size_t written = 0;
+    REQUIRE(CEncoder::encodeDistinguishedName(TSpan<uint8_t>(buf.data(), buf.size()), dn, written));
+
+    CDistinguishedName decoded;
+    REQUIRE(CDecoder::decodeDistinguishedName(SReadOnlyByteSpan(buf.data(), written), decoded));
+    CHECK(decoded == dn);
+
+    CName out;
+    REQUIRE(decoded.tryGet(ENAME_DC, out));
+    CHECK(out == CName(ENAME_DC, "example"));
 }
 
 TEST_CASE("CDecoder::decodeDistinguishedName rejects malformed structure") {
