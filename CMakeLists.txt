@@ -290,4 +290,22 @@ if(CERTPP_BUILD_EXAMPLES)
             CERTPP_EXAMPLE_OUTPUT_DIR="${CERTPP_EXAMPLE_OUTPUT_DIR}"
         )
     endforeach()
+
+    # examples/wiki/ holds the per-type snippets the GitHub wiki publishes -- one function per
+    # public class, struct and enum, grouped by module. They build as ONE executable rather than
+    # one each, because they are not programs: they are the bodies tools/exsplit.py lifts out
+    # into examples/wiki/snippets/*.md, and only main.cpp has a main().
+    #
+    # The point of compiling them at all is that the wiki cannot then publish an example that
+    # does not build. Linking matters as much as compiling: because __SHARED_LIBCERTPP__ is
+    # PUBLIC, this target resolves every symbol through the DLL's export table exactly as a
+    # downstream consumer does, which is how a declaration missing CERTPP_API gets caught -- the
+    # test suite cannot see that, since nothing stops a test calling a symbol the DLL never
+    # exported if the test is linked the same way the library was built.
+    file(GLOB CERTPP_WIKI_EXAMPLE_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/wiki/*.cpp
+    )
+
+    add_executable(certpp_example_wiki ${CERTPP_WIKI_EXAMPLE_SOURCES})
+    target_link_libraries(certpp_example_wiki PRIVATE certpp::certpp)
 endif()

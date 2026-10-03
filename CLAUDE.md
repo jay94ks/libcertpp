@@ -56,6 +56,21 @@ this file:
 When you add a new subsystem or change a convention, update the relevant
 file under `docs/` (or add a new one) rather than expanding this file.
 
+Two documentation surfaces live outside `docs/`, because they answer a
+different question and have a different audience:
+
+- [`specs/`](specs/) is written for someone — or something — *using* the
+  library rather than working on it: [`api-map.md`](specs/api-map.md) (which
+  header and type for which task), [`recipes.md`](specs/recipes.md) (working
+  code for the common jobs), and [`pitfalls.md`](specs/pitfalls.md) (ways to
+  call it wrongly that still appear to work). `pitfalls.md` is the one to keep
+  current above the others: every entry in it exists because the wrong call
+  produced a plausible-looking result.
+- The **GitHub wiki** holds the per-type API reference and the things that
+  outlive any one version of the code — the integration guide, FAQ and
+  troubleshooting. See "The wiki" below; it is generated, not hand-written,
+  and the rules for that are not optional.
+
 ### Bilingual documentation
 
 Every document has an English original and a Korean translation beside it,
@@ -99,6 +114,67 @@ named `<name>.ko.md` — `README.md`/`README.ko.md`,
 
 `examples/README.md` currently has no Korean counterpart; it is the one
 exception, and adding one would be welcome.
+
+### Doc comments in the headers
+
+Every public declaration carries a Javadoc `/** ... */` block with
+`@param`/`@return` — the coding conventions say so, and the wiki's API
+reference is **generated from those blocks**, so a header comment is published
+documentation whether or not it was written as such. Three consequences worth
+keeping in mind while editing a header:
+
+- **A wrong doc comment ships.** `CTag::ENUMERATED` was documented as the
+  UTF8String tag; that line would have gone onto the wiki verbatim. When you
+  change what a declaration does, change its block in the same edit.
+- **Say the thing that is not obvious from the signature.** The blocks that
+  earn their place explain *why* — why `extract()` takes the salt as HMAC's
+  key, why `signsMessageDirectly()` is one function rather than four copies,
+  why a non-zero NameConstraints `minimum` must be rejected rather than
+  honoured. A block that restates the parameter names adds nothing.
+- **A `.cpp` definition gets a one-line `/* ... */`** restating the summary,
+  not a copy of the header's block. Two copies of a doc comment is two places
+  for it to drift.
+
+### The wiki
+
+The wiki's API reference is one page per public class, struct and enum,
+**generated** by [`tools/wikigen.py`](tools/wikigen.py) from the headers.
+Never hand-edit a type's wiki page: the next regeneration overwrites it, and
+the headers are the only copy that cannot be out of date. The design rests on
+two things, and both matter:
+
+- **The reference half is extracted, never retyped**, so a page cannot
+  disagree with its header by having been written from memory.
+- **Every page records the commit it was generated from.** A wiki is not
+  versioned with the code, so this is the whole mitigation: a stale page can be
+  regenerated, and says which commit it came from so a reader can tell it is
+  stale.
+
+The example half is written by hand, in
+[`examples/wiki/`](examples/wiki/README.md), and is **compiled and linked** by
+the `certpp_example_wiki` build target before publication — a published example
+that has never been compiled is a guess. That target also links the way a
+downstream consumer does, which is how a declaration missing `CERTPP_API` gets
+caught; the test suite structurally cannot see that.
+
+Regenerating, in order:
+
+```sh
+cmake --build build --config Debug --target certpp_example_wiki   # must pass first
+python tools/exsplit.py                                           # -> examples/wiki/snippets/
+python tools/wikigen.py emit <path to the wiki clone>
+```
+
+**A new public type needs an example before the wiki is regenerated.**
+`wikigen.py` reports any type that has none, and a reference page with no
+example is the one thing in this scheme that is worse than no page — it implies
+the type was considered and found not worth demonstrating. See
+[`examples/wiki/README.md`](examples/wiki/README.md) for the snippet format and
+what a good example carries.
+
+Pages that are *not* generated — `Home`, `Integration-Guide`, `FAQ`,
+`Troubleshooting` — are hand-written and belong on the wiki precisely because
+they outlive any one version of the code. Keep API signatures out of them.
 
 ## Build
 
