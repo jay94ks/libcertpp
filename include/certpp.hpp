@@ -45,6 +45,7 @@
 #include <certpp/crypto/hashers/streebog512.hpp>
 #include <certpp/crypto/hmac.hpp>
 #include <certpp/crypto/hkdf.hpp>
+#include <certpp/crypto/pbkdf2.hpp>
 #include <certpp/crypto/keys.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/eccurve.hpp>
@@ -94,6 +95,7 @@
 #include <certpp/x509/ocsp.hpp>
 #include <certpp/x509/chain.hpp>
 #include <certpp/x509/chain/pem.hpp>
+#include <certpp/x509/chain/pfx.hpp>
 #include <certpp/dnssec/name.hpp>
 #include <certpp/dnssec/records.hpp>
 #include <certpp/dnssec/keys.hpp>

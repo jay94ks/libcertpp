@@ -52,22 +52,7 @@ namespace x509 {
          * DER-encoded OCTET STRING wrapping the raw seed -- see unwrapOctetString(). */
         static bool unwrapPkcs8PrivateKey(const COctet& data, COctet& outInner);
 
-        /* Unwraps one OCTET STRING TLV, giving back its content. Used by tryAttachPrivateKey()
-         * for RFC 8410's double-OCTET-STRING PKCS#8 encoding: unwrapPkcs8PrivateKey() reaches
-         * the outer "privateKey OCTET STRING" field, and for Ed25519/Ed448/X25519 that field's
-         * own content is itself a separately DER-encoded OCTET STRING (CurvePrivateKey) wrapping
-         * the raw seed -- one more unwrapOctetString() call reaches that. */
-        static bool unwrapOctetString(const COctet& data, COctet& outContent);
 
-        /* Parses a standard SEC1 ECPrivateKey (RFC 5915) blob -- e.g. from a PEM "EC PRIVATE
-         * KEY" block produced by openssl or another tool, not just buildSec1PrivateKey()'s own
-         * output -- back into this library's own native EC private-key wire format
-         * (CCert::rawPrivateKey()'s own shape, see its doc comment), for tryAttachPrivateKey()
-         * to hand to IAsymmetric::createPrivateKey(). False if data isn't a well-formed SEC1
-         * key, or is missing its OPTIONAL publicKey field (this library's own format has no such
-         * optionality, so there's nothing to fall back to without re-deriving the public point,
-         * which this method doesn't attempt). */
-        static bool convertSec1ToNative(const COctet& data, COctet& outNative);
 
         /* Converts a PKCS#8-wrapped DSA private key's inner blob (a bare INTEGER x -- PKCS#8's
          * own DSA convention, unlike RSA's, whose inner blob is already the complete traditional

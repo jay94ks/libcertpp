@@ -7,6 +7,7 @@
 ![Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-success)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15193/badge)](https://www.bestpractices.dev/projects/15193)
 
 **X.509, ASN.1, 그리고 암호화를 C++17로 밑바닥부터 구현한 라이브러리.**
 

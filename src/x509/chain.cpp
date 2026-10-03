@@ -1,5 +1,6 @@
 #include <certpp/x509/chain.hpp>
 #include <certpp/x509/chain/pem.hpp>
+#include <certpp/x509/chain/pfx.hpp>
 #include <certpp/x509/exts/aki.hpp>
 #include <certpp/x509/exts/ski.hpp>
 #include <certpp/crypto/asym.hpp>
@@ -574,6 +575,9 @@ namespace x509 {
                 // written out in the clear constructs CPemChainFormat(true) itself and can be
                 // seen to have asked for it. See CPemChainFormat's own doc comment.
                 return std::make_shared<CPemChainFormat>();
+
+            case ECHAINFMT_PFX:
+                return std::make_shared<CPfxFormat>();
 
             default:
                 break;

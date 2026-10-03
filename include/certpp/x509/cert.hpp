@@ -14,6 +14,11 @@
 #include <certpp/x509/exts/ku.hpp>
 
 namespace certpp {
+
+    // --> Forward declaration: only used by-reference in CCert's private helper declarations,
+    // so a full #include <certpp/utils/bignum.hpp> here would be an unnecessary public dependency.
+    class CBigNum;
+
 namespace asn1 {
     // --> Forward declaration: only used by-reference in CCert's private helper declarations,
     // so a full #include <certpp/asn1/reader.hpp> here would be an unnecessary public dependency.
@@ -530,6 +535,44 @@ namespace x509 {
          * unmistakable text marker). */
         static ECertFormat detectCertFormat(SReadOnlyByteSpan data);
 
+        /* Unwraps one OCTET STRING TLV, giving back its content. Used by tryAttachPrivateKey()
+         * for RFC 8410's double-OCTET-STRING PKCS#8 encoding: unwrapPkcs8PrivateKey() reaches
+         * the outer "privateKey OCTET STRING" field, and for Ed25519/Ed448/X25519 that field's
+         * own content is itself a separately DER-encoded OCTET STRING (CurvePrivateKey) wrapping
+         * the raw seed -- one more unwrapOctetString() call reaches that. */
+        static bool unwrapOctetString(const COctet& data, COctet& outContent);
+
+        /* Parses a standard SEC1 ECPrivateKey (RFC 5915) blob -- e.g. from a PEM "EC PRIVATE
+         * KEY" block produced by openssl or another tool, not just buildSec1PrivateKey()'s own
+         * output -- back into this library's own native EC private-key wire format
+         * (CCert::rawPrivateKey()'s own shape, see its doc comment), for tryAttachPrivateKey()
+         * to hand to IAsymmetric::createPrivateKey(). False if data isn't a well-formed SEC1
+         * key, or is missing its OPTIONAL publicKey field (this library's own format has no such
+         * optionality, so there's nothing to fall back to without re-deriving the public point,
+         * which this method doesn't attempt). */
+        static bool convertSec1ToNative(const COctet& data, COctet& outNative);
+
+        /* Assembles this library's own traditional DSAPrivateKey wire format (version, p, q, g,
+         * y, x) from Dss-Parms { p, q, g } content, a public value y and PKCS#8's inner INTEGER x
+         * TLV -- the shared body of convertPkcs8DsaInnerToNative() and
+         * importPkcs8PrivateKey(). The two differ only in where y comes from: a certificate
+         * already carries it, whereas a PKCS#8 blob standing on its own does not and has to
+         * recover it as g^x mod p. */
+        static bool buildDsaNative(
+            SReadOnlyByteSpan dssParmsContent, const CBigNum& y,
+            const COctet& innerX, COctet& outNative
+        );
+
+/* The body of buildSec1PrivateKey(), with the three inputs passed in rather than read
+         * from *this, so that exportPkcs8PrivateKey() -- which has a bare `IPrivateKeyPtr` and no
+         * certificate at all -- can reach the same encoder. The public point is a separate
+         * argument even though `native` embeds one of its own: a certificate's rawPublicKey() is
+         * the authoritative point for *its* key, and keeping it explicit means this refactor
+         * cannot change what exportPem() has always written. */
+        static bool buildSec1FromNative(
+            const COctet& native, const COctet& curveOidContent,
+            SReadOnlyByteSpan publicPoint, COctet& out
+        );
     public:
         /**
          * @brief Whether an algorithm's sign()/verify() take the message itself rather than a
@@ -979,6 +1022,58 @@ namespace x509 {
          * ECERT_AUTO is not a meaningful export format and returns ERET_NOTSUP).
          */
         ERetCode exportAs(COctet& output, bool includePrivateKey = false, ECertFormat format = ECERT_DER) const;
+
+    public:
+        /**
+         * @brief Wraps a private key as a PKCS#8 PrivateKeyInfo (RFC 5208 section 5), the
+         * algorithm-independent encoding every container format -- PKCS#12's
+         * `pkcs8ShroudedKeyBag` included -- stores a private key in.
+         *
+         * Static, and taking a bare key rather than reading `privateKey()`, because that is what
+         * the callers need: `CPfxFormat` has a key out of an `SCertEntry` with no certificate
+         * attached to it. It lives on `CCert` because this is where the OID tables and the
+         * per-algorithm conversions already are -- `importPem()`'s own PKCS#8 handling is the
+         * exact inverse of this -- and splitting them across two classes would be two copies of
+         * the same table.
+         *
+         * The encoding per algorithm, since PKCS#8's "privateKey OCTET STRING" means a different
+         * thing for each and getting one wrong produces a blob that only this library reads:
+         * RSA wraps the PKCS#1 RSAPrivateKey directly with NULL parameters; DSA wraps a bare
+         * INTEGER x, with p/q/g as the AlgorithmIdentifier's Dss-Parms parameters; EC wraps a
+         * SEC1 ECPrivateKey (RFC 5915), with the curve OID as the parameters; and
+         * Ed25519/Ed448/X25519 wrap a further DER-encoded OCTET STRING around the raw seed, with
+         * no parameters at all (RFC 8410 section 7).
+         * @param key The key to wrap; must not be null.
+         * @param out Receives the DER-encoded PrivateKeyInfo.
+         * @return ERET_OK, ERET_INVAL if key is null, ERET_NOTSUP if the key's algorithm has no
+         * PKCS#8 encoding this library writes (the ML-DSA parameter sets, whose PKCS#8 form is a
+         * CHOICE of seed and expanded key that this library's own key blob is neither of), or
+         * ERET_KEY_FORMAT if the key does not serialize to the shape its algorithm should.
+         */
+        static ERetCode exportPkcs8PrivateKey(const crypto::IPrivateKeyPtr& key, COctet& out);
+
+        /**
+         * @brief Reads a PKCS#8 PrivateKeyInfo back into a key, the exact inverse of
+         * exportPkcs8PrivateKey().
+         *
+         * Unlike `tryAttachPrivateKey()`, which guesses at a blob's shape by trying it under one
+         * certificate's own algorithm until something parses, this resolves the algorithm from
+         * the PrivateKeyInfo's own AlgorithmIdentifier -- which is what lets a key bag in a
+         * PKCS#12 container be read before it is known which certificate it pairs with.
+         *
+         * One wrinkle worth knowing about: this library's native DSA key blob carries the public
+         * value y, and a PKCS#8 DSA key does not. It is recovered as `g^x mod p`, which is
+         * correct but costs a modular exponentiation -- so a DSA key is noticeably slower to read
+         * than to write.
+         * @param data The DER-encoded PrivateKeyInfo.
+         * @param out Receives the key.
+         * @return ERET_OK, ERET_BADREQ if data is not a well-formed PrivateKeyInfo, ERET_NOTSUP
+         * if its algorithm is not one this library implements, or ERET_KEY_FORMAT if the key
+         * material inside does not parse under that algorithm.
+         */
+        static ERetCode importPkcs8PrivateKey(
+            const SReadOnlyByteSpan& data, crypto::IPrivateKeyPtr& out
+        );
     };
 
     /**

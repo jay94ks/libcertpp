@@ -337,90 +337,7 @@ namespace x509 {
         return true;
     }
 
-    /* Unwraps one OCTET STRING TLV, giving back its content. */
-    bool CPemChainFormat::unwrapOctetString(const COctet& data, COctet& outContent) {
-        CTag tag;
-        SReadOnlyByteSpan content;
-        SReadOnlyByteSpan cursor = data.toSpan();
-        if (!CDecoder::readNextElement(cursor, EAENC_DER, tag, content)
-            || tag != CTag::STRING_OCTET)
-        {
-            return false;
-        }
 
-        outContent = COctet(content);
-        return true;
-    }
-
-    /* Parses a standard SEC1 ECPrivateKey blob into this library's own native EC wire format. */
-    bool CPemChainFormat::convertSec1ToNative(const COctet& data, COctet& outNative) {
-        CReader wrapper(data.toSpan(), EAENC_DER);
-        CReader seq;
-        if (!wrapper.readSequence(seq)) {
-            return false;
-        }
-
-        int64_t version = 0;
-        if (!seq.readInteger(version)) {
-            return false;
-        }
-
-        COctet dOctet;
-        if (!seq.readOctetString(dOctet)) {
-            return false;
-        }
-
-        COctet pubPoint;
-        bool havePub = false;
-
-        while (!seq.atEnd()) {
-            CTag tag;
-            SReadOnlyByteSpan content;
-            if (!seq.readNextElement(tag, content) || tag.tagClass() != EATAG_CONTEXT_SPECIFIC) {
-                break;
-            }
-
-            if (tag.value() == 1) {
-                // [1] EXPLICIT BIT STRING publicKey -- unwrap the EXPLICIT layer, then the BIT
-                // STRING itself (its first content byte is the unused-bits count, always 0 for a
-                // byte-aligned EC point).
-                CTag innerTag;
-                SReadOnlyByteSpan innerContent;
-                SReadOnlyByteSpan innerCursor = content;
-                if (CDecoder::readNextElement(innerCursor, EAENC_DER, innerTag, innerContent)
-                    && innerTag == CTag::STRING_BIT && !innerContent.empty()
-                    && innerContent.data[0] == 0)
-                {
-                    pubPoint = COctet(innerContent.slice(1));
-                    havePub = true;
-                }
-            }
-            // [0] parameters (curve OID) isn't needed here -- the certificate's own curve is
-            // already known from importDer()'s own resolveKeyAlgo() result.
-        }
-
-        if (!havePub) {
-            return false; // this library's own native format has no OPTIONAL public key field.
-        }
-
-        CBigNum d = CBigNum::fromBigEndian(dOctet.toSpan());
-
-        CBuffer body;
-        CBigNum zero;
-        if (!CDer::appendBigInteger(body, zero) || !CDer::appendBigInteger(body, d)
-            || !CDer::appendTlv(body, CTag::STRING_OCTET, pubPoint.toSpan()))
-        {
-            return false;
-        }
-
-        CBuffer full;
-        if (!CDer::appendSequence(full, body.toSpan())) {
-            return false;
-        }
-
-        outNative = COctet(full.toSpan());
-        return true;
-    }
 
     /* Converts a PKCS#8-wrapped DSA private key's inner blob (a bare INTEGER x) into this
      * library's own traditional DSAPrivateKey wire format. */
@@ -432,17 +349,11 @@ namespace x509 {
             return false;
         }
 
-        // keyAlgoParams() is Dss-Parms { p, q, g }'s own content.
-        SReadOnlyByteSpan paramsCursor = keyAlgoParams.toSpan();
-        CBigNum p, q, g;
-        if (!CDer::readBigInteger(paramsCursor, p) || !CDer::readBigInteger(paramsCursor, q)
-            || !CDer::readBigInteger(paramsCursor, g))
-        {
-            return false;
-        }
-
         // rawPublicKey() is the complete DER INTEGER y TLV (see CCert's own
         // buildDsaPublicKeyBlob() comment on why), not just its bare magnitude -- unwrap it.
+        // That unwrapping is what differs from CCert::buildDsaNative()'s other caller, which
+        // has no certificate and recovers y as g^x mod p instead; everything after it is the
+        // same encoder, so it lives in one place.
         CTag yTag;
         SReadOnlyByteSpan yContent;
         SReadOnlyByteSpan yCursor = rawPublicKey.toSpan();
@@ -451,34 +362,9 @@ namespace x509 {
         {
             return false;
         }
-        CBigNum y = CBigNum::fromBigEndian(yContent);
 
-        CTag xTag;
-        SReadOnlyByteSpan xContent;
-        SReadOnlyByteSpan xCursor = innerX.toSpan();
-        if (!CDecoder::readNextElement(xCursor, EAENC_DER, xTag, xContent)
-            || xTag != CTag::INTEGER)
-        {
-            return false;
-        }
-        CBigNum x = CBigNum::fromBigEndian(xContent);
-
-        CBuffer body;
-        CBigNum zero;
-        if (!CDer::appendBigInteger(body, zero) || !CDer::appendBigInteger(body, p)
-            || !CDer::appendBigInteger(body, q) || !CDer::appendBigInteger(body, g)
-            || !CDer::appendBigInteger(body, y) || !CDer::appendBigInteger(body, x))
-        {
-            return false;
-        }
-
-        CBuffer full;
-        if (!CDer::appendSequence(full, body.toSpan())) {
-            return false;
-        }
-
-        outNative = COctet(full.toSpan());
-        return true;
+        return CCert::buildDsaNative(
+            keyAlgoParams.toSpan(), CBigNum::fromBigEndian(yContent), innerX, outNative);
     }
 
     /* Tries candidate as cert's own private key, attempting every shape it might be in until one
@@ -495,10 +381,10 @@ namespace x509 {
         crypto::IPrivateKeyPtr pvt = cert._asym->createPrivateKey(candidate);
 
         // A traditional (non-PKCS#8) "EC PRIVATE KEY" block: standard SEC1, not this library's
-        // own native EC format (see convertSec1ToNative()'s own doc comment).
+        // own native EC format (see CCert::convertSec1ToNative()'s own doc comment).
         if (!pvt) {
             COctet native;
-            if (convertSec1ToNative(candidate, native)) {
+            if (CCert::convertSec1ToNative(candidate, native)) {
                 pvt = cert._asym->createPrivateKey(native);
             }
         }
@@ -513,7 +399,7 @@ namespace x509 {
                     // RFC 8410 (Ed25519/Ed448/X25519): the inner blob is itself a separately
                     // DER-encoded OCTET STRING wrapping the raw seed.
                     COctet seed;
-                    if (unwrapOctetString(inner, seed)) {
+                    if (CCert::unwrapOctetString(inner, seed)) {
                         pvt = cert._asym->createPrivateKey(seed);
                     }
                 }
@@ -522,7 +408,7 @@ namespace x509 {
                     // EC's usual PKCS#8 form (e.g. `openssl req -newkey ec ...`): the inner blob
                     // is itself a SEC1 ECPrivateKey, not a raw scalar.
                     COctet native;
-                    if (convertSec1ToNative(inner, native)) {
+                    if (CCert::convertSec1ToNative(inner, native)) {
                         pvt = cert._asym->createPrivateKey(native);
                     }
                 }
@@ -549,81 +435,12 @@ namespace x509 {
 
     /* Builds a standards-compliant SEC1 ECPrivateKey (RFC 5915) blob. */
     bool CPemChainFormat::buildSec1PrivateKey(const CCert& cert, COctet& out) {
-        const COctet& privateKey = cert.rawPrivateKey();
-        const COctet& publicKey = cert.rawPublicKey();
-
-        if (privateKey.empty() || publicKey.empty() || (publicKey.size() % 2) == 0) {
-            return false; // rawPublicKey() must be a SEC1 uncompressed point (0x04 || X || Y).
-        }
-
-        // Extract d from this library's own SEQUENCE { INTEGER 0, INTEGER d, OCTET STRING point }.
-        CReader wrapper(privateKey.toSpan(), EAENC_DER);
-        CReader seq;
-        if (!wrapper.readSequence(seq)) {
-            return false;
-        }
-
-        int64_t version = 0;
-        if (!seq.readInteger(version)) {
-            return false;
-        }
-
-        CTag dTag;
-        SReadOnlyByteSpan dContent;
-        if (!seq.readNextElement(dTag, dContent) || dTag != CTag::INTEGER) {
-            return false;
-        }
-
-        const size_t fieldLen = (publicKey.size() - 1) / 2;
-
-        CBigNum d = CBigNum::fromBigEndian(dContent);
-        CBuffer dPadded;
-        if (!dPadded.resize(fieldLen) || !d.toBigEndian(dPadded.toSpan())) {
-            return false; // d doesn't fit in the curve's own field width -- shouldn't happen.
-        }
-
-        CBuffer body;
-        uint8_t versionContent = 0x01; // SEC1's ecPrivkeyVer1.
-        if (!CDer::appendTlv(body, CTag::INTEGER, SReadOnlyByteSpan(&versionContent, 1))
-            || !CDer::appendTlv(body, CTag::STRING_OCTET, dPadded.toSpan()))
-        {
-            return false;
-        }
-
-        if (!cert.keyAlgoParams().empty()) {
-            // parameters [0] EXPLICIT OBJECT IDENTIFIER (namedCurve) -- the certificate's own,
-            // already resolved by importDer().
-            CBuffer oidTlv;
-            if (!CDer::appendTlv(oidTlv, CTag::OBJ_ID, cert.keyAlgoParams().toSpan())
-                || !CDer::appendTlv(body, CTag(EATAG_CONTEXT_SPECIFIC, 0, true), oidTlv.toSpan()))
-            {
-                return false;
-            }
-        }
-
-        // publicKey [1] EXPLICIT BIT STRING (0 unused bits, content = the uncompressed point).
-        CBuffer bitStringContent;
-        if (!bitStringContent.resize(1 + publicKey.size())) {
-            return false;
-        }
-        uint8_t* bitStringContentPtr = bitStringContent.toPtr();
-        bitStringContentPtr[0] = 0x00;
-        std::memcpy(bitStringContentPtr + 1, publicKey.toPtr(), publicKey.size());
-
-        CBuffer bitStringTlv;
-        if (!CDer::appendTlv(bitStringTlv, CTag::STRING_BIT, bitStringContent.toSpan())
-            || !CDer::appendTlv(body, CTag(EATAG_CONTEXT_SPECIFIC, 1, true), bitStringTlv.toSpan()))
-        {
-            return false;
-        }
-
-        CBuffer full;
-        if (!CDer::appendSequence(full, body.toSpan())) {
-            return false;
-        }
-
-        out = COctet(full.toSpan());
-        return true;
+        // --> CCert::buildSec1FromNative() is this encoder, with its three inputs passed in
+        // rather than read off a certificate, so that CCert's own PKCS#8 export can reach it
+        // too. Reachable here through the friendship CCert grants this class. Two copies of a
+        // key encoder is two places for the encoding to drift.
+        return CCert::buildSec1FromNative(
+            cert.rawPrivateKey(), cert.keyAlgoParams(), cert.rawPublicKey().toSpan(), out);
     }
 
     /* Builds a standards-compliant PKCS#8 PrivateKeyInfo (RFC 8410) blob. */
