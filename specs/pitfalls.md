@@ -29,7 +29,8 @@ cert.signData(message, signature);
 hash internally as part of the scheme. `CCert::signsMessageDirectly()` is the
 predicate for this, and `sizeOfDigest() == 0` is the signal on a context. Feed
 such an algorithm a pre-computed digest and you get a perfectly valid signature
-over those 32 bytes that no other implementation will ever produce or check.
+over the digest's bytes — treated as the message — which no other
+implementation will ever produce or check.
 Do not write your own `algo == ED25519 || algo == ED448` test — that exact
 predicate was copied into four verification paths in this library and a missed
 site fails silently and in the worst direction, which is why it is now one
@@ -125,15 +126,22 @@ signatures that verify only against themselves.
 
 **`CMontgomery` requires an odd modulus** and reports `isValid() == false`
 otherwise, with every operation becoming a no-op. Check it, or use
-`CBigNum::mod()`, which handles any modulus and is unchanged.
+`CBigNum::mod()`, which handles any modulus — adding `CMontgomery` left
+`CBigNum::mod()`, `mulMod()` and `divMod()` byte-for-byte as they were, so the
+general path is still there and still correct.
 
 ## Distinguished names
 
 **DN equality is what matches an issuer to a subject**, so anything that makes
 two different names compare equal is a correctness bug, not a cosmetic one.
-This is why unrecognized attribute types are *recognized and kept* rather than
-skipped: skipping would have to drop the attribute, and a dropped attribute
-turns a parse failure into a wrong-certificate match.
+
+That is why the parser **rejects** a name carrying an attribute type it does not
+know, rather than skipping the unknown attribute and carrying on. Skipping would
+mean dropping it, and `CDistinguishedName` is keyed by attribute type, so a
+dropped attribute makes two genuinely different names compare equal — which
+turns a parse failure into a wrong-certificate match. Rejecting is the
+conservative direction; the fix when a real certificate trips it is to *add*
+the attribute type, which is what happened for `organizationIdentifier`.
 
 **Fourteen X.520 attribute types are recognized**, including
 `organizationIdentifier` (which EU-regulated certificates carry) and
@@ -142,9 +150,10 @@ turns a parse failure into a wrong-certificate match.
 ## DNSSEC
 
 **The flags field is 16 bits big-endian, and the common value hides byte-order
-bugs.** Flags 257 is `0x0101`, which reads identically either way — so six of
-the eight published DNSSEC examples cannot catch a byte-swapped flags field.
-Test with 256 (`0x0100`) if you touch this.
+bugs.** Flags 257 is `0x0101`, which reads identically either way. Every
+example in RFC 6605 (ECDSA) and RFC 8080 (EdDSA) uses 257, so none of them can
+catch a byte-swapped flags field; RFC 5702's two RSA examples use 256
+(`0x0100`) and can. Test with 256 if you touch this.
 
 **Owner names are case-folded before the DS digest.** RFC 4034 6.2 folds ASCII
 uppercase, and `CDnsName::toWire()` always does it with no option to skip,
