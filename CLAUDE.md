@@ -14,7 +14,9 @@ memory-backed implementation); an `asn1` module
 BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
-(hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
+(hashing, including MD4 for NTLM/EAP-MSCHAPv2's NT hash; `CSipHash`,
+SipHash-2-4 as RFC 9018's DNS server-cookie PRF; a CSPRNG;
+asymmetric algorithms -- RSA, DSA, ECDSA over prime
 and binary curves, Ed25519, Ed448, X25519 -- symmetric ones -- AES,
 DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS 203,
 `crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and its

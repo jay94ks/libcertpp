@@ -12,7 +12,7 @@ abstraction), an `asn1` module (tag encode/decode, a TLV decoder/encoder,
 sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
 
-`crypto` has: an `IHasher` interface with from-scratch MD5/SHA-1/SHA-224/
+`crypto` has: an `IHasher` interface with from-scratch MD4/MD5/SHA-1/SHA-224/
 SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256 implementations; a CSPRNG utility
 (`CRng`); an `IAsymmetric` interface with seven concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
@@ -77,6 +77,7 @@ include/
     crypto/
       hasher.hpp               # IHasher interface: reset()/push()/finish(), byteWidth()
       hashers/                   # concrete IHasher implementations, one file each
+        md4.hpp                    # MD4 (RFC 1320) -- broken; present only for NTLM/EAP-MSCHAPv2's NT hash
         md5.hpp                    # MD5 (RFC 1321)
         sha1.hpp                   # SHA-1 (FIPS 180-4)
         sha224.hpp                 # SHA-224 (FIPS 180-4) -- SHA-256's compression function, own IV, truncated output
@@ -155,6 +156,7 @@ src/
   crypto/
     hasher.cpp                # empty stub -- IHasher is a pure-virtual interface, nothing out-of-line
     hashers/
+      md4.cpp                     # MD4 transform (3 rounds of 16) + reset()/push()/finish()
       md5.cpp                     # MD5 transform + reset()/push()/finish()
       sha1.cpp                    # SHA-1 transform + reset()/push()/finish()
       sha2_32core.hpp              # Sha2_32Core::transform(): private, shared SHA-224/SHA-256 compression function
@@ -261,6 +263,7 @@ tests/
       b409.cpp, k409.cpp, b571.cpp, k571.cpp
                                      # the 10 binary/Koblitz curves, each: same coverage as p192.cpp
     hashers/
+      md4.cpp                    # MD4 test cases (RFC 1320 A.5 vectors + the documented NT hash of "password" + boundary/chunking tests)
       md5.cpp                    # MD5 test cases (RFC 1321 vectors + FIPS-style stress/chunking tests)
       sha1.cpp                     # SHA-1 test cases (FIPS 180-4 vectors)
       sha224.cpp                     # SHA-224 test cases (FIPS 180-4 vectors, cross-checked against openssl)
@@ -271,6 +274,7 @@ tests/
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
     rng.cpp                       # CRng::fill() test cases
+    siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
     syms/
       aes.cpp                      # AES test cases (NIST SP 800-38A CBC known-answer vectors, round-trip, tamper, error paths)
       des.cpp                       # DES test cases (the classic FIPS-46 vector)
@@ -923,8 +927,8 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   it never varies per-instance for a concrete hasher. Unlike `IStream`, none
   of `IHasher`'s methods default to `ERET_NOTIMPL` -- every concrete hasher
   implements all three, so all three are pure virtual.
-- **`crypto/hashers/md5.hpp`/`sha1.hpp`/`sha224.hpp`/`sha256.hpp`/`sha384.hpp`/`sha512.hpp`**
-  (and their matching `src/crypto/hashers/*.cpp`) implement `MD5`, `SHA1`,
+- **`crypto/hashers/md4.hpp`/`md5.hpp`/`sha1.hpp`/`sha224.hpp`/`sha256.hpp`/`sha384.hpp`/`sha512.hpp`**
+  (and their matching `src/crypto/hashers/*.cpp`) implement `MD4`, `MD5`, `SHA1`,
   `SHA224`, `SHA256`, `SHA384`, and `SHA512` from scratch (no third-party
   dependency) -- each a concrete `IHasher`, living under the `hashers/` subdirectory
   (plural) as opposed to `crypto/hasher.hpp` (singular) which defines the
@@ -936,12 +940,15 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `SubjectKeyIdentifier` computation, and legacy signature algorithms), so
   named plainly after the algorithm (`MD5`, not `CMD5`) rather than
   `C`-prefixed, matching how `asn1`'s enumerators use the standard's own
-  abbreviations instead of inventing new names. MD5 and SHA-1 are
+  abbreviations instead of inventing new names. MD4, MD5 and SHA-1 are
   cryptographically broken and only useful for interoperating with legacy
   certificates/fingerprints that still reference them, never for anything
-  new. Each holds a private `Context` struct (running state words + an
+  new -- MD4 most of all, which is here purely because NTLM and
+  EAP-MSCHAPv2 define the NT hash as MD4 of the UTF-16LE password, with no
+  alternative available to a client that must speak them. Each holds a
+  private `Context` struct (running state words + an
   unprocessed-input buffer + a total-length counter) sized for its own block
-  size (64 bytes for MD5/SHA-1/SHA-224/SHA-256, 128 for SHA-384/SHA-512);
+  size (64 bytes for MD4/MD5/SHA-1/SHA-224/SHA-256, 128 for SHA-384/SHA-512);
   `push()` tops up a partial block from any previous call, runs the
   compression function over as many full blocks as it can consume directly
   from the caller's span, then buffers whatever's left over (less than one
@@ -951,9 +958,16 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   than once and always returns the same digest without disturbing the live
   object -- calling `push()` again afterward simply keeps extending the
   original (unfinalized) state, as if `finish()` had never been called.
-  MD5 packs message words and its 64-bit length field little-endian (the
-  one place it differs from the SHA family, which is big-endian
-  throughout); SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 all pad the same way (a
+  MD4 and MD5 pack message words and their 64-bit length field little-endian
+  (the one place they differ from the SHA family, which is big-endian
+  throughout). MD4 is MD5's direct ancestor and shares its padding and
+  buffering exactly, but runs 3 rounds of 16 steps rather than 4, adds one
+  constant per round (none, then `sqrt(2) * 2^30`, then `sqrt(3) * 2^30`)
+  rather than one per step, uses a majority function where MD5's round 2
+  uses a selection, and -- the part no formula produces -- takes its round-2
+  and round-3 message-word order from fixed permutations spelled out in RFC
+  1320 3.4 rather than from MD5's arithmetic `(5i + 1) % 16` family.
+  SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 all pad the same way (a
   `0x80` byte, zero bytes up to the block-size-specific boundary, then the
   bit length) but with algorithm-specific block/word sizes and round counts.
   SHA-224/SHA-256 are identical except for their initial hash values and
@@ -1353,6 +1367,27 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `padToBlock()` is a named operation because RFC 8439 2.8's `pad16` closes a
   partial block rather than extending the message, which pushing zeros cannot
   express.
+- **`crypto/siphash.hpp` / `src/crypto/siphash.cpp`** define `CSipHash`,
+  SipHash-2-4 (Aumasson and Bernstein), the keyed 128-bit-key/64-bit-output
+  PRF RFC 9018 2.2 specifies for DNS server cookies. It takes `CPoly1305`'s
+  shape -- `reset(key)`/`push()`/`finish(out)` plus a one-shot `compute()` --
+  but deliberately *not* its lifecycle: SipHash is a reusable PRF, so
+  `reset()` may be called any number of times, there is a no-argument
+  `reset()` that restarts a message under the key already installed, and
+  `finish()` is a repeatable query (finalizing a copy of the state, as
+  `IHasher::finish()` does) rather than consuming the key. That difference is
+  the security model of each primitive showing through, and the doc comment on
+  each class says so, since the two classes otherwise look interchangeable.
+  It is not an `IHasher` either: `IHasher` is unkeyed with 16-byte-and-up
+  digests, this is keyed with an 8-byte output, and 64 bits is far too short
+  to resist a collision search -- putting it behind `IHasher` would invite
+  exactly the use it cannot support. The padding is the subtle part: there is
+  always a final block, even for an empty or block-aligned message, and it
+  carries the message length mod 256 in its top byte instead of any `0x80`
+  marker or bit count, so an implementation that merely zero-pads the short
+  block is self-consistent and gives any message and its zero-extension the
+  same output -- the empty message and a single `0x00` byte being the
+  smallest such pair, which is what the test for it uses.
 - **`crypto/aeads/chacha20poly1305.hpp` /
   `src/crypto/aeads/chacha20poly1305.cpp`** define `CChaCha20Poly1305`, RFC
   8439 2.8. One instance is a keyed context -- construct per key, call
@@ -1550,8 +1585,15 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   isn't told which hash produced the digest it's given, the DigestInfo's
   hash `AlgorithmIdentifier` is inferred from the digest's byte length (16/
   20/28/32/48/64, covering MD5/SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 --
-  every hasher this library ships except the variable-length SHAKE256, and
-  not coincidentally all distinct lengths). `signPss()`/`verifyPss()`
+  every hasher this library ships except the variable-length SHAKE256 and
+  MD4). MD4 is the one collision in that mapping, since it is also 16 bytes
+  wide: a 16-byte digest is read as MD5, because `md5WithRSAEncryption` is a
+  real (if obsolete) X.509 signature algorithm and `md4WithRSAEncryption` is
+  effectively never seen. MD4 exists here for NTLM/EAP-MSCHAPv2's NT hash,
+  not for signing, so that is the right way round -- but it is the reason
+  digest-length sniffing cannot absorb another 16-byte hash, and a caller
+  that genuinely needs MD4-with-RSA has to be given a named-algorithm path
+  instead. `signPss()`/`verifyPss()`
   (declared on `IAsymmetricContext` itself, defaulting to `ERET_NOTSUP`
   there since only RSA overrides them) implement RSASSA-PSS (RFC 8017 9.1)
   instead: EMSA-PSS-ENCODE/-VERIFY plus an MGF1 mask built from a caller-
@@ -2245,7 +2287,7 @@ CMake target (`doctest` today); the root `CMakeLists.txt` only
 `add_subdirectory(third-party)`s when `CERTPP_BUILD_TESTS=ON`, since
 nothing outside `tests/` needs it. Everything the library itself does is
 implemented from scratch and needs no dependency at all: the hashes
-(`MD5`/`SHA1`/`SHA224`/`SHA256`/`SHA384`/`SHA512`/`SHAKE128`/`SHAKE256`),
+(`MD4`/`MD5`/`SHA1`/`SHA224`/`SHA256`/`SHA384`/`SHA512`/`SHAKE128`/`SHAKE256`),
 the symmetric ciphers, the asymmetric algorithms, and the big-number and
 binary-field arithmetic under them. There is consequently no non-test
 dependency yet and no concrete candidate for one; if a future piece of work

@@ -1,4 +1,5 @@
 #include <certpp/crypto/hasher.hpp>
+#include <certpp/crypto/hashers/md4.hpp>
 #include <certpp/crypto/hashers/md5.hpp>
 #include <certpp/crypto/hashers/sha1.hpp>
 #include <certpp/crypto/hashers/sha224.hpp>
@@ -16,6 +17,10 @@ namespace crypto {
     /* Creates a hasher instance based on the specified built-in hasher type. */
     ERetCode IHasher::create(EHashers hasherType, IHasherPtr& out) {
         switch (hasherType) {
+            case EHASH_MD4:
+                out = std::make_shared<MD4>();
+                return ERET_OK;
+
             case EHASH_MD5:
                 out = std::make_shared<MD5>();
                 return ERET_OK;

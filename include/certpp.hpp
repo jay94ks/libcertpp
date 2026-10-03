@@ -28,6 +28,7 @@
 #include <certpp/asn1/der.hpp>
 
 #include <certpp/crypto/hasher.hpp>
+#include <certpp/crypto/hashers/md4.hpp>
 #include <certpp/crypto/hashers/md5.hpp>
 #include <certpp/crypto/hashers/sha1.hpp>
 #include <certpp/crypto/hashers/sha224.hpp>
@@ -60,6 +61,7 @@
 #include <certpp/crypto/syms/des.hpp>
 #include <certpp/crypto/syms/des3.hpp>
 #include <certpp/crypto/poly1305.hpp>
+#include <certpp/crypto/siphash.hpp>
 #include <certpp/crypto/aeads/chacha20poly1305.hpp>
 #include <certpp/crypto/syms/chacha20.hpp>
 
