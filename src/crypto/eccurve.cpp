@@ -13,38 +13,45 @@ namespace crypto {
             return result;
         }
 
-        CEcCurve::ECPointJac CEcCurve::infinityJac() {
-            return ECPointJac{ CBigNum(uint64_t(1)), CBigNum(uint64_t(1)), CBigNum() };
+        CEcCurve::ECPointJac CEcCurve::infinityJac(const CMontgomery& field) {
+            // --> (1 : 1 : 0), with the two ones in Montgomery form (see ECPointJac's comment).
+            return ECPointJac{ field.one(), field.one(), CBigNum() };
         }
 
-        CEcCurve::ECPointJac CEcCurve::toJacobian(const SEcPoint& pt) {
+        CEcCurve::ECPointJac CEcCurve::toJacobian(const SEcPoint& pt, const CMontgomery& field) {
             if (pt.infinity) {
-                return infinityJac();
+                return infinityJac(field);
             }
-            return ECPointJac{ pt.x, pt.y, CBigNum(uint64_t(1)) };
+
+            return ECPointJac{ field.toMont(pt.x), field.toMont(pt.y), field.one() };
         }
 
-        SEcPoint CEcCurve::toAffineFromJac(const ECPointJac& pt, const CBigNum& p) {
+        SEcPoint CEcCurve::toAffineFromJac(const ECPointJac& pt, const CMontgomery& field) {
             if (pt.z.isZero()) {
                 return SEcPoint();
             }
 
+            // --> The modular inversion is the one step of this function that has no Montgomery
+            // form, so Z leaves the domain, is inverted by CBigNum's extended Euclid, and the
+            // inverse comes straight back in. Everything downstream of it is domain arithmetic
+            // again, and only the two affine coordinates convert back out at the end.
             CBigNum zInv;
-            CBigNum::modInverse(pt.z, p, zInv);
+            CBigNum::modInverse(field.fromMont(pt.z), field.modulus(), zInv);
+            zInv = field.toMont(zInv);
 
             CBigNum zInv2(zInv);
-            zInv2.mulMod(zInv, p);
+            field.mul(zInv2, zInv);
 
             CBigNum zInv3(zInv2);
-            zInv3.mulMod(zInv, p);
+            field.mul(zInv3, zInv);
 
             CBigNum x(pt.x);
-            x.mulMod(zInv2, p);
+            field.mul(x, zInv2);
 
             CBigNum y(pt.y);
-            y.mulMod(zInv3, p);
+            field.mul(y, zInv3);
 
-            return SEcPoint(std::move(x), std::move(y));
+            return SEcPoint(field.fromMont(x), field.fromMont(y));
         }
 
         /* Jacobian doubling (dbl-2007-bl, Bernstein/Lange, general a -- this library's curves
@@ -52,89 +59,90 @@ namespace crypto {
          * Brainpool t1 curves, so the a == -3 shortcut isn't used). A point of order 2 (y == 0)
          * has an undefined tangent slope -- doubling it is the point at infinity, same
          * special case doublePoint() above already handles in affine form. */
-        CEcCurve::ECPointJac CEcCurve::doublePointJac(const ECPointJac& pt, const CBigNum& p, const CBigNum& a) {
+        CEcCurve::ECPointJac CEcCurve::doublePointJac(
+            const ECPointJac& pt, const CMontgomery& field, const CBigNum& aMont
+        ) {
             if (pt.z.isZero() || pt.y.isZero()) {
-                return infinityJac();
+                return infinityJac(field);
             }
 
             CBigNum A(pt.x);
-            A.mulMod(pt.x, p);
+            field.mul(A, pt.x);
 
             CBigNum B(pt.y);
-            B.mulMod(pt.y, p);
+            field.mul(B, pt.y);
 
             // C = B^2; B's original value (y^2) is still needed below (xPlusB), so this can't
             // mutate B in place -- a genuine copy.
             CBigNum C(B);
-            C.mulMod(B, p);
+            field.mul(C, B);
 
             CBigNum xPlusB(pt.x);
-            xPlusB.add(B);
-            xPlusB.mod(p);
+            field.add(xPlusB, B);
 
             // D = 2*(xPlusB^2 - A - C), built by mutating xPlusB in place (self-squaring, then
             // the rest of the formula) -- xPlusB's pre-square value has no other reader.
-            xPlusB.mulMod(xPlusB, p);
-            xPlusB.modSub(A, p);
-            xPlusB.modSub(C, p);
-            xPlusB.add(xPlusB);
-            xPlusB.mod(p);
+            field.mul(xPlusB, xPlusB);
+            field.sub(xPlusB, A);
+            field.sub(xPlusB, C);
+            field.dbl(xPlusB);
             CBigNum& d = xPlusB;
 
             CBigNum z2(pt.z);
-            z2.mulMod(pt.z, p);
+            field.mul(z2, pt.z);
 
             // z4 = z2^2, by mutating z2 in place -- z2's pre-square value has no other reader.
-            z2.mulMod(z2, p);
+            field.mul(z2, z2);
             CBigNum& z4 = z2;
 
             // threeA = 3*A: A's own value is read three times below (it stays fixed while
             // threeA accumulates), so this can't be fused into A itself.
             CBigNum threeA(A);
-            threeA.add(A);
-            threeA.add(A);
-            threeA.mod(p);
+            field.add(threeA, A);
+            field.add(threeA, A);
 
-            CBigNum aZ4(a);
-            aZ4.mulMod(z4, p);
+            CBigNum aZ4(aMont);
+            field.mul(aZ4, z4);
 
             // E = threeA + aZ4, by mutating threeA in place -- its pre-sum value has no other
             // reader.
-            threeA.add(aZ4);
-            threeA.mod(p);
+            field.add(threeA, aZ4);
             CBigNum& e = threeA;
 
             // F = E^2; E's own value is still needed below (y3), so this can't mutate e in
             // place -- a genuine copy.
             CBigNum F(e);
-            F.mulMod(e, p);
+            field.mul(F, e);
 
             // twoD = 2*D; d's own value is still needed below (dMinusX3), so this can't mutate
             // d in place -- a genuine copy.
             CBigNum twoD(d);
-            twoD.add(d);
-            twoD.mod(p);
+            field.dbl(twoD);
 
             // x3 = F - twoD, by mutating F in place -- its pre-subtraction value has no other
             // reader.
-            F.modSub(twoD, p);
+            field.sub(F, twoD);
             CBigNum& x3 = F;
 
             // dMinusX3 = D - x3, by mutating d in place -- this is d's last read.
-            d.modSub(x3, p);
+            field.sub(d, x3);
             CBigNum& dMinusX3 = d;
 
             CBigNum y3(e);
-            y3.mulMod(dMinusX3, p);
+            field.mul(y3, dMinusX3);
 
-            // eightC = C*8, by mutating C in place -- this is C's last read.
-            C.mulMod(CBigNum(uint64_t(8)), p);
-            y3.modSub(C, p);
+            // eightC = C*8, by mutating C in place -- this is C's last read. Three doublings
+            // rather than a multiplication by a literal 8, because 8 is a plain integer and the
+            // operands here are Montgomery-form: multiplying by the constant would need
+            // toMont(8), whereas doubling is domain-agnostic (and cheaper besides).
+            field.dbl(C);
+            field.dbl(C);
+            field.dbl(C);
+            field.sub(y3, C);
 
             CBigNum z3(pt.y);
-            z3.mulMod(pt.z, p);
-            z3.add(z3);
-            z3.mod(p);
+            field.mul(z3, pt.z);
+            field.dbl(z3);
 
             return ECPointJac{ std::move(x3), std::move(y3), std::move(z3) };
         }
@@ -143,7 +151,10 @@ namespace crypto {
          * doublePointJac() when both points share the same x-coordinate and the same y (P1 ==
          * P2), and to the point at infinity when they share x but differ in y (P1 == -P2) --
          * same two exceptional cases affine add() above already special-cases. */
-        CEcCurve::ECPointJac CEcCurve::addJac(const ECPointJac& p1, const ECPointJac& p2, const CBigNum& p, const CBigNum& a) {
+        CEcCurve::ECPointJac CEcCurve::addJac(
+            const ECPointJac& p1, const ECPointJac& p2, const CMontgomery& field,
+            const CBigNum& aMont
+        ) {
             if (p1.z.isZero()) {
                 return p2;
             }
@@ -154,104 +165,99 @@ namespace crypto {
             // z1z1/z2z2 are each read again all the way at the very end (z3's formula), so they
             // stay alive as their own variables throughout -- no fusion opportunity for them.
             CBigNum z1z1(p1.z);
-            z1z1.mulMod(p1.z, p);
+            field.mul(z1z1, p1.z);
 
             CBigNum z2z2(p2.z);
-            z2z2.mulMod(p2.z, p);
+            field.mul(z2z2, p2.z);
 
             // u1 is read twice below (h's construction, then v's construction) -- it survives
             // until the second read, where it's fused away (see "u1 becomes v" below).
             CBigNum u1(p1.x);
-            u1.mulMod(z2z2, p);
+            field.mul(u1, z2z2);
 
             // u2 is read exactly once below (h's construction) -- that's its last read, so h is
             // built by mutating u2 directly rather than copying it.
             CBigNum u2(p2.x);
-            u2.mulMod(z1z1, p);
+            field.mul(u2, z1z1);
 
             CBigNum z2z2z2(z2z2);
-            z2z2z2.mulMod(p2.z, p);
+            field.mul(z2z2z2, p2.z);
 
             CBigNum z1z1z1(z1z1);
-            z1z1z1.mulMod(p1.z, p);
+            field.mul(z1z1z1, p1.z);
 
             // s1 is read twice below (this file's "r"'s construction, then twoS1J's) -- it
             // survives until the second read, where it's fused away (see "s1 becomes twoS1J"
             // below).
             CBigNum s1(p1.y);
-            s1.mulMod(z2z2z2, p);
+            field.mul(s1, z2z2z2);
 
             // s2 is read exactly once below (this file's "r"'s construction) -- that's its last
             // read, so "r" is built by mutating s2 directly rather than copying it.
             CBigNum s2(p2.y);
-            s2.mulMod(z1z1z1, p);
+            field.mul(s2, z1z1z1);
 
             // h = u2 - u1 (this is u2's last read -- mutate in place).
-            u2.modSub(u1, p);
+            field.sub(u2, u1);
             CBigNum& h = u2;
 
             // r = s2 - s1 (this is s2's last read -- mutate in place).
-            s2.modSub(s1, p);
+            field.sub(s2, s1);
             CBigNum& r = s2;
 
             if (h.isZero()) {
                 if (r.isZero()) {
-                    return doublePointJac(p1, p, a);
+                    return doublePointJac(p1, field, aMont);
                 }
-                return infinityJac();
+                return infinityJac(field);
             }
 
             // i and j are each read twice below (v's/x3's construction, then x3's/twoS1J's) --
             // both stay genuine copies (h/i must still be intact after producing them: h is
             // read again at the very end, i is read again below).
             CBigNum i(h);
-            i.add(h);
-            i.mod(p);
-            i.mulMod(i, p); // (2h)^2
+            field.dbl(i);
+            field.mul(i, i); // (2h)^2
 
             CBigNum j(h);
-            j.mulMod(i, p);
+            field.mul(j, i);
 
-            r.add(r);
-            r.mod(p); // r = 2*(s2-s1)
+            field.dbl(r); // r = 2*(s2-s1)
 
             // v = u1*i (this is u1's first of two remaining reads -- fused into u1 below, at its
             // second/last read).
-            u1.mulMod(i, p);
+            field.mul(u1, i);
             CBigNum& v = u1;
 
             CBigNum x3(r);
-            x3.mulMod(r, p);
-            x3.modSub(j, p);
+            field.mul(x3, r);
+            field.sub(x3, j);
 
             CBigNum twoV(v);
-            twoV.add(v);
-            twoV.mod(p);
-            x3.modSub(twoV, p);
+            field.dbl(twoV);
+            field.sub(x3, twoV);
 
             // vMinusX3 = v - x3 (this is v's/u1's last read -- mutate in place).
-            v.modSub(x3, p);
+            field.sub(v, x3);
             CBigNum& vMinusX3 = v;
 
             // y3 = r*vMinusX3 (this is r's/s2's last read -- mutate in place).
-            r.mulMod(vMinusX3, p);
+            field.mul(r, vMinusX3);
             CBigNum& y3Accum = r;
 
             // twoS1J = 2*s1*j (this is s1's last read -- mutate in place).
-            s1.mulMod(j, p);
-            s1.add(s1);
-            s1.mod(p);
-            y3Accum.modSub(s1, p);
+            field.mul(s1, j);
+            field.dbl(s1);
+            field.sub(y3Accum, s1);
 
             CBigNum z1PlusZ2(p1.z);
-            z1PlusZ2.add(p2.z);
-            z1PlusZ2.mod(p);
+            field.add(z1PlusZ2, p2.z);
 
             CBigNum z3(z1PlusZ2);
-            z3.mulMod(z1PlusZ2, p);
-            z3.modSub(z1z1, p);
-            z3.modSub(z2z2, p);
-            z3.mulMod(h, p);
+            field.mul(z3, z1PlusZ2);
+            field.sub(z3, z1z1);
+            field.sub(z3, z2z2);
+            field.mul(z3, h);
 
             return ECPointJac{ std::move(x3), std::move(y3Accum), std::move(z3) };
         }
@@ -720,7 +726,15 @@ namespace crypto {
      * toAffineFromJac() below pays for exactly one, at the very end, replacing the
      * one-inversion-per-step affine version this used to be (add()/doublePoint() above still
      * exist and still work in affine form, for callers that need a single group operation rather
-     * than a full scalar multiplication). */
+     * than a full scalar multiplication).
+     *
+     * The loop runs in the Montgomery domain (see CMontgomery): the per-modulus constants are
+     * built once here, up front, and every field multiplication inside then costs limb-wise
+     * multiply-accumulate passes instead of the full Knuth-D long division CBigNum::mulMod() has
+     * no choice but to perform. Building the context costs two divisions against the thousands it
+     * saves, which is why it is built per call rather than cached on the curve -- a cached copy
+     * would have to be invalidated whenever a caller wrote to the public p/a/b fields, and the
+     * saving from caching it is unmeasurable next to the scalar multiplication it precedes. */
     SEcPoint CEcCurve::scalarMul(const SEcPoint& pt, const CBigNum& k) const {
         SEcPoint result; // infinity
 
@@ -728,21 +742,30 @@ namespace crypto {
             return result;
         }
 
-        ECPointJac r0 = infinityJac();
-        ECPointJac r1 = toJacobian(pt);
+        // --> Every field prime this library ships is an odd prime, so this only fails on a
+        // default-constructed (p == 0) curve, which has no group to multiply in anyway.
+        const CMontgomery field(p);
+        if (!field.isValid()) {
+            return result;
+        }
+
+        const CBigNum aMont = field.toMont(a);
+
+        ECPointJac r0 = infinityJac(field);
+        ECPointJac r1 = toJacobian(pt, field);
 
         for (size_t i = k.bitLength(); i-- > 0; ) {
             bool bit = k.testBit(i);
 
             condSwapJac(bit, r0, r1);
-            ECPointJac sum = addJac(r0, r1, p, a);
-            ECPointJac doubled = doublePointJac(r0, p, a);
+            ECPointJac sum = addJac(r0, r1, field, aMont);
+            ECPointJac doubled = doublePointJac(r0, field, aMont);
             r1 = std::move(sum);
             r0 = std::move(doubled);
             condSwapJac(bit, r0, r1);
         }
 
-        return toAffineFromJac(r0, p);
+        return toAffineFromJac(r0, field);
     }
 
     /* Left-to-right windowed method over _baseTable (see its own doc comment for the lazy-build/
@@ -758,6 +781,13 @@ namespace crypto {
         if (g.infinity || k.isZero()) {
             return SEcPoint();
         }
+
+        const CMontgomery field(p);
+        if (!field.isValid()) {
+            return SEcPoint();
+        }
+
+        const CBigNum aMont = field.toMont(a);
 
         if (_baseTable.size() != BASE_TABLE_SIZE) {
             TArray<SEcPoint> table;
@@ -775,11 +805,11 @@ namespace crypto {
         size_t bits = k.bitLength();
         size_t numWindows = (bits + BASE_TABLE_WINDOW - 1) / BASE_TABLE_WINDOW;
 
-        ECPointJac result = infinityJac();
+        ECPointJac result = infinityJac(field);
 
         for (size_t w = numWindows; w-- > 0; ) {
             for (size_t i = 0; i < BASE_TABLE_WINDOW; ++i) {
-                result = doublePointJac(result, p, a);
+                result = doublePointJac(result, field, aMont);
             }
 
             size_t base = w * BASE_TABLE_WINDOW;
@@ -790,10 +820,10 @@ namespace crypto {
                 }
             }
 
-            result = addJac(result, toJacobian(_baseTable[windowValue]), p, a);
+            result = addJac(result, toJacobian(_baseTable[windowValue], field), field, aMont);
         }
 
-        return toAffineFromJac(result, p);
+        return toAffineFromJac(result, field);
     }
 
     bool CEcCurve::encodePoint(const SEcPoint& pt, TArray<uint8_t>& out) const {
