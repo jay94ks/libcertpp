@@ -58,15 +58,28 @@ aead.seal(nonce, aad,
 OCSP 요청/응답(RFC 6960), 그리고 10종의 구체적인 확장 타입. 서명 검증은
 PKCS#1 v1.5, RSASSA-PSS(RFC 4055 — DER 기본값을 가정하지 않고 실제 파라미터를
 읽습니다), ECDSA, EdDSA, ML-DSA를 지원합니다. `organizationIdentifier`와
-`domainComponent`를 포함한 14종의 X.520 이름 속성 타입을 인식합니다.
+`domainComponent`를 포함한 14종의 X.520 이름 속성 타입을 인식합니다. PKCS#10
+인증 요청(`CCertRequest`, `CCertRequestBuilder`, RFC 2986)을 양방향으로
+지원하며, PKCS#9 `extensionRequest` 속성을 포함하고, 자기 서명을 호출할
+메서드로 제공하기만 하는 것이 아니라 가져오는 시점에 검사합니다.
+
+**체인과 컨테이너** — `CCertCollection`은 인증서 집합을 담고 누가 누구를
+발행했는지에 따라 정렬하며(`buildChain()`), `verifyLinks()`가 각 링크의 서명을
+검사합니다. 컬렉션 위의 컨테이너 형식 둘: 개인키를 위치가 아니라 암호학적으로
+자기 인증서와 짝지어 주는 PEM, 그리고 아무것도 복호화되기 전에 MAC을 검증하는
+PBES2/AES-256-CBC 위의 PKCS#12/PFX(RFC 7292)입니다. **path validation은
+없습니다.** 유효 기간, `basicConstraints`, `keyUsage`, 이름 제약, 정책, 폐지는
+검사되지 않으며, 루트가 신뢰할 수 있는 것인지를 결정하는 것은 여기에
+없습니다. 이 라이브러리에서 나온 정렬된 체인은 검증기의 판정이 아니라
+입력입니다.
 
 **해시** — MD4, MD5, SHA-1, SHA-224/256/384/512, SHA3-256/512, SHAKE128/256,
 BLAKE2s(RFC 7693), 두 가지 다이제스트 길이를 모두 지원하는
 GOST R 34.11-2012 "Streebog"(RFC 6986).
 
 **MAC 및 KDF** — 위의 모든 해시 위에서 동작하는 HMAC(RFC 2104),
-HKDF(RFC 5869), Poly1305(RFC 8439), BLAKE2s의 네이티브 키드 MAC,
-SipHash-2-4(RFC 9018).
+HKDF(RFC 5869), password 기반 경우를 위한 PBKDF2(RFC 8018),
+Poly1305(RFC 8439), BLAKE2s의 네이티브 키드 MAC, SipHash-2-4(RFC 9018).
 
 **대칭키 및 AEAD** — AES, DES, TripleDES(CBC, PKCS#7 패딩 또는 패딩 없음),
 ChaCha20. AEAD 3종: ChaCha20-Poly1305(RFC 8439),
@@ -133,7 +146,11 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
   [API 지도](specs/api-map.ko.md), [레시피](specs/recipes.ko.md), 그리고
   [함정](specs/pitfalls.ko.md) — 이 라이브러리를 잘못 호출했는데도 정상
   동작하는 것처럼 보이는 경우들을 모아 둔 문서입니다.
-- [`examples/`](examples/)(영문) — 컴파일되는 CA 계층 구조 예제.
+- [`examples/`](examples/)(영문) — 컴파일되는 CA 계층 구조 예제, 더해서 모든
+  공개 타입에 대한 컴파일되는 예제.
+- [**위키**](../../wiki)(영문) — 공개 class, struct, enum당 레퍼런스 페이지
+  하나이며, 헤더 자신의 doc 주석에서 생성되고 각각 자기가 나온 커밋이 찍혀
+  있습니다. 통합 가이드, FAQ, 트러블슈팅도 있습니다.
 
 **라이브러리를 개발하는 쪽:**
 

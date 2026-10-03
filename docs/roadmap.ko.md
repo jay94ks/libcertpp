@@ -165,7 +165,23 @@ min-of-N 값입니다. 이 머신의 실행 간 편차가 (부하가 걸리면 �
 
 ## 계획에 없는 것
 
-- 체인 빌딩 및 경로 검증(path validation).
-- CSR(PKCS#10) 지원.
+- path validation(경로 검증).
 
-둘 다 여전히 의도적으로 범위 밖입니다. [`CLAUDE.md`](../CLAUDE.md) 참고.
+여전히 의도적으로 범위 밖입니다. [`CLAUDE.md`](../CLAUDE.md) 참고. 그 구분은
+정확히 진술할 만한데, 이 항목이 전에는 "체인 빌딩 및 경로 검증"으로 읽혔고 그
+절반은 더는 사실이 아니기 때문입니다. `CCertCollection::buildChain()`은
+인증서를 누가 누구를 발행했는지에 따라 정렬하고 `verifyLinks()`는 각 링크의
+서명을 검사합니다. 없는 것은 검증기가 하는 그 *밖의* 모든 것입니다. 유효 기간,
+`basicConstraints`, `keyUsage`, 이름 제약, 정책 제약, 폐지, 그리고 끝에 있는
+루트가 호출자가 신뢰하는 것인지의 결정입니다. 이 라이브러리에서 나온 정렬된
+체인은 검증기의 판정이 아니라 입력이며, 그 둘을 뭉쳐 놓은 항목은 첫 번째를
+두 번째에 대한 약속으로 읽게 초대했습니다.
+
+CSR(PKCS#10) 지원도 전에는 여기 있었습니다. 더는 아닙니다. 그것은
+`x509/csr.hpp`의 `CCertRequest`/`CCertRequestBuilder`(RFC 2986, PKCS#9
+extensionRequest 포함)로 착륙했으며, 그것들의 두 번째 사본을 키우는 대신
+`CCert` 자신의 Name/SubjectPublicKeyInfo/AlgorithmIdentifier/Extensions
+인코더와 그 서명 및 검증 헬퍼를 재사용합니다. CA 쪽 절반은
+`CCertBuilder::subjectFrom()`이고, 그것은 검증된 요청의 subject 이름과 키를
+받고 의도적으로 그 밖의 아무것도 받지 않습니다 — 그와 함께 갈 "요청된 확장을
+복사" 메서드가 없는 이유는 그 자신의 doc 주석을 보십시오.

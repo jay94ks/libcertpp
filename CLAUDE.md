@@ -129,8 +129,11 @@ named `<name>.ko.md` — `README.md`/`README.ko.md`,
   disagree about the same word.
 - **Prose style is formal `-습니다`**, matching `README.ko.md`.
 
-`examples/README.md` currently has no Korean counterpart; it is the one
-exception, and adding one would be welcome.
+Every document in the tree now has its counterpart, so there is no longer an
+exception to point at. The generated files under
+[`examples/wiki/snippets/`](examples/wiki/README.md) are not documents and are
+not translated — they are extracted from the example sources by
+`tools/exsplit.py`, and a translation would be overwritten on the next run.
 
 ### Doc comments in the headers
 

@@ -59,14 +59,28 @@ build, [`examples/`](examples/).
 extension types. Signature verification covers PKCS#1 v1.5, RSASSA-PSS
 (RFC 4055, reading the real parameters rather than assuming the DER defaults),
 ECDSA, EdDSA and ML-DSA. Fourteen X.520 name attribute types, including
-`organizationIdentifier` and `domainComponent`.
+`organizationIdentifier` and `domainComponent`. PKCS#10 certification requests
+(`CCertRequest`, `CCertRequestBuilder`, RFC 2986) in both directions, including
+the PKCS#9 `extensionRequest` attribute, with the self-signature checked at
+import rather than merely offered as a method to call.
+
+**Chains and containers** — `CCertCollection` holds a set of certificates and
+orders them by who issued whom (`buildChain()`), and `verifyLinks()` checks
+each link's signature. Two container formats over a collection: PEM, pairing
+private keys to their certificates cryptographically rather than by position,
+and PKCS#12/PFX (RFC 7292) over PBES2/AES-256-CBC with the MAC verified before
+anything is decrypted. **There is no path validation**: validity periods,
+`basicConstraints`, `keyUsage`, name constraints, policies and revocation are
+not checked, and nothing here decides whether a root is one you trust. An
+ordered chain out of this library is a validator's input, not its verdict.
 
 **Hashing** — MD4, MD5, SHA-1, SHA-224/256/384/512, SHA3-256/512,
 SHAKE128/256, BLAKE2s (RFC 7693), GOST R 34.11-2012 "Streebog" (RFC 6986) at
 both digest lengths.
 
 **MACs and KDFs** — HMAC (RFC 2104) over any of those, HKDF (RFC 5869),
-Poly1305 (RFC 8439), BLAKE2s's native keyed MAC, SipHash-2-4 (RFC 9018).
+PBKDF2 (RFC 8018) for the password-based case, Poly1305 (RFC 8439), BLAKE2s's
+native keyed MAC, SipHash-2-4 (RFC 9018).
 
 **Symmetric and AEAD** — AES, DES, TripleDES (CBC, PKCS#7-padded or unpadded),
 ChaCha20. Three AEADs: ChaCha20-Poly1305 (RFC 8439), XChaCha20-Poly1305
@@ -131,7 +145,11 @@ that a *static* `certpp` must be consumed with a matching MSVC runtime.
   an [API map](specs/api-map.md), [recipes](specs/recipes.md), and
   [pitfalls](specs/pitfalls.md) — the ways this library can be called wrongly
   and still appear to work.
-- [`examples/`](examples/) — a compiled CA-hierarchy walkthrough.
+- [`examples/`](examples/) — a compiled CA-hierarchy walkthrough, plus a
+  compiled example for every public type.
+- The [**wiki**](../../wiki) — one reference page per public class, struct and
+  enum, generated from the headers' own doc comments, each stamped with the
+  commit it came from. Also the integration guide, FAQ and troubleshooting.
 
 **Working on the library:**
 

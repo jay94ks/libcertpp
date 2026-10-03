@@ -173,9 +173,18 @@ anything.
 
 ## Not planned
 
-- Chain building and path validation.
+- Path validation.
 
-Still deliberately out of scope; see [`CLAUDE.md`](../CLAUDE.md).
+Still deliberately out of scope; see [`CLAUDE.md`](../CLAUDE.md). The
+distinction is worth stating precisely, because this entry used to read "chain
+building and path validation" and half of it is no longer true.
+`CCertCollection::buildChain()` orders certificates by who issued whom and
+`verifyLinks()` checks each link's signature. What is absent is everything
+*else* a validator does: validity periods, `basicConstraints`, `keyUsage`,
+name constraints, policy constraints, revocation, and the decision of whether
+the root at the end is one the caller trusts. An ordered chain out of this
+library is a validator's input, not its verdict, and an entry that lumped the
+two together invited reading the first as a promise about the second.
 
 CSR (PKCS#10) support used to sit here too. It no longer does: it landed as
 `x509/csr.hpp`'s `CCertRequest`/`CCertRequestBuilder` (RFC 2986, PKCS#9

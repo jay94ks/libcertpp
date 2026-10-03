@@ -1,5 +1,7 @@
 # libcertpp examples
 
+[한국어](README.ko.md)
+
 These build as `certpp_example_<name>` executables alongside the test suite (gated behind the
 `CERTPP_BUILD_EXAMPLES` CMake option, `ON` by default). Run them from `build/<config>/` in
 order -- each one after the first loads the certificate (and private key) the previous one
@@ -23,3 +25,7 @@ wrote to `examples/output/`, so they need to run in sequence the first time:
 `examples/output/` is gitignored; delete it (or just rerun from step 1) to regenerate
 everything with fresh keys. `examples/common.hpp` is shared file I/O/printing boilerplate, not
 an example of its own.
+
+[`examples/wiki/`](wiki/README.md) is a separate thing: one compiled example per public type,
+built as the single `certpp_example_wiki` target and published to the GitHub wiki rather than
+run. It is not a walkthrough -- see its own README for the snippet format.

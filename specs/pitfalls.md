@@ -48,6 +48,26 @@ key in that one?" and nothing else. It does not look at dates,
 idea which roots you trust. A chain of flawlessly-signed certificates rooted in
 an attacker's own CA passes every `verifyBy()` call you can make.
 
+**`buildChain()` + `verifyLinks()` is not path validation either, and its name
+is the trap.** `ECHAINRES_OK` means the walk reached a self-issued certificate
+*held in the collection* — a collection you assembled, possibly from a file an
+attacker supplied — and `ERET_OK` from `verifyLinks()` means every link's
+signature checks out. Neither looks at a single validity period,
+`basicConstraints`, `keyUsage`, name constraint, policy or CRL, and neither
+asks whether that self-issued certificate at the end is a root you trust.
+Load an attacker's self-signed CA and a leaf it issued into one collection and
+both calls succeed, reporting a complete, fully-verified chain. Treat the
+ordered chain as the *input* to a validator you still have to write or
+delegate.
+
+**`ECHAINRES_OK` does not mean the root is self-signed.** `buildChain()` stops
+at a self-*issued* certificate — subject equal to issuer — because that is a
+name comparison it can make while walking. Whether that certificate's own
+signature verifies under its own key is `verifyLinks()`'s business, so a
+collection holding a certificate whose subject and issuer names match but
+whose signature is someone else's still terminates the walk with
+`ECHAINRES_OK`.
+
 ## RSASSA-PSS
 
 **The parameters are in the `AlgorithmIdentifier`, and the DER defaults are a
