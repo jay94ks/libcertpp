@@ -17,7 +17,8 @@ SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256 implementations; a C
 (`CRng`); an `IAsymmetric` interface with seven concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
 decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
-P-521, secp256k1, or the 14 Brainpool curves (RFC 5639); `CEcdsa2`, ECDSA
+P-521, secp256k1, or the 14 Brainpool curves (RFC 5639), plus ECDH key
+agreement over the same curves (RFC 5903 / SP 800-56A); `CEcdsa2`, ECDSA
 over the 10 NIST binary/Koblitz curves B-163/K-163 .. B-571/K-571;
 `Ed25519`/`Ed448`, EdDSA (RFC 8032); and `X25519`, Diffie-Hellman key
 agreement (RFC 7748)); and an `ISymmetric` interface with four concrete
@@ -96,7 +97,7 @@ include/
       asyms/                      # concrete IAsymmetric implementations, one file each (mirrors hashers/)
         rsa.hpp                     # RSA: PKCS#1 keygen, PKCS#1 v1.5 + RSASSA-PSS (RFC 8017) sign/verify, PKCS#1 v1.5 encrypt/decrypt
         dsa.hpp                      # DSA: FIPS 186-4 keygen (incl. domain params) + sign/verify only
-        ecdsa.hpp                     # CEcdsa: ECDSA over any EEcKnownCurves value, keygen + sign/verify only
+        ecdsa.hpp                     # CEcdsa: ECDSA over any EEcKnownCurves value, keygen + sign/verify + ECDH IAsymmetricContext::deriveSharedSecret() (RFC 5903)
         ecdsa2.hpp                    # CEcdsa2: ECDSA over any EEc2KnownCurves value, keygen + sign/verify only
         ed25519.hpp                    # Ed25519: EdDSA over edwards25519 (RFC 8032), keygen + sign/verify only
         ed448.hpp                       # Ed448: EdDSA over edwards448/"Goldilocks" (RFC 8032), keygen + sign/verify only
@@ -194,7 +195,7 @@ src/
     asyms/                       # concrete IAsymmetric implementations, one file each
       rsa.cpp                      # RSA implementation, plus the private RsaPublicKey/RsaPrivateKey/RsaContext/RsaTransformer classes
       dsa.cpp                      # DSA implementation, plus the private DsaPublicKey/DsaPrivateKey/DsaContext classes
-      ecdsa.cpp                     # CEcdsa implementation, plus the private EcPublicKey/EcPrivateKey/EcContext classes
+      ecdsa.cpp                     # CEcdsa implementation (incl. EcContext::deriveSharedSecret(), prime-curve ECDH), plus the private EcPublicKey/EcPrivateKey/EcContext classes
       ecdsa2.cpp                    # CEcdsa2 implementation, plus the private Ec2PublicKey/Ec2PrivateKey/Ec2Context classes
       ed25519.cpp                    # Ed25519 implementation (edwards25519 field/point arithmetic, EdDSA logic), plus the private EdPublicKey/EdPrivateKey/EdContext classes
       ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
@@ -249,6 +250,7 @@ tests/
       kat_ecdsa.cpp                   # ECDSA verification against NIST CAVP 186-4 SigVer vectors (K-163/B-163/B-233/K-283/B-283 + P-256 control), positives and negatives -- external oracle for the FIPS 186-4 digest-truncation rule the per-curve round trips can't see
       kat_dsa.cpp                      # DSA verification against NIST CAVP 186-3 SigVer vectors (L=1024/N=160, L=2048/N=256)
       kat_rsa.cpp                       # RSA PKCS#1 v1.5 verification against NIST CAVP 186-3 SigVer15 vectors
+      kat_ecdh.cpp                       # prime-curve ECDH against RFC 5903 8.1/8.2 (P-256/P-384) vectors, plus a constructed leading-zero-byte secret (the published ones don't exercise the left-pad), two-direction agreement over generated keys, and the invalid-curve rejections
       bpool160r1.cpp, bpool192r1.cpp, bpool224r1.cpp, bpool256r1.cpp,
       bpool320r1.cpp, bpool384r1.cpp, bpool512r1.cpp, bpool160t1.cpp,
       bpool192t1.cpp, bpool224t1.cpp, bpool256t1.cpp, bpool320t1.cpp,
@@ -1502,11 +1504,32 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   distinguishable from `ERET_NOTSUP`/an error) and default to `ERET_NOTSUP`,
   `IStream`'s not-every-implementation-supports-this pattern.
   `deriveSharedSecret(peerPublicKey, out)` follows the same optional-
-  capability idiom, for Diffie-Hellman-style key agreement (`X25519`): it
-  combines the context's own bound private key with an explicitly passed
-  peer public key, unlike every other method here, which acts only on the
-  bound key(s) -- the minimal addition needed to fit a two-party operation
-  into an interface otherwise built around a single bound key pair.
+  capability idiom, for Diffie-Hellman-style key agreement (`X25519`, and
+  `CEcdsa` for prime-curve ECDH): it combines the context's own bound
+  private key with an explicitly passed peer public key, unlike every other
+  method here, which acts only on the bound key(s) -- the minimal addition
+  needed to fit a two-party operation into an interface otherwise built
+  around a single bound key pair.
+
+  Prime-curve ECDH lives on `CEcdsa`'s context rather than a separate
+  `CEcdh` because an ECDH key pair over a prime curve *is* an ECDSA key pair
+  -- RFC 5480's `id-ecPublicKey` `SubjectPublicKeyInfo`, with the same curve
+  OID, serves both -- so a separate algorithm would have meant a second
+  `EAsymmetrics` enumerator describing one encoded key, and `IKeyBase::
+  algorithm()` exists precisely to pick that OID. It also matches `RSA`,
+  whose one context already carries sign/verify alongside
+  `createEncrypter()`/`createDecrypter()`. One generated key pair therefore
+  binds to one context and does both. The shared secret is the
+  x-coordinate of `d*Q` alone, left-padded to `CEcCurve::fieldByteLen()`
+  (RFC 5903 section 7 -- not the full point, not a hash of it); callers run
+  it through `CHkdf`. The peer point is re-validated against the *bound
+  key's own* curve (not infinity; `0 <= x, y < p`; on the curve) rather than
+  trusted from whatever curve the peer's key object carries, which is what
+  stops an invalid-curve attack; there is deliberately no small-subgroup
+  check, since every `CEcCurve` prime curve has cofactor 1, the opposite of
+  `X25519`'s cofactor 8. **It is not constant-time** -- see
+  `CEcCurve::scalarMul()`'s own note and the doc comment on
+  `EcContext::deriveSharedSecret()`.
 
   `sign()`/`deriveSharedSecret()`'s `out` parameter is a fixed, caller-
   allocated `SByteSpan&` (not a growable `TArray<uint8_t>&`): the caller

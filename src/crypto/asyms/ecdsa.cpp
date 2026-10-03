@@ -302,6 +302,122 @@ namespace crypto {
                 return sum.x == r ? ERET_OK : ERET_BADREQ;
             }
 
+            /* ECDH (RFC 5903 / SP 800-56A section 5.7.1.2) over the bound private key's curve.
+             *
+             * --> NOT constant-time, and the shape of this library's prime-curve arithmetic is
+             * why, not an oversight here. CEcCurve::scalarMul() is a branch-free-*shaped* ladder
+             * -- it always performs both an addition and a doubling per bit -- but it iterates
+             * k.bitLength() times (so the iteration count leaks the scalar's top bit position),
+             * dispatches each step through CBigNum::condSwap(), which is a plain
+             * `if (swap) std::swap(a, b)` on a bit of the private scalar, and runs on CBigNum,
+             * which trims leading zero limbs so every operation's cost depends on its operands.
+             * For an online handshake with ephemeral keys -- an IKEv2 exchange, say -- that is a
+             * real timing side channel, not a theoretical one. X25519 has a fixed-width,
+             * branch-free field (crypto/asyms/fe25519.hpp) for exactly this reason; the prime
+             * curves have no equivalent yet, and giving them one is a larger job than adding this
+             * operation. Prefer X25519 where the protocol allows a choice. */
+            ERetCode deriveSharedSecret(const IPublicKeyPtr& peerPublicKey, SByteSpan& out) override {
+                if (!privateKey()) {
+                    return ERET_KEY_EMPTY;
+                }
+
+                auto priv = std::dynamic_pointer_cast<EcPrivateKey>(privateKey());
+                if (!priv) {
+                    return ERET_KEY_FORMAT;
+                }
+
+                if (!peerPublicKey) {
+                    return ERET_KEY_EMPTY;
+                }
+
+                auto peer = std::dynamic_pointer_cast<EcPublicKey>(peerPublicKey);
+                if (!peer) {
+                    return ERET_KEY_FORMAT; // peerPublicKey wasn't created by this algorithm
+                }
+
+                const CEcCurve& curve = priv->curve();
+                const SEcPoint& q = peer->q();
+
+                // Peer-key validation, re-run here against *our own* curve rather than trusted
+                // from whatever curve the peer's EcPublicKey happens to carry. This is the
+                // defence against an invalid-curve attack: a point taken from a different,
+                // weaker curve, fed in so that the resulting d*Q lands in a small-order group
+                // and leaks d a few bits at a time. A point from another curve fails check 3
+                // below against ours (or check 2, if its coordinates are simply too wide), so
+                // the attack never reaches scalarMul(). createPublicKey() already validates on
+                // decode, but a key reaching us as an IPublicKeyPtr need not have come from
+                // there, and the cost of repeating three field operations is nothing next to the
+                // scalar multiplication that follows.
+
+                // 1. Point at infinity -- d*infinity is infinity, i.e. no secret at all.
+                if (q.infinity) {
+                    return ERET_KEY_PARAM;
+                }
+
+                // 2. Field range: 0 <= x, y < p. CBigNum is an unsigned magnitude, so a negative
+                // coordinate isn't representable and only the upper bound needs testing; a
+                // non-canonical x or y >= p would otherwise pass check 3, since isOnCurve()
+                // works mod p.
+                if (q.x >= curve.p || q.y >= curve.p) {
+                    return ERET_KEY_PARAM;
+                }
+
+                // 3. Curve equation. Of the three, this is the one that actually stops an
+                // invalid-curve point: checks 1 and 2 are defence in depth, since no SEC1
+                // encoding reaching createPublicKey() can produce either an infinite point or an
+                // out-of-range coordinate, and an in-range point from another curve is caught
+                // here rather than there (confirmed by disabling each check in turn -- removing
+                // this one lets a secp256k1 point through and yields a "shared secret"; removing
+                // either of the others changes nothing observable).
+                if (!curve.isOnCurve(q)) {
+                    return ERET_KEY_PARAM;
+                }
+
+                // 4. There is deliberately NO small-subgroup check (an n*Q == infinity test, nor
+                // a cofactor multiplication): every prime curve CEcCurve ships has cofactor 1
+                // -- see its own doc comment -- so the group has exactly the orders 1 and n, and
+                // order 1 is the point at infinity that check 1 already rejected. Any point
+                // passing checks 1-3 therefore has order n. This is the opposite situation from
+                // X25519 (crypto/asyms/x25519.cpp's validatePublicValue(), check 3), whose
+                // cofactor is 8 and which must therefore test for a low-order point explicitly
+                // -- and from CEc2Curve's binary curves, whose cofactors are 2 or 4. Absent, not
+                // forgotten.
+
+                const size_t flen = curve.fieldByteLen();
+                if (out.size < flen) {
+                    return ERET_NOSPC;
+                }
+
+                SEcPoint shared = curve.scalarMul(q, priv->d());
+
+                // Unreachable for a d in [1, n-1] against a point of order n (the two checked
+                // conditions above), but a d outside that range -- a key built by
+                // createPrivateKey() from untrusted bytes and never put through
+                // checkPrivateKey() -- can still land here, and must not yield a "secret".
+                if (shared.infinity) {
+                    return ERET_BADREQ;
+                }
+
+                // RFC 5903 section 7: the shared secret is the x-coordinate of the common value
+                // alone -- not the full point, not a hash of it -- left-padded with zeros to the
+                // field width ("enforced, if necessary, by prepending the value with zeros").
+                // toBigEndian() over a fixed-width span does exactly that padding; it can only
+                // fail if x needed more than flen bytes, which scalarMul() reducing mod p rules
+                // out (p is flen bytes wide by definition of fieldByteLen()).
+                if (!shared.x.toBigEndian(SByteSpan(out.data, flen))) {
+                    return ERET_UNKNOWN;
+                }
+
+                out = SByteSpan(out.data, flen);
+
+                // Both halves of the common value are secret-derived; the caller only gets x, so
+                // neither should be left in the heap limbs this SEcPoint is about to free.
+                shared.x.secureClear();
+                shared.y.secureClear();
+
+                return ERET_OK;
+            }
+
             ERetCode createEncrypter(IAsymmetricTransformerPtr&) override {
                 return ERET_NOTSUP;
             }

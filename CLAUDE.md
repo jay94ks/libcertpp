@@ -15,7 +15,8 @@ BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
 (hashing, a CSPRNG, asymmetric algorithms -- RSA, DSA, ECDSA over prime
-and binary curves, Ed25519, Ed448, X25519 -- symmetric ones -- AES,
+and binary curves plus ECDH key agreement over the prime ones (RFC 5903,
+on `CEcdsa`'s own context), Ed25519, Ed448, X25519 -- symmetric ones -- AES,
 DES, TripleDES, ChaCha20 -- and post-quantum ML-KEM (FIPS 203,
 `crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and its
 `IKem` form), all from scratch); and an `x509` module that
