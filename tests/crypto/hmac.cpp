@@ -107,6 +107,11 @@ TEST_CASE("CHmac: the RFC 2104 block sizes, and what HMAC is not defined over") 
     CHECK(CHmac::blockBytesOf(EHASH_SHA3_256) == 136);
     CHECK(CHmac::blockBytesOf(EHASH_SHA3_512) == 72);
 
+    // BLAKE2s is 16 32-bit words per block, the same 64 bytes SHA-256 uses. Missing this entry
+    // would have made HMAC-BLAKE2s simply unsupported -- which is the point of returning 0 for an
+    // unknown hash rather than guessing a block size.
+    CHECK(CHmac::blockBytesOf(EHASH_BLAKE2S) == 64);
+
     // SHAKE is an XOF: HMAC is defined over a fixed-output hash, so it is refused rather than
     // given a guessed block size.
     CHECK(CHmac::blockBytesOf(EHASH_SHAKE128) == 0);
@@ -313,4 +318,110 @@ TEST_CASE("CHmac: finish() is a query, and re-keying reuses the instance") {
     // A wrongly sized output is refused rather than truncated.
     uint8_t tooSmall[32];
     CHECK_FALSE(mac.finish(SByteSpan(tooSmall, sizeof(tooSmall))));
+}
+
+// HMAC-BLAKE2s: the generic RFC 2104 construction over BLAKE2s, which is what WireGuard's HKDF
+// uses -- as opposed to BLAKE2's own keyed mode (CBlake2sMac), which is a different function and
+// is what its MAC() uses. RFC 4231 publishes vectors for the SHA-2 family only, so these are the
+// same RFC 4231 key/message pairs run through HMAC-BLAKE2s, with expected tags machine-generated
+// from Python's hmac.new(key, msg, hashlib.blake2s) and cross-checked against an independent
+// from-RFC-2104 implementation over an independent from-RFC-7693 BLAKE2s.
+//
+// Cases 6 and 7 carry the 131-byte key, which is longer than BLAKE2s's 64-byte block and so must
+// be hashed down to 32 bytes first; that is the case a wrong block-size entry in blockBytesOf()
+// would get wrong, and the only one that could not be caught by a round-trip.
+TEST_CASE("CHmac: HMAC-BLAKE2s") {
+    struct Vector {
+        const char* key;
+        const char* message;
+        const char* tag;
+    };
+
+    static const Vector VECTORS[] = {
+        // Case 1: 20-byte key, 8-byte message.
+        { "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "4869205468657265",
+          "65a8b7c5cc9136d424e82c37e2707e74e913c0655b99c75f40edf387453a3260" },
+        // Case 2: 4-byte key, 28-byte message.
+        { "4a656665",
+          "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+          "90b6281e2f3038c9056af0b4a7e763cae6fe5d9eb4386a0ec95237890c104ff0" },
+        // Case 3: 20-byte key, 50-byte message.
+        { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          "dddd",
+          "fcc4f59529502e34c3d8da3ffdab82966a2cb637ff5e9bd701135c2e9469e790" },
+        // Case 4: 25-byte key, 50-byte message.
+        { "0102030405060708090a0b0c0d0e0f10111213141516171819",
+          "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+          "cdcd",
+          "464434dcbece095d456a1d62d6ec56f898e625a39e5c52bdf94daf111bad83aa" },
+        // Case 5: 20-byte key, 20-byte message.
+        { "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+          "546573742057697468205472756e636174696f6e",
+          "1825eff4619fb8b20833b9432892c81b64e8fcc3caef9ca55422f02e238c5ac9" },
+        // Case 6: 131-byte key, 54-byte message.
+        { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579"
+          "204669727374",
+          "d23d79394f53d536a096e6514447eeaabb05ded01be32c1937da6a8f7103bc4e" },
+        // Case 7: 131-byte key, 152-byte message.
+        { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b65"
+          "7920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565"
+          "647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c"
+          "676f726974686d2e",
+          "cb60f6a791f140bf8aa2e51ff358cdb2cc5c0333045b7fb77aba7ab3b0cfb237" },
+        // Case 8: 0-byte key, 0-byte message.
+        { "",
+          "",
+          "eaf4bb25938f4d20e72656bbbc7a9bf63c0c18537333c35bdb67db1402661acd" },
+        // Case 9: 64-byte key, 26-byte message.
+        { "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+          "303132333435363738393a3b3c3d3e3f",
+          "61206b6579206f662065786163746c79206f6e6520626c6f636b",
+          "98c85d28d8da064f6cac1f8288be88c280d06a1c7b993bde016efad7458a5494" },
+        // Case 10: 65-byte key, 27-byte message.
+        { "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+          "303132333435363738393a3b3c3d3e3f40",
+          "61206b6579206f66206f6e6520626c6f636b20706c7573206f6e65",
+          "e15cfd42ba5006e67cc58b1224162027ad152ddf3a91da964fa1bf94cb9d8979" },
+    };
+
+    for (const Vector& v : VECTORS) {
+        const std::vector<uint8_t> key = fromHex(v.key);
+        const std::vector<uint8_t> message = fromHex(v.message);
+        CAPTURE(key.size());
+        CAPTURE(message.size());
+
+        checkVector(EHASH_BLAKE2S, key, message, v.tag);
+    }
+
+    // The tag is BLAKE2s's own 32 bytes, and HKDF over it works -- which is the thing WireGuard
+    // actually needs from this.
+    CHmac mac;
+    REQUIRE(mac.reset(EHASH_BLAKE2S, spanOf(ascii("key"))) == ERET_OK);
+    CHECK(mac.byteWidth() == 32);
+    CHECK(CHkdf::maxExpandBytes(EHASH_BLAKE2S) == 255 * 32);
+
+    uint8_t pseudoKey[32];
+    REQUIRE(CHkdf::extract(
+        EHASH_BLAKE2S, spanOf(ascii("salt")), spanOf(ascii("ikm")),
+        SByteSpan(pseudoKey, sizeof(pseudoKey))) == ERET_OK);
+
+    // HKDF-Extract is HMAC with the salt as the key, so it must be exactly that.
+    uint8_t viaHmac[32];
+    REQUIRE(CHmac::compute(
+        EHASH_BLAKE2S, spanOf(ascii("salt")), spanOf(ascii("ikm")),
+        SByteSpan(viaHmac, sizeof(viaHmac))) == ERET_OK);
+    CHECK(std::memcmp(pseudoKey, viaHmac, 32) == 0);
+
+    uint8_t okm[80];
+    REQUIRE(CHkdf::expand(
+        EHASH_BLAKE2S, SReadOnlyByteSpan(pseudoKey, sizeof(pseudoKey)),
+        spanOf(ascii("info")), SByteSpan(okm, sizeof(okm))) == ERET_OK);
 }

@@ -30,9 +30,14 @@ namespace crypto {
      * sponge rate as the block size -- though for SHA-3, KMAC (SP 800-185) is the construction
      * NIST actually recommends, and HMAC-SHA3 exists here only for completeness.
      *
+     * BLAKE2s is accepted too, at its own 64-byte block -- but note that BLAKE2 has a *native*
+     * keyed mode (`CBlake2sMac`, crypto/blake2smac.hpp) which is a different function from HMAC
+     * over the same hash, and protocols differ about which one they mean. WireGuard, for one, uses
+     * both: HMAC-BLAKE2s for its HKDF, the native keyed mode for its `MAC()`.
+     *
      * The block sizes live in this class rather than on `IHasher`, which exposes only
      * `byteWidth()`. That is a deliberate trade: adding the block size to `IHasher` would mean
-     * changing its constructor and every one of the ten implementations, and HMAC is currently
+     * changing its constructor and every one of its implementations, and HMAC is currently
      * the only thing that needs it. The cost is that a hasher added later is simply unsupported
      * here until someone extends `blockBytesOf()` -- which fails loudly at `reset()` rather than
      * silently computing a wrong tag. If a second consumer ever needs the block size, it should
@@ -67,8 +72,9 @@ namespace crypto {
         /**
          * The block size RFC 2104 uses for a given hash, in bytes.
          * @param hasherType The hash algorithm.
-         * @return 64 for MD5/SHA-1/SHA-224/SHA-256, 128 for SHA-384/SHA-512, the sponge rate for
-         * SHA3-256 (136) and SHA3-512 (72), and 0 for anything HMAC is not defined over.
+         * @return 64 for MD5/SHA-1/SHA-224/SHA-256 and BLAKE2s, 128 for SHA-384/SHA-512, the
+         * sponge rate for SHA3-256 (136) and SHA3-512 (72), and 0 for anything HMAC is not
+         * defined over.
          */
         static size_t blockBytesOf(EHashers hasherType);
 

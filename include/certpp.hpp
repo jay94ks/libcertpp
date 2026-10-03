@@ -38,6 +38,7 @@
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/crypto/hashers/blake2s.hpp>
 #include <certpp/crypto/hmac.hpp>
 #include <certpp/crypto/hkdf.hpp>
 #include <certpp/crypto/keys.hpp>
@@ -60,6 +61,7 @@
 #include <certpp/crypto/syms/des.hpp>
 #include <certpp/crypto/syms/des3.hpp>
 #include <certpp/crypto/poly1305.hpp>
+#include <certpp/crypto/blake2smac.hpp>
 #include <certpp/crypto/aeads/chacha20poly1305.hpp>
 #include <certpp/crypto/syms/chacha20.hpp>
 

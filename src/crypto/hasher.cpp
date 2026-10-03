@@ -9,6 +9,7 @@
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/crypto/hashers/blake2s.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -50,6 +51,10 @@ namespace crypto {
 
             case EHASH_SHAKE256:
                 out = std::make_shared<SHAKE256>();
+                return ERET_OK;
+
+            case EHASH_BLAKE2S:
+                out = std::make_shared<BLAKE2s>();
                 return ERET_OK;
 
             default:

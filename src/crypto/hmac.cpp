@@ -33,6 +33,11 @@ namespace crypto {
             case EHASH_SHA1:
             case EHASH_SHA224:
             case EHASH_SHA256:
+            // --> BLAKE2s's own block size, which it shares with SHA-256 rather than by
+            // coincidence: both are 16 32-bit words. BLAKE2 has a native keyed mode of its own
+            // (CBlake2sMac) that is *not* this construction, but HMAC over it is well defined and
+            // is what WireGuard's HKDF uses.
+            case EHASH_BLAKE2S:
                 return 64;
 
             case EHASH_SHA384:

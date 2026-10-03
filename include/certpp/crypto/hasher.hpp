@@ -26,6 +26,7 @@ namespace crypto {
         EHASH_SHA3_512,    /**< SHA3-512 hash algorithm (FIPS 202) */
         EHASH_SHAKE128,    /**< SHAKE-128 hash algorithm */
         EHASH_SHAKE256,    /**< SHAKE-256 hash algorithm */
+        EHASH_BLAKE2S,     /**< BLAKE2s hash algorithm (RFC 7693), 32-byte digest */
 
         /** Marker for the maximum value of EHashers. */
         EHASH_MAX
