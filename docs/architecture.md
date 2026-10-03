@@ -48,6 +48,12 @@ validation / path-building engine on top of it -- no name chaining, validity
 windows, or BasicConstraints/KeyUsage/NameConstraints enforcement. See
 "Where this will grow" below.
 
+Certificates and their keys can be carried as a container: `x509/chain.hpp`'s
+`CCertCollection` holds them with the PKCS#9 attributes that pair them and
+orders them by issuer linkage (which, again, is not validation), and
+`IChainFormat` reads and writes that collection as a file.
+`x509/chain/pfx.hpp` implements PKCS#12/PFX over PBES2 and a `MacData` HMAC.
+
 The public API surface is header-based under
 [`include/certpp/`](../include/certpp/), re-exported through the umbrella
 header [`include/certpp.hpp`](../include/certpp.hpp) — every public header
@@ -125,6 +131,8 @@ include/
         des3.hpp                         # TripleDES: two-/three-key EDE keygen + CBC/PKCS#7 encrypt/decrypt, built on DES's own block core
         chacha20.hpp                      # ChaCha20: RFC 8439 stream cipher, keygen + encrypt/decrypt (the same XOR operation either way)
       poly1305.hpp                 # CPoly1305: RFC 8439 one-time MAC, streaming push()/finish() + a one-shot compute()
+      hkdf.hpp                      # CHkdf: HKDF (RFC 5869) extract/expand/derive over any hash CHmac supports -- for input that already has full entropy, and deliberately cheap
+      pbkdf2.hpp                     # CPbkdf2: PBKDF2 (RFC 8018 5.2) derive() -- for a password, and deliberately not cheap; NOT interchangeable with CHkdf
       aeads/                       # AEADs: one seal()/open() pair each, not part of the ISymmetric surface (which has nowhere to put AAD or a tag)
         chacha20poly1305.hpp           # CChaCha20Poly1305: RFC 8439 2.8, 256-bit key, 96-bit nonce, 128-bit tag
         aesgcm.hpp                      # CAesGcm: NIST SP 800-38D, 128/192/256-bit key, 96-bit IV, 96..128-bit tag
@@ -147,6 +155,9 @@ include/
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
+      chain.hpp                          # SCertEntry/CCertCollection: certificates + optional keys + the PKCS#9 attributes that pair them, with issuer-linkage lookups (NOT path validation); IChainFormat/EChainFormats: the container-format interface
+      chain/                              # concrete IChainFormat implementations, one file each -- the same arrangement exts/ has
+        pfx.hpp                             # CPfxFormat: PKCS#12/PFX (RFC 7292), PBES2/AES-256-CBC + PBKDF2 encryption, MacData HMAC integrity
     dnssec/
       name.hpp                       # CDnsName: presentation <-> canonical wire-format domain names (RFC 4034 6.2 case folding); compression pointers deliberately rejected
       records.hpp                     # EDnsAlgorithms/EDnsDigests (IANA numbers, pinned); SDnskey (RDATA + RFC 4034 App. B key tag), SDsRecord (RDATA + the 5.1.4 digest over owner name || DNSKEY RDATA), SRrsig (RDATA + toSignedPrefix())
@@ -266,6 +277,9 @@ src/
     cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
+    chain.cpp                          # SCertEntry/CCertCollection implementation; IChainFormat::detect() and builtIn(), the one place that knows which formats exist
+    chain/                              # one .cpp per chain/ header
+      pfx.cpp                             # CPfxFormat implementation; file-local PBES2 parse/build, the RFC 7292 Appendix B KDF (MAC key only), and the UTF-8 <-> BMPString password/friendlyName conversions
   dnssec/
     name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
     records.cpp                  # SDnskey/SDsRecord/SRrsig implementation; big-endian field helpers (unlike Poly1305/ChaCha20 next door, which are little-endian)
@@ -344,6 +358,8 @@ tests/
       streebog.cpp                         # Streebog-256/-512 test cases (RFC 6986's two example messages, the published empty-message digests, chunk-invariance, that the 256-bit digest is not a cut of the 512-bit one, and RFC 9385's HMAC SKEYSEED -- the only available vector whose hash input is an exact multiple of the 64-byte block)
       streebogcore.cpp                     # StreebogCore test cases: Pi' is a bijection, Tau satisfies the Tau(8w+t) == w+8t identity the fast table is built on, the combined LPS table agrees with the literal three-pass spec reading, and the mod-2^512 accumulators carry correctly
     rng.cpp                       # CRng::fill() test cases
+    hkdf.cpp                       # CHkdf test cases (RFC 5869 Appendix A's SHA-256 A.1-A.3 and SHA-1 A.4-A.6, plus that an absent salt equals a HashLen zero salt)
+    pbkdf2.cpp                      # CPbkdf2 test cases (RFC 6070's HMAC-SHA1 vectors, RFC 7914 s11's HMAC-SHA256 ones, the iterations-is-0 and output-length refusals; says why the 16777216-iteration case is left out)
     siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
     syms/
       aes.cpp                      # AES test cases (NIST SP 800-38A CBC known-answer vectors incl. F.2's four-block one unpadded, round-trip, tamper, error paths)
@@ -369,6 +385,10 @@ tests/
 =======
     realcerts.cpp                # real commercial certificates (github.com, amazon.com, sourceforge.net, the IdenTrust ML-DSA-87 pilot root) on disk under certs/implemented/, plus certs/unimplemented/ for algorithms this library doesn't support yet (RSA-PSS)
 >>>>>>> worktree-agent-a8132717936d67566
+    chain.cpp                     # CCertCollection test cases against a real three-level hierarchy issued in the test: lookups, findIssuerOf(), buildChain(), verifyLinks(), checkKeyPairing()
+    chain/                        # one .cpp per container format
+      pfx.cpp                       # CPfxFormat test cases: reads five PFX containers OpenSSL 3 wrote, round-trips its own, the MAC-covered tamper sweep, and the CCert PKCS#8 wrap/unwrap pair
+      fixtures/                     # PFX containers produced once by `openssl pkcs12 -export` and checked in, so the suite needs no openssl on PATH -- the only thing that distinguishes an implementation of PKCS#12 from a self-consistent one
   dnssec/
     name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
     records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
@@ -1648,7 +1668,28 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   extract-then-expand KDF, as `extract()`/`expand()`/`derive()`. A concrete
   utility rather than one implementation of an `IKdf` family, following
   `CRng`'s precedent: HKDF's two-step shape does not generalize to a
-  password-based KDF without an interface that fits neither well.
+  password-based KDF without an interface that fits neither well. `CPbkdf2`
+  has since arrived and the interface still has not, because the prediction
+  held -- the two share only "a static `derive()` taking spans", which is a
+  shape and not an abstraction.
+- **`crypto/pbkdf2.hpp` / `src/crypto/pbkdf2.cpp`** define `CPbkdf2`, RFC 8018
+  section 5.2's iterated password-based KDF, as a single `derive()` plus
+  `maxDeriveBytes()`. It sits beside `CHkdf` rather than inside the one caller
+  that needed it (`CPfxFormat`) because a password KDF is a general-purpose
+  primitive, and the two are emphatically **not** interchangeable: HKDF is
+  built to be cheap because its input already has full entropy, and that is
+  exactly what makes it useless over a password. The implementation notes worth
+  carrying: `T(i)` is the XOR of *every* `U(j)`, not the last one (dropping the
+  XOR costs the same to compute and matches nothing, which is why RFC 6070's
+  vectors are the only cheap way to catch it); only `U(1)` sees the salt;
+  `INT(i)` is four big-endian bytes from 1, which only shows up once the output
+  runs past one digest; an iteration count of 0 is `ERET_BADREQ` rather than
+  "no stretching", since a zeroed count parsed out of a container must not
+  become a free derivation; and the output is bounded at `(2^32 - 1) * hLen`
+  because past that the counter wraps and the keystream repeats.
+  `tests/crypto/pbkdf2.cpp` checks it against RFC 6070's HMAC-SHA1 vectors and
+  RFC 7914 section 11's HMAC-SHA256 ones, and explains why the 16777216-
+  iteration case is left out.
 - **`crypto/poly1305.hpp` / `src/crypto/poly1305.cpp`** define `CPoly1305`,
   RFC 8439 2.5's one-time authenticator. `finish()` *consumes* the state
   rather than being a repeatable query like `IHasher::finish()`, because
@@ -2761,6 +2802,79 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `CCrlReader`'s. The shared wire helpers both sides need (the nonce and
   basic-response OIDs, single-extension list encoding, `GeneralizedTime`
   formatting) live in a private `OcspCodec` (`src/x509/ocspcodec.hpp`).
+- **`x509/chain/pfx.hpp` / `src/x509/chain/pfx.cpp`** define `CPfxFormat`,
+  PKCS#12/PFX (RFC 7292) as an `IChainFormat`. The structure it writes is a v3
+  PFX whose AuthenticatedSafe holds the certificate bags as a
+  `pkcs7-encryptedData` and the key bags as `pkcs7-data` carrying one
+  `pkcs8ShroudedKeyBag` each, with a `MacData` HMAC over the whole
+  AuthenticatedSafe. The decisions worth recording:
+
+  - **Encryption is PBES2 only** (PBKDF2-HMAC-SHA256 + AES-256-CBC, fresh salt
+    and IV per encrypted part). The legacy PKCS#12 PBES1 ciphers
+    (RC2-40-CBC, `pbeWithSHAAnd3-KeyTripleDES-CBC`) are neither written nor
+    read: such a container comes back `ERET_NOTSUP`, which says "I cannot read
+    this" rather than decrypting it under a broken cipher or reporting it as
+    malformed. This is also what OpenSSL 3 writes by default, so refusing the
+    legacy ciphers costs nothing in practice.
+  - **The MAC is HMAC-SHA-256**, where RFC 7292's examples and every tool up
+    to about 2021 used SHA-1. SHA-1 MACs are still *verified* on read, because
+    refusing them would mean refusing most containers in existence.
+  - **`MacData`'s key comes from RFC 7292 Appendix B's own KDF with purpose
+    byte 3, not from PBKDF2**, and that is not a choice: RFC 7292 section 4
+    specifies that derivation, so reading any real container requires it. Its
+    use is confined to exactly that one key -- no PBES1 key or IV is ever
+    derived with it -- and it is a file-local helper in `pfx.cpp` rather than
+    anything in `crypto/`, because unlike `CPbkdf2` it is a legacy
+    PKCS#12-only construction that nothing else should reach for. RFC 9579's
+    PBMAC1, which does let PBKDF2 derive the MAC key, is not implemented.
+  - **The password is encoded two different ways in the same file**, and this
+    is the likeliest single cause of a container no other tool can read. PBES2
+    is PKCS#5 and takes the password bytes as given; Appendix B's KDF is
+    PKCS#12's own and takes them as a NUL-terminated big-endian UTF-16
+    BMPString. `CPfxFormat` reads the `password` span as UTF-8 to make that
+    conversion, matching OpenSSL 3 (which converts UTF-8, where the older
+    `OPENSSL_asc2uni` zero-extended each byte Latin-1 style). For an ASCII
+    password the two agree, which is why only a container written elsewhere
+    under a non-ASCII password actually pins it --
+    `fixtures/openssl-utf8-password.p12` is there for that and nothing else.
+  - **The MAC is verified before anything inside is decrypted or parsed.**
+    Until it passes, the AuthenticatedSafe is attacker-controlled bytes:
+    decrypting first would make the class a padding oracle, and parsing first
+    would expose the ASN.1 reader to input nobody has vouched for. A container
+    with no `MacData` at all is refused the same way, since RFC 7292 making it
+    OPTIONAL is a statement about the ASN.1 and not permission to trust an
+    unauthenticated blob. The comparison goes through `CSecure::equals()`, and
+    a wrong password, a failed MAC and a missing MAC all return
+    `ERET_KEY_ERROR` -- indistinguishable on purpose, since an implementation
+    that separates "wrong password" from "damaged file" has told an attacker
+    which to keep trying.
+  - **`MAX_MAC_ITERATIONS` caps the one unauthenticated computation.** The MAC
+    key must be derived before the MAC can be checked, so `MacData`'s iteration
+    count is the only one in the format chosen by whoever supplied the file
+    rather than by whoever wrote it — and a 200-byte container claiming two
+    billion iterations is minutes of CPU for whoever opens it. The ceiling is
+    10,000,000, far above RFC 7292's 1024, OpenSSL's 2048 or this library's own
+    600,000, so it costs no interoperability; it bounds damage and is not a
+    judgement about strength, and there is deliberately no *lower* bound on the
+    counts in a container being read.
+  - **`DEFAULT_ITERATIONS` is 600,000**, OWASP's 2023 figure for
+    PBKDF2-HMAC-SHA256, measured at roughly 0.3 s per derivation in a release
+    build here. The number needing justification is not this one but the
+    alternatives: RFC 7292's examples say 1024 and OpenSSL still defaults to
+    2048. A container is written once and attacked for years, so the cost
+    belongs on the writing side. It is not a floor on *reading* -- a container
+    is read with whatever count it carries.
+  - **`save()` refuses an empty password** (`ERET_BADREQ`), per
+    `IChainFormat::needsPassword()`. An entry with a private key but no
+    `localKeyId` is given one -- the certificate's SHA-1 thumbprint, which is
+    what OpenSSL uses -- because that attribute is the only thing pairing a
+    key bag back to its certificate bag on the way in.
+  - Keys travel as PKCS#8, through `CCert::exportPkcs8PrivateKey()` /
+    `importPkcs8PrivateKey()`. Those were factored out of `CCert`'s existing
+    PEM-side PKCS#8 handling rather than written twice; see `cert.hpp`'s own
+    doc comments for what each algorithm puts inside the `privateKey` OCTET
+    STRING, and note that a PKCS#8 DSA key carries no `y`, so reading one
+    costs a `g^x mod p`.
 - **`certpp.hpp`** is the single include point for consumers; as new public
   headers are added under `include/certpp/`, add their `#include` here. Two
   public headers are deliberately *not* included: `crypto/kem.hpp` (no

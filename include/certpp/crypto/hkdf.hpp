@@ -13,9 +13,13 @@ namespace crypto {
      * supports.
      *
      * A concrete utility rather than one implementation of an `IKdf` family, for the same reason
-     * `CRng` is: there is no second KDF here yet, and HKDF's two-step shape does not generalize
-     * to a password-based KDF like PBKDF2 (salt plus iteration count, no `info`) without an
-     * interface that fits neither well. If PBKDF2 arrives, introduce the interface then.
+     * `CRng` is: HKDF's two-step shape does not generalize to a password-based KDF like PBKDF2
+     * (salt plus iteration count, no `info`) without an interface that fits neither well.
+     * PBKDF2 has since arrived, as `CPbkdf2` (crypto/pbkdf2.hpp), and the interface still has
+     * not -- the two share only "a static `derive()` taking spans", which is a shape rather than
+     * an abstraction. **`CPbkdf2` is not a substitute for this class, nor this for it**: HKDF is
+     * for input that already has full entropy and is deliberately cheap; PBKDF2 is for a
+     * password and is deliberately not.
      *
      * The two steps are separate on purpose, because RFC 5869 2 is explicit that they serve
      * different jobs and callers sometimes need only one:

@@ -1,4 +1,5 @@
 #include <certpp/x509/chain.hpp>
+#include <certpp/x509/chain/pfx.hpp>
 #include <certpp/x509/exts/aki.hpp>
 #include <certpp/x509/exts/ski.hpp>
 #include <certpp/crypto/asym.hpp>
@@ -564,12 +565,16 @@ namespace x509 {
 
     /* Creates the built-in implementation of a format. */
     IChainFormatPtr IChainFormat::builtIn(EChainFormats which) {
-        // --> The concrete formats live under x509/chain/ and are not implemented yet, so this
-        // reports "no implementation" for every format rather than pretending. It is the one
-        // place that has to know which exist, which is why adding a format is a change here and
-        // nowhere else.
-        (void)which;
-        return IChainFormatPtr();
+        // --> The concrete formats live under x509/chain/. This is the one place that has to know
+        // which exist, which is why adding a format is a change here and nowhere else; a format
+        // with no implementation yet still reports "none" rather than pretending.
+        switch (which) {
+            case ECHAINFMT_PFX:
+                return std::make_shared<CPfxFormat>();
+
+            default:
+                return IChainFormatPtr();
+        }
     }
 
 } // namespace x509

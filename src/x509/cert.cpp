@@ -7,6 +7,7 @@
 #include <certpp/asn1/encoder.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/secure.hpp>
 #include <certpp/utils/base64.hpp>
 #include <certpp/io/buffer.hpp>
 #include <cstring>
@@ -21,6 +22,37 @@ namespace x509 {
     using asn1::CTag;
     using asn1::EAENC_DER;
     using asn1::EATAG_CONTEXT_SPECIFIC;
+
+    namespace {
+
+        /* Wipes a COctet's or CBuffer's bytes when it leaves scope.
+         *
+         * The PKCS#8 conversions below hold a private key in half a dozen locals across twenty
+         * return statements, and a wipe written out beside each one is a wipe that is wrong the
+         * first time a branch is added. Neither COctet nor CBuffer clears on destruction, so
+         * without this the key stays in freed heap for whatever allocates next.
+         *
+         * It does *not* reach the intermediate states of a buffer that grew: CBuffer::resize()
+         * reallocates per append and frees the previous block unwiped, which is a property of the
+         * buffer type -- shared with exportPem()'s own key paths -- rather than of these methods. */
+        template<typename T>
+        class ScopedWipe {
+        private:
+            T& _target;
+
+        public:
+            explicit ScopedWipe(T& target) : _target(target) { }
+
+            ScopedWipe(const ScopedWipe&) = delete;
+            ScopedWipe& operator=(const ScopedWipe&) = delete;
+
+            ~ScopedWipe() {
+                CSecure::zero(SByteSpan(
+                    const_cast<uint8_t*>(_target.toPtr()), _target.size()));
+            }
+        };
+
+    } // namespace
 
     /* Public-key algorithm OIDs whose EAsymmetrics doesn't depend on any further
      * parameters -- id-ecPublicKey is deliberately excluded here (its EAsymmetrics
@@ -1362,15 +1394,6 @@ namespace x509 {
             return false;
         }
 
-        // keyAlgoParams() is Dss-Parms { p, q, g }'s own content.
-        SReadOnlyByteSpan paramsCursor = _keyAlgoParams.toSpan();
-        CBigNum p, q, g;
-        if (!CDer::readBigInteger(paramsCursor, p) || !CDer::readBigInteger(paramsCursor, q)
-            || !CDer::readBigInteger(paramsCursor, g))
-        {
-            return false;
-        }
-
         // rawPublicKey() is the complete DER INTEGER y TLV (see buildDsaPublicKeyBlob()'s own
         // comment on why), not just its bare magnitude -- unwrap it first.
         CTag yTag;
@@ -1379,7 +1402,25 @@ namespace x509 {
         if (!CDecoder::readNextElement(yCursor, EAENC_DER, yTag, yContent) || yTag != CTag::INTEGER) {
             return false;
         }
-        CBigNum y = CBigNum::fromBigEndian(yContent);
+
+        // keyAlgoParams() is Dss-Parms { p, q, g }'s own content.
+        return buildDsaNative(
+            _keyAlgoParams.toSpan(), CBigNum::fromBigEndian(yContent), innerX, outNative);
+    }
+
+    /* Assembles this library's own traditional DSAPrivateKey wire format from Dss-Parms content,
+     * a public value y and PKCS#8's inner INTEGER x TLV. */
+    bool CCert::buildDsaNative(
+        SReadOnlyByteSpan dssParmsContent, const CBigNum& y,
+        const COctet& innerX, COctet& outNative
+    ) {
+        SReadOnlyByteSpan paramsCursor = dssParmsContent;
+        CBigNum p, q, g;
+        if (!CDer::readBigInteger(paramsCursor, p) || !CDer::readBigInteger(paramsCursor, q)
+            || !CDer::readBigInteger(paramsCursor, g))
+        {
+            return false;
+        }
 
         CTag xTag;
         SReadOnlyByteSpan xContent;
@@ -1939,8 +1980,22 @@ namespace x509 {
             return false; // rawPublicKey() must be a SEC1 uncompressed point (0x04 || X || Y).
         }
 
+        return buildSec1FromNative(_privateKey, _keyAlgoParams, _publicKey.toSpan(), out);
+    }
+
+    /* The body of buildSec1PrivateKey(), with its three inputs passed in. */
+    bool CCert::buildSec1FromNative(
+        const COctet& native, const COctet& curveOidContent,
+        SReadOnlyByteSpan publicPoint, COctet& out
+    ) {
+        if (native.empty() || !publicPoint.data || publicPoint.size == 0
+            || (publicPoint.size % 2) == 0)
+        {
+            return false; // the point must be a SEC1 uncompressed one (0x04 || X || Y).
+        }
+
         // Extract d from this library's own SEQUENCE { INTEGER 0, INTEGER d, OCTET STRING point }.
-        CReader wrapper(_privateKey.toSpan(), EAENC_DER);
+        CReader wrapper(native.toSpan(), EAENC_DER);
         CReader seq;
         if (!wrapper.readSequence(seq)) {
             return false;
@@ -1957,7 +2012,7 @@ namespace x509 {
             return false;
         }
 
-        size_t fieldLen = (_publicKey.size() - 1) / 2;
+        size_t fieldLen = (publicPoint.size - 1) / 2;
 
         CBigNum d = CBigNum::fromBigEndian(dContent);
         CBuffer dPadded;
@@ -1973,11 +2028,11 @@ namespace x509 {
             return false;
         }
 
-        if (!_keyAlgoParams.empty()) {
+        if (!curveOidContent.empty()) {
             // parameters [0] EXPLICIT OBJECT IDENTIFIER (namedCurve) -- this certificate's own,
             // already resolved by importDer().
             CBuffer oidTlv;
-            if (!CDer::appendTlv(oidTlv, CTag::OBJ_ID, _keyAlgoParams.toSpan())
+            if (!CDer::appendTlv(oidTlv, CTag::OBJ_ID, curveOidContent.toSpan())
                 || !CDer::appendTlv(body, CTag(EATAG_CONTEXT_SPECIFIC, 0, true), oidTlv.toSpan()))
             {
                 return false;
@@ -1986,12 +2041,12 @@ namespace x509 {
 
         // publicKey [1] EXPLICIT BIT STRING (0 unused bits, content = the SEC1 uncompressed point).
         CBuffer bitStringContent;
-        if (!bitStringContent.resize(1 + _publicKey.size())) {
+        if (!bitStringContent.resize(1 + publicPoint.size)) {
             return false;
         }
         uint8_t* bitStringContentPtr = bitStringContent.toPtr();
         bitStringContentPtr[0] = 0x00;
-        std::memcpy(bitStringContentPtr + 1, _publicKey.toPtr(), _publicKey.size());
+        std::memcpy(bitStringContentPtr + 1, publicPoint.data, publicPoint.size);
 
         CBuffer bitStringTlv;
         if (!CDer::appendTlv(bitStringTlv, CTag::STRING_BIT, bitStringContent.toSpan())
@@ -2125,6 +2180,313 @@ namespace x509 {
         }
 
         return ERET_NOTSUP; // --> ECERT_AUTO isn't a meaningful export format.
+    }
+
+    /* Wraps a private key as a PKCS#8 PrivateKeyInfo (RFC 5208 5). */
+    ERetCode CCert::exportPkcs8PrivateKey(const crypto::IPrivateKeyPtr& key, COctet& out) {
+        out = COctet();
+
+        if (!key) {
+            return ERET_INVAL;
+        }
+
+        const crypto::EAsymmetrics which = key->algorithm();
+
+        // --> ML-DSA's PKCS#8 form is a CHOICE between a 32-byte seed and the full expanded key
+        // (and the drafts disagreed about it for years). This library's own key blob is neither
+        // shape, so writing one here would be guessing at an encoding nothing else reads.
+        if (which == crypto::EASYM_MLDSA44 || which == crypto::EASYM_MLDSA65
+            || which == crypto::EASYM_MLDSA87)
+        {
+            return ERET_NOTSUP;
+        }
+
+        CString keyOid, ecCurveOid;
+        bool keyIsDsa = false, keyIsEc = false;
+        if (!resolveKeyAlgoForBuild(which, keyOid, keyIsDsa, keyIsEc, ecCurveOid)) {
+            return ERET_NOTSUP;
+        }
+
+        COctet native;
+        ScopedWipe<COctet> wipeNative(native);
+        if (key->serialize(native) != ERET_OK || native.empty()) {
+            return ERET_KEY_ERROR;
+        }
+
+        // --- The AlgorithmIdentifier's "parameters", and the "privateKey OCTET STRING"'s
+        // content, both of which mean something different per algorithm. ---
+        CBuffer algoParams;     // --> the complete parameters TLV, or empty for "absent".
+        COctet innerKey;        // --> what goes inside the privateKey OCTET STRING.
+        ScopedWipe<COctet> wipeInner(innerKey);
+
+        if (keyIsEc) {
+            // EC: parameters is the namedCurve OID, and the inner blob is a SEC1 ECPrivateKey.
+            // The point comes out of the native blob, which embeds it -- there is no certificate
+            // here to take rawPublicKey() from.
+            size_t needed = CEncoder::encodedOidStringSize(ecCurveOid);
+            CBuffer oidContent;
+            size_t written = 0;
+            if (!needed || !oidContent.resize(needed)
+                || !CEncoder::encodeOidString(oidContent.toSpan(), ecCurveOid, written))
+            {
+                return ERET_UNKNOWN;
+            }
+
+            if (!CDer::appendTlv(algoParams, CTag::OBJ_ID,
+                                 SReadOnlyByteSpan(oidContent.toPtr(), written)))
+            {
+                return ERET_NOMEM;
+            }
+
+            CReader wrapper(native.toSpan(), EAENC_DER);
+            CReader seq;
+            int64_t version = 0;
+            CTag dTag;
+            SReadOnlyByteSpan dContent;
+            COctet point;
+            if (!wrapper.readSequence(seq) || !seq.readInteger(version)
+                || !seq.readNextElement(dTag, dContent) || dTag != CTag::INTEGER
+                || !seq.readOctetString(point))
+            {
+                return ERET_KEY_FORMAT;
+            }
+
+            if (!buildSec1FromNative(
+                    native, COctet(SReadOnlyByteSpan(oidContent.toPtr(), written)),
+                    point.toSpan(), innerKey))
+            {
+                return ERET_KEY_FORMAT;
+            }
+        } else if (keyIsDsa) {
+            // DSA: parameters is Dss-Parms { p, q, g } and the inner blob is a bare INTEGER x --
+            // both pulled out of the native { version, p, q, g, y, x } SEQUENCE.
+            SReadOnlyByteSpan cursor;
+            if (!CDer::readOuterSequence(native.toSpan(), cursor)) {
+                return ERET_KEY_FORMAT;
+            }
+
+            CBigNum version, p, q, g, y, x;
+            if (!CDer::readBigInteger(cursor, version) || !CDer::readBigInteger(cursor, p)
+                || !CDer::readBigInteger(cursor, q) || !CDer::readBigInteger(cursor, g)
+                || !CDer::readBigInteger(cursor, y) || !CDer::readBigInteger(cursor, x))
+            {
+                return ERET_KEY_FORMAT;
+            }
+
+            CBuffer parmsBody;
+            if (!CDer::appendBigInteger(parmsBody, p) || !CDer::appendBigInteger(parmsBody, q)
+                || !CDer::appendBigInteger(parmsBody, g)
+                || !CDer::appendSequence(algoParams, parmsBody.toSpan()))
+            {
+                return ERET_NOMEM;
+            }
+
+            CBuffer xTlv;
+            if (!CDer::appendBigInteger(xTlv, x)) {
+                return ERET_NOMEM;
+            }
+
+            innerKey = COctet(xTlv.toSpan());
+        } else if (which == crypto::EASYM_ED25519 || which == crypto::EASYM_ED448
+                   || which == crypto::EASYM_X25519)
+        {
+            // RFC 8410 7: no parameters at all, and the inner blob is itself a DER OCTET STRING
+            // around the raw seed. The double wrapping is not a mistake in the RFC.
+            CBuffer seedTlv;
+            if (!CDer::appendTlv(seedTlv, CTag::STRING_OCTET, native.toSpan())) {
+                return ERET_NOMEM;
+            }
+
+            innerKey = COctet(seedTlv.toSpan());
+        } else {
+            // RSA: parameters is an explicit NULL (not absent -- RFC 3447 A.1 requires it), and
+            // the inner blob is the PKCS#1 RSAPrivateKey directly.
+            if (!CDer::appendTlv(algoParams, CTag::NULL_, SReadOnlyByteSpan(nullptr, 0))) {
+                return ERET_NOMEM;
+            }
+
+            innerKey = native;
+        }
+
+        // --- PrivateKeyInfo ::= SEQUENCE { version INTEGER 0, privateKeyAlgorithm
+        // AlgorithmIdentifier, privateKey OCTET STRING } ---
+        size_t oidNeeded = CEncoder::encodedOidStringSize(keyOid);
+        CBuffer oidBuf;
+        size_t oidWritten = 0;
+        if (!oidNeeded || !oidBuf.resize(oidNeeded)
+            || !CEncoder::encodeOidString(oidBuf.toSpan(), keyOid, oidWritten))
+        {
+            return ERET_UNKNOWN;
+        }
+
+        CBuffer algoIdContent;
+        if (!CDer::appendTlv(algoIdContent, CTag::OBJ_ID,
+                             SReadOnlyByteSpan(oidBuf.toPtr(), oidWritten)))
+        {
+            return ERET_NOMEM;
+        }
+        if (!algoParams.empty() && !CDer::appendRaw(algoIdContent, algoParams.toSpan())) {
+            return ERET_NOMEM;
+        }
+
+        CBuffer body, full;
+        ScopedWipe<CBuffer> wipeBody(body);
+        ScopedWipe<CBuffer> wipeFull(full);
+
+        uint8_t versionContent = 0x00;
+        if (!CDer::appendTlv(body, CTag::INTEGER, SReadOnlyByteSpan(&versionContent, 1))
+            || !CDer::appendSequence(body, algoIdContent.toSpan())
+            || !CDer::appendTlv(body, CTag::STRING_OCTET, innerKey.toSpan()))
+        {
+            return ERET_NOMEM;
+        }
+
+        if (!CDer::appendSequence(full, body.toSpan())) {
+            return ERET_NOMEM;
+        }
+
+        // `out` is the caller's copy and is deliberately not wiped; everything else goes out
+        // through ScopedWipe, on this path and on the nineteen failure paths above.
+        out = COctet(full.toSpan());
+        return ERET_OK;
+    }
+
+    /* Reads a PKCS#8 PrivateKeyInfo back into a key. */
+    ERetCode CCert::importPkcs8PrivateKey(
+        const SReadOnlyByteSpan& data, crypto::IPrivateKeyPtr& out
+    ) {
+        out.reset();
+
+        if (!data.data || data.size == 0) {
+            return ERET_BADREQ;
+        }
+
+        CReader wrapper(data, EAENC_DER);
+        CReader seq;
+        int64_t version = 0;
+        if (!wrapper.readSequence(seq) || !seq.readInteger(version)) {
+            return ERET_BADREQ;
+        }
+
+        CReader algoSeq;
+        if (!seq.readSequence(algoSeq)) {
+            return ERET_BADREQ;
+        }
+
+        CString algoOid;
+        if (!algoSeq.readOidString(algoOid)) {
+            return ERET_BADREQ;
+        }
+
+        // The parameters are read now because EC needs them to resolve the curve before it knows
+        // which algorithm it even is. They are OPTIONAL, so an absent one is not an error.
+        CTag paramsTag;
+        SReadOnlyByteSpan paramsContent;
+        bool haveParams = algoSeq.readNextElement(paramsTag, paramsContent);
+
+        COctet inner;
+        ScopedWipe<COctet> wipeInner(inner);
+        if (!seq.readOctetString(inner)) {
+            return ERET_BADREQ;
+        }
+
+        // --- Resolve the algorithm from the PrivateKeyInfo's own OID, which is the whole point
+        // of this method as against tryAttachPrivateKey()'s guessing. ---
+        crypto::EAsymmetrics which = crypto::EASYM_RSA;
+        bool resolved = false, isEc = false;
+
+        if (algoOid.compare(OID_EC_PUBLIC_KEY) == 0) {
+            if (!haveParams || paramsTag != CTag::OBJ_ID
+                || !resolveEcCurve(paramsContent, which))
+            {
+                return ERET_NOTSUP; // an unnamed or unimplemented curve.
+            }
+
+            resolved = true;
+            isEc = true;
+        } else {
+            for (const SKeyAlgo& entry : KEY_ALGOS) {
+                if (algoOid.compare(entry.oid) == 0) {
+                    which = entry.which;
+                    resolved = true;
+                    break;
+                }
+            }
+        }
+
+        if (!resolved) {
+            return ERET_NOTSUP;
+        }
+        if (which == crypto::EASYM_MLDSA44 || which == crypto::EASYM_MLDSA65
+            || which == crypto::EASYM_MLDSA87)
+        {
+            return ERET_NOTSUP; // see exportPkcs8PrivateKey()'s own comment.
+        }
+
+        crypto::IAsymmetricPtr algo = crypto::IAsymmetric::builtIn(which);
+        if (!algo) {
+            return ERET_NOTSUP;
+        }
+
+        ERetCode result = ERET_KEY_FORMAT;
+        COctet native;
+        ScopedWipe<COctet> wipeNative(native);
+
+        if (isEc) {
+            // EC's inner blob is a SEC1 ECPrivateKey, which carries the public point this
+            // library's own native format needs.
+            if (convertSec1ToNative(inner, native)) {
+                out = algo->createPrivateKey(native);
+                result = out ? ERET_OK : ERET_KEY_FORMAT;
+            }
+        } else if (which == crypto::EASYM_DSA) {
+            // DSA's inner blob is a bare INTEGER x, and PKCS#8 carries no y at all -- so y has
+            // to be recovered as g^x mod p before this library's native blob can be assembled.
+            SReadOnlyByteSpan parmsCursor = paramsContent;
+            CBigNum p, q, g;
+            if (haveParams && paramsTag == CTag::SEQ
+                && CDer::readBigInteger(parmsCursor, p) && CDer::readBigInteger(parmsCursor, q)
+                && CDer::readBigInteger(parmsCursor, g))
+            {
+                CTag xTag;
+                SReadOnlyByteSpan xContent;
+                SReadOnlyByteSpan xCursor = inner.toSpan();
+                if (CDecoder::readNextElement(xCursor, EAENC_DER, xTag, xContent)
+                    && xTag == CTag::INTEGER)
+                {
+                    const CBigNum x = CBigNum::fromBigEndian(xContent);
+                    const CBigNum y = CBigNum::modExp(g, x, p);
+
+                    if (buildDsaNative(paramsContent, y, inner, native)) {
+                        out = algo->createPrivateKey(native);
+                        result = out ? ERET_OK : ERET_KEY_FORMAT;
+                    }
+                }
+            }
+        } else if (which == crypto::EASYM_ED25519 || which == crypto::EASYM_ED448
+                   || which == crypto::EASYM_X25519)
+        {
+            // RFC 8410's double OCTET STRING: one more unwrap reaches the raw seed.
+            COctet seed;
+            ScopedWipe<COctet> wipeSeed(seed);
+            if (unwrapOctetString(inner, seed)) {
+                out = algo->createPrivateKey(seed);
+                result = out ? ERET_OK : ERET_KEY_FORMAT;
+            }
+        } else {
+            // RSA: the inner blob is already the final PKCS#1 RSAPrivateKey.
+            out = algo->createPrivateKey(inner);
+            result = out ? ERET_OK : ERET_KEY_FORMAT;
+        }
+
+        // --> `inner`, `native` and the EdDSA branch's `seed` are all plaintext private key
+        // material, on the failing paths as much as this one, which is why each goes out through
+        // a ScopedWipe rather than a wipe written beside one `return`.
+        if (result != ERET_OK) {
+            out.reset();
+        }
+
+        return result;
     }
 
     /* Builds and signs a fresh X.509 certificate from this builder's fields. Assembles the

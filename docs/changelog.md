@@ -2903,3 +2903,278 @@ only if* that subtraction borrowed out. `CBigNum::subtractLimbs()` does not
 report its borrow, so the comparison has to be consulted *before* the
 subtraction, not after — the first version decremented the top word
 unconditionally.
+
+## PBKDF2, and PKCS#12/PFX as the first container format
+
+`x509/chain.hpp` had defined `IChainFormat` and `ECHAINFMT_PFX` with
+`builtIn()` returning null for every format. This filled in PFX. The
+prerequisite turned out to be a missing primitive rather than anything about
+PKCS#12.
+
+### `CPbkdf2` (RFC 8018 5.2), and why `CHkdf` could not stand in
+
+The library had `CHkdf` and no password-based KDF at all. HKDF is not a
+substitute and the reason is not a technicality: it runs two HMACs over input
+that already has full entropy, and being fast costs it nothing because
+guessing that input is hopeless. A password does not have full entropy, so the
+only defence a KDF over one has is making each guess expensive — which is
+exactly the property HKDF lacks. Feeding a password to `CHkdf` produces a key
+that is derived correctly and cracked at the attacker's line rate.
+
+So `CPbkdf2` landed in `include/certpp/crypto/pbkdf2.hpp` +
+`src/crypto/pbkdf2.cpp`, beside `CHkdf` rather than hidden inside the PFX code
+— it is a general-purpose primitive and callers will want it on its own.
+`CHkdf`'s doc comment had predicted that if PBKDF2 ever arrived an `IKdf`
+interface should be introduced with it; the prediction was revisited and
+declined, because the two share only "a static `derive()` taking spans", which
+is a shape and not an abstraction. That comment was updated to say so rather
+than left to read as an unkept intention.
+
+Three parameter decisions are stated in the header because each is a place an
+implementation quietly goes wrong:
+
+- **An iteration count of 0 is `ERET_BADREQ`, not "no iterations".** RFC 8018
+  defines `c` as positive and `T(i)` is the XOR of at least `U(1)`, so 0 leaves
+  the block undefined. More to the point, a count parsed out of a
+  caller-supplied container must never be able to turn the derivation into a
+  free one.
+- **The output is bounded at `(2^32 - 1) * hLen`**, because `INT(i)` is a
+  32-bit counter; past that it wraps back to block 1 and the output repeats.
+  `maxDeriveBytes()` computes the bound in 64 bits and saturates, since on a
+  32-bit `size_t` the real value does not fit and a bound that wrapped would be
+  no bound.
+- The salt may be empty. RFC 8018 4.1 asks for 64 bits from a random source,
+  but a caller reproducing somebody else's container has to accept whatever
+  salt is in it, so the minimum is documented and not enforced.
+
+#### Validation
+
+Every expected value was reproduced from Python's `hashlib.pbkdf2_hmac` before
+being written into the test, and that step earned its keep immediately: two of
+the values recalled from the RFCs were wrong. RFC 6070's fourth case ends
+`...8b291a964cf2f07038`, not `...8b291a964fe0858c`, and RFC 7914 section 11's
+first SHA-256 case has `...fec1691c22544b60...` with one `5` where it is easy
+to type two. Had those gone in as written, the implementation would have been
+"fixed" until it reproduced them.
+
+`tests/crypto/pbkdf2.cpp` covers all five of RFC 6070's HMAC-SHA1 cases
+(including the embedded-NUL password and salt, and the 25-byte output that is
+the only one exercising `INT(i)` at all, since with `dkLen <= hLen` the counter
+is always 1 and a wrong encoding of it is invisible) and both of RFC 7914
+section 11's HMAC-SHA256 cases.
+
+RFC 6070's 16777216-iteration case is **deliberately left out**, and the
+reason is runtime: it is the same derivation as the 4096-iteration case with a
+larger `c`, and at this library's throughput (measured at 0.50 µs per
+HMAC-SHA256 operation in a release build) it would add minutes to every
+`ctest` run to re-test one loop. It was verified once out of band — Python's
+C-backed hashlib takes 17.3 s on it and agrees with the RFC — and the 4096-
+and 80000-iteration cases carry the same loop in the suite.
+
+### `CPfxFormat` (RFC 7292)
+
+`include/certpp/x509/chain/pfx.hpp` + `src/x509/chain/pfx.cpp`, wired into
+`IChainFormat::builtIn()`. `docs/architecture.md` records the format decisions
+(PBES2/AES-256-CBC only, HMAC-SHA-256 for the MAC, 600,000 iterations,
+MAC-before-decrypt, the two password encodings); what follows is what the work
+turned up.
+
+**The legacy PKCS#12 KDF had to be implemented after all, and only just.** The
+plan was to avoid RFC 7292 Appendix B entirely in favour of PBES2. That is
+possible for *encryption* — OpenSSL 3 defaults to PBES2 with AES-256-CBC, so
+the legacy RC2/3DES ciphers can simply be refused with `ERET_NOTSUP`. It is
+not possible for *integrity*: RFC 7292 section 4 specifies that `MacData`'s
+key comes from the Appendix B KDF with purpose byte 3, there is no alternative
+in the RFC, and every real container therefore uses it. (RFC 9579's PBMAC1,
+from 2024, does allow PBKDF2 there; nothing writes it yet.) So the KDF is
+implemented, scoped to exactly that one key, and kept as a file-local helper
+in `pfx.cpp` rather than put in `crypto/` beside `CPbkdf2` — it is a legacy
+PKCS#12-only construction and nothing else should reach for it. No PBES1 key
+or IV is ever derived with it; no RC2 or 3DES is read or written.
+
+**The password is encoded two different ways in the same file.** PBES2 is
+PKCS#5 and takes the password bytes as given. Appendix B's KDF is PKCS#12's
+own and takes them as a NUL-terminated big-endian UTF-16 BMPString. Getting
+these the same way round produces a container nothing else can read, and —
+this is the trap — one the writing implementation reads back perfectly. Both
+were pinned in Python against a real OpenSSL container before any C++ was
+written: the Appendix B derivation was checked by recomputing the fixture's
+HMAC and matching its stored MAC byte for byte, and the PBES2 side by deriving
+the key both ways and handing each to `openssl enc -d` to see which one
+decrypted the certificate bag. The raw-bytes key is the one that works.
+
+The UTF-8-to-UTF-16 direction matters too. Older OpenSSL's `OPENSSL_asc2uni`
+zero-extended each byte, Latin-1 style; OpenSSL 3 converts UTF-8. For an ASCII
+password the two agree, which is why `fixtures/openssl-utf8-password.p12` is
+in the tree — a container written elsewhere under `passwörd` is the only thing
+that distinguishes them, and a round trip through this library cannot, since
+it would agree with itself either way.
+
+#### Refactoring `CCert` rather than copying it
+
+PFX stores keys as PKCS#8 and `CCert` already had the inbound half, in
+`unwrapPkcs8PrivateKey()` and the per-algorithm conversions `importPem()`
+uses. None of it was reusable as it stood: `tryAttachPrivateKey()` guesses at
+a blob's shape by trying it under one certificate's own algorithm until
+something parses, which a key bag cannot do (it has to be readable before it
+is known which certificate it pairs with), and
+`buildSec1PrivateKey()`/`convertPkcs8DsaInnerToNative()` read their inputs out
+of `CCert`'s own parsed fields.
+
+Rather than write a second copy, two public statics were added —
+`CCert::exportPkcs8PrivateKey()` and `importPkcs8PrivateKey()` — and the two
+state-dependent helpers were split so both callers reach one encoder:
+
+- `buildSec1FromNative(native, curveOid, publicPoint, out)` is
+  `buildSec1PrivateKey()`'s body with its three inputs passed in. The public
+  point stays an explicit argument even though the native blob embeds one, so
+  the refactor cannot change what `exportPem()` has always written.
+- `buildDsaNative(dssParms, y, innerX, out)` is the shared body of
+  `convertPkcs8DsaInnerToNative()` and the new import path. The two differ only
+  in where `y` comes from, and that difference is itself worth recording: a
+  certificate carries `y`, and a PKCS#8 DSA key does not carry it at all, so
+  reading one standalone costs a `g^x mod p` via `CBigNum::modExp()`.
+
+ML-DSA is refused (`ERET_NOTSUP`) rather than wrapped: its PKCS#8 form is a
+CHOICE between a 32-byte seed and the full expanded key, and this library's own
+key blob is neither shape, so writing one would be guessing at an encoding
+nothing reads. `CCert`'s existing tests pass unmodified.
+
+#### Validation: reading what this library did not write
+
+A PFX this code wrote and read back proves that two bugs cancel. `openssl` was
+on PATH, so five containers were produced once with `openssl pkcs12 -export`
+and checked in under `tests/x509/chain/fixtures/` (so the suite itself needs no
+openssl): an EC key under OpenSSL 3's own defaults, an RSA key, a
+two-certificate chain, an explicit SHA-1 `MacData`, and a `-legacy -certpbe
+PBE-SHA1-3DES` container that must come back `ERET_NOTSUP`. A sixth was added
+for the non-ASCII password. Before any of them was used as a fixture,
+`openssl asn1parse` and a hand-written Python decoder walked the first one TLV
+by TLV, so the structure the C++ expects was derived from a real file rather
+than from a reading of the grammar.
+
+That first run found the bug the exercise exists for, and it was not subtle in
+hindsight: `parsePbes2()` was handed the PBES2-params SEQUENCE's *content* by
+every caller (they all reach it through `readNextElement()`) and opened with
+another `readSequence()`, so it read the `keyDerivationFunc` as though it were
+the whole of PBES2-params and failed one level further down. Every load of
+every fixture returned `ERET_BADREQ`. A self-round-trip suite would have failed
+identically, so this one is not by itself evidence for the interop fixtures —
+but nothing else in the file would have said *which* side was wrong.
+
+The other direction was checked by hand, since a test cannot shell out: the
+round-trip cases write `pfx-written-by-certpp.p12` into the working directory,
+and `openssl pkcs12 -info` on it verifies the MAC, decrypts both the
+certificate bag and the shrouded key bag, reports `PBES2, PBKDF2, AES-256-CBC
+... PRF hmacWithSHA256` and `MAC: sha256`, prints the `friendlyName` and
+`localKeyID`, and separates the leaf from the two CA certificates by that
+`localKeyID`. The extracted key's public point hashes identically to the leaf
+certificate's, and `openssl` rejects a wrong password on the file with `Mac
+verify error: invalid password?`.
+
+#### Negative controls, each injected, rebuilt, and restored
+
+| injected fault | caught by |
+|---|---|
+| MAC verdict deferred until after the AuthenticatedSafe is parsed and decrypted | 605 failures in the tamper-sweep case — most flips become `ERET_BADREQ` |
+| `std::memcmp` in place of `CSecure::equals()` for the MAC | **nothing** — see below |
+| `CSecure::zero()` removed from the derived PBES2 key | **nothing** — see below |
+| empty-password refusal removed from `save()` | 2 failures, and it wrote a container under no password |
+
+The two that were not caught are honest misses, and both were expected to be.
+`memcmp` returns the same answer as `CSecure::equals()`; it only takes a
+different amount of time, and no functional test can see that. A missing
+`CSecure::zero()` leaves key bytes in freed heap, which is likewise invisible
+to anything the suite can assert. Neither is defended by a test, and claiming
+otherwise would be the wrong record to leave: they are defended by review, by
+the primitives being the obvious ones to reach for, and by the doc comments
+that say why. The timing one is worth keeping even though a PFX MAC is compared
+against a value the attacker already holds — this is a library, and a caller
+who exposes `load()` to uploaded files turns it into exactly the online oracle
+a constant-time comparison is for.
+
+The tamper sweep itself was sharpened during this work. It began as "flip every
+seventh byte of the back two-thirds of the file and expect `ERET_KEY_ERROR`",
+which failed on three offsets — and investigating them was more useful than
+fixing them. All three lie in `MacData`, which the MAC cannot cover, because
+`MacData` is where the MAC is. Two were a corrupt `DigestInfo` (`ERET_BADREQ`)
+and an unrecognised digest OID (`ERET_NOTSUP`); the third flipped the `NULL`
+tag in the digest `AlgorithmIdentifier`'s ignored `parameters` field and
+changed nothing at all, so the container loaded — correctly, because it was
+still authentic. The sweep now locates the AuthenticatedSafe and flips **every
+one** of its bytes (1048 of them, which is what took the case from a sample to
+exhaustive coverage of the range an attacker could put a payload in), and the
+comment states what the MAC's scope is rather than implying the whole file is
+protected.
+
+#### Two things review found that the tests did not
+
+Both came out of asking "what runs before the MAC has vouched for anything?"
+and "what does this buffer type actually do?", and neither would have shown up
+as a failing assertion.
+
+**`CBuffer::resize()` does not truncate in place.** `aesCbc()` allocates a
+block of headroom (encrypting always appends a pad block) and originally
+trimmed the result with `out.resize(total)`. But `resize()` *always* allocates
+a fresh block, copies the part it keeps, and `delete[]`s the old one — without
+wiping it. On the decrypt path that old block holds the complete plaintext,
+which for a `pkcs8ShroudedKeyBag` is a private key, so trimming handed the key
+to the allocator in the clear and the caller's own `CSecure::zero()` then
+scrubbed the surviving copy instead. It now copies the exact length out, wipes
+the oversized block, and swaps it away (move-assignment swaps, per this
+library's convention, so the wiped block is the one that gets destroyed).
+
+**`MacData`'s iteration count drives work before the MAC is checked.** The MAC
+key has to be derived to check the MAC, and the count comes out of the file, so
+it is the one iteration count in the format that an attacker picks. The
+original bound was `0x7FFFFFFF`, which is about eighteen minutes of CPU for a
+200-byte file. `CPfxFormat::MAX_MAC_ITERATIONS` is now 10,000,000 — far above
+RFC 7292's 1024, OpenSSL's 2048 or this library's own 600,000, so it costs no
+interoperability. The test for it rebuilds a real container with only that
+field changed and checks three outcomes, because the interesting part is that
+they differ: past the ceiling and at zero are `ERET_BADREQ`, while a count
+inside the ceiling that is simply wrong for the container is `ERET_KEY_ERROR`.
+A blanket rejection would pass the first two and fail the third.
+
+While here, the private-key locals in `CCert`'s two PKCS#8 methods moved onto a
+small TU-local `ScopedWipe`. Twenty `return` statements between them each held
+a key in two or three buffers, and a wipe written out beside each one is a wipe
+that is wrong the first time a branch is added. It does not reach the
+*intermediate* states of a growing `CBuffer` — `resize()` frees each previous
+block unwiped — which is a property of the buffer type, shared with
+`exportPem()`'s own key paths, and belongs in `CBuffer` rather than here.
+
+#### A comment that was wrong, and a lifetime that was not
+
+`SBag` originally held its bag value as a span into the decrypted
+`SafeContents` plaintext, with the plaintexts kept alive in a
+`TArray<CBuffer>`. That looked like a dangling-span bug — growing the array
+relocates its elements — and it was changed to an owning `COctet` per bag.
+Checking `TArray::reserve()` afterwards showed the original was in fact safe:
+it relocates by move-construction, and `CBuffer`'s move hands over the same
+heap block, so the addresses survive. The change was kept anyway, for a smaller
+but real reason — each plaintext can now be wiped as soon as its bags have been
+read, instead of living until the end of `load()` — and the comment was
+corrected to say that instead of claiming a bug that was not there. `SBag`'s
+destructor does the wipe, because an encrypted `SafeContents` may hold a plain
+`keyBag` and there are half a dozen error returns between reading it and the
+end of the method.
+
+#### Validation
+
+The 123 existing test cases pass with no expected value edited;
+`tests/crypto/pbkdf2.cpp` and `tests/x509/chain/pfx.cpp` bring the suite to
+125 executables, all passing (the PFX file alone is 22 cases and ~4,500
+assertions, most of them the tamper sweep).
+
+#### Not done
+
+- **The legacy PKCS#12 ciphers** (RC2-40-CBC, `pbeWithSHAAnd3-KeyTripleDES-CBC`
+  under PBES1) are refused, not read. Containers written by tooling older than
+  roughly 2021, or by `openssl pkcs12 -legacy`, need them; the fixture is in
+  the tree asserting the `ERET_NOTSUP`, so adding support later has a test
+  waiting to be inverted. Scoped as a follow-up rather than half-done.
+- **Public-key integrity and privacy modes** (a `signedData` `authSafe`, or an
+  `envelopedData` ContentInfo) return `ERET_NOTSUP`.
+- **RFC 9579 PBMAC1**, which would let `MacData`'s key come from PBKDF2 instead
+  of Appendix B's KDF, is not implemented in either direction.
