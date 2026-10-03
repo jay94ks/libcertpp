@@ -62,6 +62,13 @@
   SubjectKeyIdentifier, AuthorityKeyIdentifier, CRLDistributionPoints,
   AuthorityInformationAccess, CertificatePolicies, NameConstraints)도
   포함합니다.
+  인증서 서명은 PKCS#1 v1.5와 RSASSA-PSS(RFC 4055) 모두 검증합니다. 해시,
+  MGF1 해시, salt 길이를 DEFAULT로 가정하지 않고 `AlgorithmIdentifier`의
+  parameters에서 읽어오며, 인코딩은 가능하지만 지원하지 않는 조합에 대해서는
+  fail-closed로 동작합니다 -- 근사해 버리면 유효한 서명을 전부 거부하게 되고,
+  호출자는 그것을 위조와 구별할 수 없기 때문입니다. 식별 이름(DN)은 EU 규제
+  인증서가 담는 `organizationIdentifier`와 `domainComponent`를 포함해 14종의
+  X.520 속성 타입을 지원합니다.
 - **`dnssec`** -- DNSKEY/RRSIG/DS 변환(RFC 4034): 정규(canonical) 와이어
   포맷 도메인 이름, 각 레코드의 RDATA, Appendix B의 키 태그(key tag), DS
   다이제스트, 그리고 DNSSEC의 와이어 포맷과 이 라이브러리의 키·서명 사이의

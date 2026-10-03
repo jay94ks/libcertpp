@@ -63,6 +63,14 @@ is used by the test suite only).
   SubjectAlternativeName, SubjectKeyIdentifier, AuthorityKeyIdentifier,
   CRLDistributionPoints, AuthorityInformationAccess, CertificatePolicies,
   NameConstraints).
+  Certificate signatures verify for PKCS#1 v1.5 and for RSASSA-PSS
+  (RFC 4055), reading the hash, MGF1 hash and salt length out of the
+  `AlgorithmIdentifier`'s parameters rather than assuming the DEFAULTs --
+  and failing closed where a parameter combination is encodable but
+  unsupported, since approximating one rejects every valid signature in a
+  way a caller cannot tell from a forgery. Distinguished names cover
+  fourteen X.520 attribute types, including the `organizationIdentifier`
+  that EU-regulated certificates carry and `domainComponent`.
 - **`dnssec`** -- DNSKEY/RRSIG/DS conversion (RFC 4034): canonical
   wire-format names, the RDATA of each record, the Appendix B key tag, the
   DS digest, and the re-encoding between DNSSEC's wire formats and this
