@@ -1435,7 +1435,8 @@ namespace {
             return ctx->verify(digest.toSpan(), sigValueBits) == ERET_OK;
         }
 
-        // Self-hashing (EdDSA): the TBSCertificate bytes are the message itself.
+        // Self-hashing (EdDSA, ML-DSA): the TBSCertificate bytes are the message itself, and
+        // createHasher() returning null is the signal rather than an omission.
         return ctx->verify(tbsFullTlv, sigValueBits) == ERET_OK;
     }
 
@@ -1567,6 +1568,71 @@ TEST_CASE("CCertBuilder: builds and self-signs an Ed448 certificate with a verif
     CHECK(cert.keyAlgo() == CString("Ed448"));
     CHECK(cert.signAlgo() == CString("Ed448"));
     CHECK(verifyCertSelfSigned(cert));
+}
+
+TEST_CASE("CCertBuilder: builds and self-signs an ML-DSA certificate for each parameter set") {
+    // The other side of the IdenTrust root in realcerts.cpp: that one proves this library can
+    // verify someone else's ML-DSA certificate, this one that it can produce one. Both halves
+    // matter, because a builder and a verifier that share the same mistake agree with each other
+    // -- which is exactly why the third-party certificate is the acceptance test and this is not.
+    //
+    // digestAlgo is left unset on purpose. resolveSigAlgoForSigning() must ignore it for ML-DSA,
+    // the way it does for EdDSA, rather than defaulting to SHA-256 and hashing first: the
+    // signature AlgorithmIdentifier RFC 9881 defines names no digest, and there is nowhere in it
+    // to record one.
+    struct Case {
+        crypto::EAsymmetrics which;
+        SKeySize keySize;
+        const char* name;
+    };
+
+    const Case cases[] = {
+        { EASYM_MLDSA44, 44, "ML-DSA-44" },
+        { EASYM_MLDSA65, 65, "ML-DSA-65" },
+        { EASYM_MLDSA87, 87, "ML-DSA-87" },
+    };
+
+    for (const Case& c : cases) {
+        SUBCASE(c.name) {
+            IAsymmetricPtr algo = IAsymmetric::builtIn(c.which);
+            REQUIRE(algo);
+
+            SKeyPair kp;
+            REQUIRE(algo->generateKeyPair(c.keySize, kp) == ERET_OK);
+
+            CCertBuilder builder;
+            REQUIRE(CDistinguishedName::tryParse(
+                builder.issuer, CString("C=US, O=libcertpp, CN=Test PQ CA")));
+            builder.subject = builder.issuer;
+            uint8_t serial[1] = { 0x01 };
+            builder.serialNumber = COctet(serial, 1);
+            builder.notBefore = SDateTime(2026, 1, 1, 0, 0, 0, 0, true);
+            builder.notAfter = SDateTime(2036, 1, 1, 0, 0, 0, 0, true);
+            builder.subjectKey = kp.publicKey;
+            builder.issuerKeyPair = kp;
+
+            CCert cert;
+            REQUIRE(builder.build(cert) == ERET_OK);
+            REQUIRE_FALSE(cert.empty());
+
+            CHECK(cert.keyAlgo() == CString(c.name));
+            CHECK(cert.signAlgo() == CString(c.name));
+
+            // The AlgorithmIdentifier carries no parameters -- not even a NULL, which is what
+            // an RSA signature OID would need (RFC 9881 2).
+            CHECK(cert.keyAlgoParams().empty());
+
+            // Re-importing the built DER has to resolve the algorithm the same way the builder
+            // chose it; a round trip through bytes is what catches an OID written one way and
+            // read another.
+            CCert reimported;
+            REQUIRE(reimported.importDer(cert.rawData()) == ERET_OK);
+            CHECK(reimported.keyAlgo() == CString(c.name));
+            CHECK(reimported.verifyBy(reimported) == ERET_OK);
+
+            CHECK(verifyCertSelfSigned(cert));
+        }
+    }
 }
 
 TEST_CASE("CCertBuilder: builds and self-signs an RSA certificate with each PKCS#1 v1.5 digestAlgo") {

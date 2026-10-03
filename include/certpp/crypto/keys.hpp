@@ -13,11 +13,19 @@ namespace crypto {
     /**
      * The asymmetric algorithms this library implements (see crypto/asyms/ for each concrete
      * IAsymmetric): RSA, DSA, Ed25519/Ed448 (EdDSA), X25519 (Diffie-Hellman key agreement),
-     * GOST R 34.10-2012 over each of its parameter sets, and every prime-field/binary-field
+     * GOST R 34.10-2012 over each of its parameter sets, ML-DSA (FIPS 204, post-quantum) in
+     * each of its three parameter sets, and every prime-field/binary-field
      * elliptic curve CEcdsa/CEcdsa2 supports. Lives here (rather than asym.hpp, where it's
      * used far more -- IAsymmetric::builtIn(), etc.) because
      * IKeyBase::algorithm() needs it too, and asym.hpp already includes this header (not the
      * other way around).
+     *
+     * **Append, never insert.** This enum crosses an ABI boundary: libcertpp ships as a shared
+     * object and is consumed as an installed package, so a caller compiled against an older
+     * copy of this header keeps the numeric value it saw. Inserting a member in the middle
+     * renumbers everything after it, and that caller then silently selects a different
+     * algorithm -- it does not fail to link, and nothing diagnoses it. New members go
+     * immediately before EASYM_MAX, which is itself only ever a bound and never stored.
      */
     enum EAsymmetrics {
         EASYM_RSA = 0,         /**< RSA algorithm */
@@ -64,6 +72,9 @@ namespace crypto {
         EASYM_GOST512A,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-12-512-paramSetA */
         EASYM_GOST512B,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-12-512-paramSetB */
         EASYM_GOST512C,        /**< GOST R 34.10-2012 over id-tc26-gost-3410-2012-512-paramSetC */
+        EASYM_MLDSA44,         /**< ML-DSA-44 (FIPS 204), NIST security category 2 */
+        EASYM_MLDSA65,         /**< ML-DSA-65 (FIPS 204), NIST security category 3 */
+        EASYM_MLDSA87,         /**< ML-DSA-87 (FIPS 204), NIST security category 5 */
 
         /**< Marker for the maximum value of EAsymmetrics. */
         EASYM_MAX,

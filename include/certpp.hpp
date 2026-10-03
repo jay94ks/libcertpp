@@ -60,6 +60,7 @@
 #include <certpp/crypto/asyms/ed448.hpp>
 #include <certpp/crypto/asyms/x25519.hpp>
 #include <certpp/crypto/asyms/gost3410.hpp>
+#include <certpp/crypto/asyms/mldsa.hpp>
 #include <certpp/crypto/kems/mlkem.hpp>
 #include <certpp/crypto/syms/aes.hpp>
 #include <certpp/crypto/syms/des.hpp>
