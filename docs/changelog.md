@@ -3436,3 +3436,83 @@ assertions, most of them the tamper sweep).
   `envelopedData` ContentInfo) return `ERET_NOTSUP`.
 - **RFC 9579 PBMAC1**, which would let `MacData`'s key come from PBKDF2 instead
   of Appendix B's KDF, is not implemented in either direction.
+
+## Three API gaps the wiki's example code exposed
+
+Writing a compiled example for every public type turned out to be an audit as
+much as a documentation job: an example is the first caller that has to obtain
+a type the way a caller would, and three types could not be used that way.
+Each was found by trying to write its example and failing.
+
+### `EDecoderStatus` was a public enum nothing public could produce
+
+`asn1/decoder.hpp` exports seven status values. `decodeLength()`, the only
+thing that produced them, was private, and every public `CDecoder` entry point
+returned `bool`. So the one distinction the enum exists to carry — `EDEC_NEED_MORE`,
+"truncated, send more bytes", against `EDEC_RESERVED`/`EDEC_TOO_BIG`/
+`EDEC_PROHIBITED`, "malformed, give up" — was unavailable to the callers who
+need it most, anyone decoding off a socket or a stream.
+
+The status was being computed and then thrown away. `readIndefiniteContent()`
+and the depth-tracking `readEncodedValue()` now return `EDecoderStatus` instead
+of `bool`, so `EDEC_NEED_MORE` propagates out of a nested value rather than
+flattening into the same failure as a malformed one, and a new public
+`tryReadEncodedValue()` hands it to the caller. The `bool readEncodedValue()`
+keeps its exact signature and is now `tryReadEncodedValue(...) == EDEC_OK`,
+so there is one implementation rather than two that could drift apart.
+
+Two places needed a judgement call rather than a mechanical conversion:
+
+- **A tag that will not decode.** `CTag::decode()` folds "no bytes at all",
+  "the high-tag-number form runs past the end of the span" and "not a tag"
+  into one invalid tag, and only the first is distinguishable afterwards. An
+  empty source reports `EDEC_NEED_MORE`; anything else reports
+  `EDEC_BAD_ARGS`, because telling a caller to append bytes to a genuinely
+  malformed tag is a promise that cannot be kept.
+- **Indefinite-length nesting past `MAX_NESTING_DEPTH`** reports
+  `EDEC_TOO_BIG` rather than `EDEC_PROHIBITED`: the encoding is legal BER, it
+  is this decoder that declines to go deeper, and the two statuses say
+  different things about whose fault it is.
+
+The negative controls: collapsing a truncated value back into `EDEC_BAD_ARGS`,
+dropping the end-of-contents case back to a generic failure, and discarding
+`decodeLength()`'s own status as the old code did were each injected
+separately, and each was caught.
+
+The example this type carries on the wiki used to classify the length octets
+by hand, because that was the only example possible. It now drives a real
+read loop, which is the thing the enum was for.
+
+### `COctet` could not wipe its own secret without a `const_cast`
+
+A `COctet`'s bytes are reachable only through the read-only `toPtr()`/
+`toSpan()`, so `CSecure::zero()` could not be pointed at them. That bites
+wherever one carries key material — a PKCS#9 `challengePassword` out of
+`CCertRequest::attributeOf()`, a decoded private-key blob — and the workaround
+a caller would reach for is a `const_cast`, which is not something to publish
+as the house style for handling a secret.
+
+`secureClear()` zeroizes and then releases, following `CBigNum::secureClear()`'s
+precedent. A mutable `toPtr()` was the alternative and was rejected: it would
+let anything rewrite an owned buffer piecemeal, which is exactly what
+`store()`'s replace-the-whole-content design prevents. Naming the operation
+keeps the capability to the one use that needs it.
+
+Its doc comment states the limit rather than implying none: it reaches the
+bytes *this* instance owns at the moment it is called, and not a copy an
+earlier assignment made, nor the block `store()` frees when it replaces
+content of a different size. It shortens the window a secret stays in freed
+memory; it does not close it.
+
+The test case says plainly what it cannot check. The zeroization is not
+observable — the block is freed immediately after, and reading freed memory
+would measure the allocator rather than the wipe — so the case covers the
+observable contract and leans on `CSecure::zero()`'s own tests for the rest.
+The negative control (wipe but never release) is caught.
+
+### `ParseFixedDigits`, `ValidateTimeFields`, `WriteFixedDigits`
+
+Private static members in PascalCase, where
+[coding-conventions.md](coding-conventions.md) calls for `camelCase` on
+members and reserves PascalCase for free functions. Renamed across 32 call
+sites; no behaviour change.

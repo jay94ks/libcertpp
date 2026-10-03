@@ -209,3 +209,56 @@ TEST_CASE("COctet move assignment from/into an empty instance still empties the 
     REQUIRE(empty.size() == sizeof(data));
     CHECK(std::memcmp(empty.toPtr(), data, sizeof(data)) == 0);
 }
+
+TEST_CASE("COctet::secureClear: clears like clear(), and exists so a secret needs no const_cast") {
+    // What this case can and cannot check, stated plainly rather than implied: the observable
+    // contract is testable, the zeroization is not. secureClear() wipes the block and then frees
+    // it, so no assertion this suite can make is allowed to look at those bytes afterwards --
+    // reading freed memory is undefined, and a test that did it would be measuring the
+    // allocator, not the wipe. The wipe itself rests on CSecure::zero(), which has its own
+    // tests, and on review.
+
+    SUBCASE("it empties the octet, as clear() does") {
+        const uint8_t secret[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04 };
+
+        COctet held(secret, sizeof(secret));
+        REQUIRE(held.size() == sizeof(secret));
+        REQUIRE(held.toPtr() != nullptr);
+
+        held.secureClear();
+
+        CHECK(held.empty());
+        CHECK(held.size() == 0);
+        CHECK(held.toPtr() == nullptr);
+        CHECK_FALSE(static_cast<bool>(held));
+    }
+
+    SUBCASE("it is safe on an octet that holds nothing") {
+        // A caller wiping on every exit path should not have to check first.
+        COctet empty;
+        empty.secureClear();
+        CHECK(empty.empty());
+    }
+
+    SUBCASE("it is idempotent") {
+        const uint8_t secret[] = { 0x11, 0x22, 0x33 };
+        COctet held(secret, sizeof(secret));
+
+        held.secureClear();
+        held.secureClear();
+        CHECK(held.empty());
+    }
+
+    SUBCASE("the octet is reusable afterwards") {
+        // secureClear() releases, it does not poison: the same instance takes new content.
+        const uint8_t first[] = { 0xAA, 0xBB };
+        const uint8_t second[] = { 0xCC, 0xDD, 0xEE };
+
+        COctet held(first, sizeof(first));
+        held.secureClear();
+
+        REQUIRE(held.store(second, sizeof(second)));
+        CHECK(held.size() == sizeof(second));
+        CHECK(std::memcmp(held.toPtr(), second, sizeof(second)) == 0);
+    }
+}

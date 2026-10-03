@@ -79,7 +79,7 @@ namespace asn1 {
     }
 
     /* Reads the content octets of an indefinite-length value by skipping nested values until EOC. */
-    bool CDecoder::readIndefiniteContent(
+    EDecoderStatus CDecoder::readIndefiniteContent(
         const TReadOnlySpan<uint8_t>& source,
         EEncodingRule ruleSet,
         size_t& outLength,
@@ -92,22 +92,27 @@ namespace asn1 {
             auto remaining = source.slice(offset);
 
             if (remaining.size < EOC_ENC_LEN) {
-                return false;
+                // --> Not malformed: an indefinite-length value whose EOC marker has not arrived
+                // yet is simply incomplete, and a streaming caller needs to be told that rather
+                // than told its input is broken.
+                return EDEC_NEED_MORE;
             }
 
             // --> End-of-contents marker: tag 0x00, length 0x00.
             if (remaining[0] == 0 && remaining[1] == 0) {
                 outLength = offset;
                 bytesRead = offset + EOC_ENC_LEN;
-                return true;
+                return EDEC_OK;
             }
 
             CTag nestedTag;
             TReadOnlySpan<uint8_t> nestedArea;
             size_t nestedBytesRead = 0;
 
-            if (!readEncodedValue(remaining, ruleSet, nestedTag, nestedArea, nestedBytesRead, depth)) {
-                return false;
+            const EDecoderStatus nested =
+                readEncodedValue(remaining, ruleSet, nestedTag, nestedArea, nestedBytesRead, depth);
+            if (nested != EDEC_OK) {
+                return nested;
             }
 
             offset += nestedBytesRead;
@@ -115,7 +120,7 @@ namespace asn1 {
     }
 
     /* Tries to read an encoded ASN.1 value from the source span, tracking nesting depth. */
-    bool CDecoder::readEncodedValue(
+    EDecoderStatus CDecoder::readEncodedValue(
         const TReadOnlySpan<uint8_t>& source,
         EEncodingRule ruleSet,
         CTag& outTag,
@@ -126,13 +131,18 @@ namespace asn1 {
         bytesRead = 0;
 
         if (!checkEncodingRule(ruleSet)) {
-            return false;
+            return EDEC_BAD_ARGS;
         }
 
         size_t tagLength = 0;
         CTag localTag = CTag::decode(source, tagLength);
         if (!localTag) {
-            return false;
+            // --> CTag::decode() folds "no bytes at all", "the high-tag-number form continues
+            // past the end of the span" and "not a tag" into one invalid tag, so an empty source
+            // is the only one of the three this can tell apart. Reporting the rest as
+            // EDEC_NEED_MORE would promise a caller that appending bytes could help, which for a
+            // genuinely malformed tag is false.
+            return source.empty() ? EDEC_NEED_MORE : EDEC_BAD_ARGS;
         }
 
         auto afterTag = source.slice(tagLength);
@@ -143,41 +153,57 @@ namespace asn1 {
 
         if (status == EDEC_OK) {
             if (ruleSet == EAENC_CER && exceedsCerSegmentLimit(localTag, length)) {
-                return false;
+                return EDEC_PROHIBITED;
             }
 
             if (afterLength.size < length) {
-                return false;
+                // --> The header parsed and gave a length the content does not reach, which is
+                // the one case where a streaming caller knows exactly how many more bytes it
+                // needs. Everything about this value is already known except its content.
+                return EDEC_NEED_MORE;
             }
 
             outTag = localTag;
             outArea = afterLength.slice(0, length);
             bytesRead = headerLength + length;
-            return true;
+            return EDEC_OK;
         }
 
         if (status != EDEC_INDEFINITE) {
-            return false;
+            return status;
         }
 
         // --> Only BER/CER reach here; DER indefinite length is rejected as EDEC_PROHIBITED above.
         if (depth >= MAX_NESTING_DEPTH) {
-            return false;
+            return EDEC_TOO_BIG;
         }
 
         size_t contentLength = 0, contentBytesRead = 0;
-        if (!readIndefiniteContent(afterLength, ruleSet, contentLength, contentBytesRead, depth + 1)) {
-            return false;
+        const EDecoderStatus content =
+            readIndefiniteContent(afterLength, ruleSet, contentLength, contentBytesRead, depth + 1);
+        if (content != EDEC_OK) {
+            return content;
         }
 
         outTag = localTag;
         outArea = afterLength.slice(0, contentLength);
         bytesRead = headerLength + contentBytesRead;
-        return true;
+        return EDEC_OK;
     }
 
     /* Tries to read an encoded ASN.1 value from the source span. */
     bool CDecoder::readEncodedValue(
+        const TReadOnlySpan<uint8_t>& source,
+        EEncodingRule ruleSet,
+        CTag& outTag,
+        TReadOnlySpan<uint8_t>& outArea,
+        size_t& bytesRead
+    ) {
+        return tryReadEncodedValue(source, ruleSet, outTag, outArea, bytesRead) == EDEC_OK;
+    }
+
+    /* Reads an encoded ASN.1 value, reporting why a read did not succeed. */
+    EDecoderStatus CDecoder::tryReadEncodedValue(
         const TReadOnlySpan<uint8_t>& source,
         EEncodingRule ruleSet,
         CTag& outTag,
@@ -585,7 +611,7 @@ namespace asn1 {
     }
 
     /* Parses `digitCount` ASCII digits from source, starting at offset. */
-    bool CDecoder::ParseFixedDigits(SReadOnlyByteSpan source, size_t offset, size_t digitCount, uint32_t& outValue) {
+    bool CDecoder::parseFixedDigits(SReadOnlyByteSpan source, size_t offset, size_t digitCount, uint32_t& outValue) {
         if (offset + digitCount > source.size) {
             return false;
         }
@@ -605,7 +631,7 @@ namespace asn1 {
     }
 
     /* Validates the calendar fields of an SDateTime, independent of how they were parsed. */
-    bool CDecoder::ValidateTimeFields(const SDateTime& time) {
+    bool CDecoder::validateTimeFields(const SDateTime& time) {
         constexpr uint8_t DAYS_IN_MONTH[12] = { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
         if (time.month < 1 || time.month > 12) {
@@ -634,12 +660,12 @@ namespace asn1 {
         }
 
         uint32_t yy, month, day, hour, minute, second;
-        if (!ParseFixedDigits(content, 0, 2, yy)
-            || !ParseFixedDigits(content, 2, 2, month)
-            || !ParseFixedDigits(content, 4, 2, day)
-            || !ParseFixedDigits(content, 6, 2, hour)
-            || !ParseFixedDigits(content, 8, 2, minute)
-            || !ParseFixedDigits(content, 10, 2, second)) {
+        if (!parseFixedDigits(content, 0, 2, yy)
+            || !parseFixedDigits(content, 2, 2, month)
+            || !parseFixedDigits(content, 4, 2, day)
+            || !parseFixedDigits(content, 6, 2, hour)
+            || !parseFixedDigits(content, 8, 2, minute)
+            || !parseFixedDigits(content, 10, 2, second)) {
             return false;
         }
 
@@ -653,7 +679,7 @@ namespace asn1 {
         time.millisecond = 0;
         time.isUtc = true;
 
-        if (!ValidateTimeFields(time)) {
+        if (!validateTimeFields(time)) {
             return false;
         }
 
@@ -670,12 +696,12 @@ namespace asn1 {
         }
 
         uint32_t year, month, day, hour, minute, second;
-        if (!ParseFixedDigits(content, 0, 4, year)
-            || !ParseFixedDigits(content, 4, 2, month)
-            || !ParseFixedDigits(content, 6, 2, day)
-            || !ParseFixedDigits(content, 8, 2, hour)
-            || !ParseFixedDigits(content, 10, 2, minute)
-            || !ParseFixedDigits(content, 12, 2, second)) {
+        if (!parseFixedDigits(content, 0, 4, year)
+            || !parseFixedDigits(content, 4, 2, month)
+            || !parseFixedDigits(content, 6, 2, day)
+            || !parseFixedDigits(content, 8, 2, hour)
+            || !parseFixedDigits(content, 10, 2, minute)
+            || !parseFixedDigits(content, 12, 2, second)) {
             return false;
         }
 
@@ -726,7 +752,7 @@ namespace asn1 {
         time.millisecond = uint16_t(millisecond);
         time.isUtc = true;
 
-        if (!ValidateTimeFields(time)) {
+        if (!validateTimeFields(time)) {
             return false;
         }
 

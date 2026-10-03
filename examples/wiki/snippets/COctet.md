@@ -18,4 +18,10 @@ SReadOnlyByteSpan view = owned.toSpan();
 if (view.size > 1 && view[0] == 0x30) {
     // a SEQUENCE tag: this looks like DER
 }
+
+// If what it held were secret -- a decoded private key, a challengePassword -- release it
+// with secureClear() rather than clear(). The octet's bytes are reachable only through the
+// read-only toPtr()/toSpan(), so CSecure::zero() cannot be pointed at them from outside;
+// secureClear() is that operation, named rather than reached through a const_cast.
+owned.secureClear();
 ```

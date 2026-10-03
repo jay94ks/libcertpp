@@ -1,38 +1,34 @@
-Classifies why a header would not decode, in the decoder's own vocabulary. CDecoder's public entry points report only a bool, so a caller feeding in a document a chunk at a time has to tell EDEC_NEED_MORE -- the one status worth retrying with more bytes -- from the final ones.
+Drives a reader over bytes that arrive a chunk at a time. The point of the enum is the one distinction a bool cannot carry: EDEC_NEED_MORE means append more input and ask again, and every other non-OK status means this input will never parse however much is appended.
 
 ```cpp
-// given: SReadOnlyByteSpan sofar
-if (!sofar.data) {
-    return EDEC_BAD_ARGS;
-}
-
+// given: IStreamPtr source, CBuffer& sofar, size_t& filled
 CTag tag;
 SReadOnlyByteSpan content;
 size_t bytesRead = 0;
 
-if (CDecoder::readEncodedValue(sofar, EAENC_DER, tag, content, bytesRead)) {
-    return EDEC_OK;
-}
+while (true) {
+    const EDecoderStatus status = CDecoder::tryReadEncodedValue(
+        SReadOnlyByteSpan(sofar.toPtr(), filled), EAENC_DER, tag, content, bytesRead);
 
-// The length octet does not sit at a fixed offset: a high-tag-number form spends several
-// octets on the tag alone, so ask CTag how many it consumed.
-size_t tagBytes = 0;
-if (!CTag::decode(sofar, tagBytes) || sofar.size <= tagBytes) {
-    return EDEC_NEED_MORE;
-}
+    if (status == EDEC_OK) {
+        return true;        // content and bytesRead are now meaningful
+    }
 
-const uint8_t lengthOctet = sofar[tagBytes];
-if (lengthOctet == 0xFF) {
-    return EDEC_RESERVED;                   // X.690 8.1.3.5 (c): reserved, never legal
-}
+    if (status != EDEC_NEED_MORE) {
+        return false;       // malformed, prohibited under DER, or past a decoder limit
+    }
 
-if (lengthOctet == 0x80) {
-    return EDEC_INDEFINITE;                 // legal BER, prohibited under DER/CER
-}
+    // Incomplete, not wrong. How much more is not knowable in general -- the length octets
+    // may themselves be the truncated part -- so read what the source has and retry.
+    if (filled >= sofar.size() && !sofar.resize(sofar.size() * 2 + 64)) {
+        return false;
+    }
 
-if ((lengthOctet & 0x80) != 0 && size_t(lengthOctet & 0x7F) > sizeof(size_t)) {
-    return EDEC_TOO_BIG;                    // a length no size_t could hold
-}
+    const size_t got = source->read(SByteSpan(sofar.toPtr() + filled, sofar.size() - filled));
+    if (got == 0) {
+        return false;       // the source ended mid-value: truncated for good
+    }
 
-return EDEC_NEED_MORE;
+    filled += got;
+}
 ```

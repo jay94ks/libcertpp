@@ -168,7 +168,28 @@ namespace certpp {
          * Clears the octet, releasing any allocated memory and resetting its size to zero.
          */
         void clear();
+
+        /**
+         * Zeroizes the stored bytes, then clears as clear() does.
+         *
+         * This exists because the bytes a COctet owns are reachable only through the read-only
+         * toPtr()/toSpan(), so a caller holding secret material in one -- a PKCS#9
+         * `challengePassword`, a decoded private key blob -- cannot wipe it with
+         * CSecure::zero() without a const_cast. Opening a mutable pointer instead would let
+         * anything rewrite an owned buffer piecemeal, which is the one thing store()'s
+         * replace-the-whole-content design is meant to prevent; naming the operation keeps the
+         * capability to the single use that needs it.
+         *
+         * The limitation is the same one CBigNum::secureClear() documents, and it is worth
+         * stating rather than implying: this reaches the bytes *this* instance owns, at the
+         * moment it is called. It does not reach a copy some earlier assignment made, nor the
+         * block store() frees when it replaces content with a different size, nor whatever a
+         * caller's own buffer still holds. It shortens the window a secret stays in freed
+         * memory; it does not close it.
+         */
+        void secureClear();
     };
-}
+
+} // namespace certpp
 
 #endif

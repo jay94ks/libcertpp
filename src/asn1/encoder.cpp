@@ -7,7 +7,7 @@ namespace certpp {
 namespace asn1 {
 
     /* Writes `digitCount` decimal digits of value (assumed to fit) starting at offset. */
-    void CEncoder::WriteFixedDigits(TSpan<uint8_t> destination, size_t offset, size_t digitCount, uint32_t value) {
+    void CEncoder::writeFixedDigits(TSpan<uint8_t> destination, size_t offset, size_t digitCount, uint32_t value) {
         for (size_t i = digitCount; i > 0; --i) {
             destination.data[offset + i - 1] = uint8_t('0' + (value % 10));
             value /= 10;
@@ -399,12 +399,12 @@ namespace asn1 {
 
         uint32_t yy = time.year >= 2000 ? uint32_t(time.year - 2000) : uint32_t(time.year - 1900);
 
-        WriteFixedDigits(destination, 0, 2, yy);
-        WriteFixedDigits(destination, 2, 2, time.month);
-        WriteFixedDigits(destination, 4, 2, time.day);
-        WriteFixedDigits(destination, 6, 2, time.hour);
-        WriteFixedDigits(destination, 8, 2, time.minute);
-        WriteFixedDigits(destination, 10, 2, time.second);
+        writeFixedDigits(destination, 0, 2, yy);
+        writeFixedDigits(destination, 2, 2, time.month);
+        writeFixedDigits(destination, 4, 2, time.day);
+        writeFixedDigits(destination, 6, 2, time.hour);
+        writeFixedDigits(destination, 8, 2, time.minute);
+        writeFixedDigits(destination, 10, 2, time.second);
         destination.data[12] = 'Z';
 
         bytesWritten = LENGTH;
@@ -448,12 +448,12 @@ namespace asn1 {
             return false;
         }
 
-        WriteFixedDigits(destination, 0, 4, time.year);
-        WriteFixedDigits(destination, 4, 2, time.month);
-        WriteFixedDigits(destination, 6, 2, time.day);
-        WriteFixedDigits(destination, 8, 2, time.hour);
-        WriteFixedDigits(destination, 10, 2, time.minute);
-        WriteFixedDigits(destination, 12, 2, time.second);
+        writeFixedDigits(destination, 0, 4, time.year);
+        writeFixedDigits(destination, 4, 2, time.month);
+        writeFixedDigits(destination, 6, 2, time.day);
+        writeFixedDigits(destination, 8, 2, time.hour);
+        writeFixedDigits(destination, 10, 2, time.minute);
+        writeFixedDigits(destination, 12, 2, time.second);
 
         size_t offset = 14;
 

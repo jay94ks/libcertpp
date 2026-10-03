@@ -624,3 +624,87 @@ TEST_CASE("decodeString<char> decodes character-set content directly into a TStr
         }
     }
 }
+
+TEST_CASE("tryReadEncodedValue: a truncated value is reported apart from a malformed one") {
+    // The whole reason EDecoderStatus has more than two values: a caller feeding bytes in as
+    // they arrive has to know whether to wait for more or give up, and until this entry point
+    // existed no public API could tell it -- decodeLength(), the only producer, is private.
+
+    // SEQUENCE { INTEGER 1, INTEGER 2 }: 30 06 02 01 01 02 01 02
+    const uint8_t complete[] = { 0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02 };
+
+    CTag tag;
+    SReadOnlyByteSpan area;
+    size_t bytesRead = 0;
+
+    SUBCASE("the complete value reads, and agrees with the bool overload") {
+        REQUIRE(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(complete, sizeof(complete)), EAENC_DER, tag, area, bytesRead)
+            == EDEC_OK);
+        CHECK(tag == CTag(CTag::SEQ));
+        CHECK(bytesRead == sizeof(complete));
+        CHECK(area.size == 6);      // the content, not the whole TLV
+
+        CHECK(CDecoder::readEncodedValue(
+            SReadOnlyByteSpan(complete, sizeof(complete)), EAENC_DER, tag, area, bytesRead));
+    }
+
+    SUBCASE("every proper prefix is EDEC_NEED_MORE, never EDEC_BAD_ARGS") {
+        // Cutting a valid encoding short can only ever mean "incomplete". A caller that got
+        // EDEC_BAD_ARGS here would abandon a stream that was merely mid-value.
+        for (size_t cut = 0; cut < sizeof(complete); ++cut) {
+            CAPTURE(cut);
+            CHECK(CDecoder::tryReadEncodedValue(
+                SReadOnlyByteSpan(complete, cut), EAENC_DER, tag, area, bytesRead)
+                == EDEC_NEED_MORE);
+        }
+    }
+
+    SUBCASE("a long-form length whose content never arrives is EDEC_NEED_MORE") {
+        // OCTET STRING, length 0x81 0x80 (128 bytes), with only three content octets present.
+        const uint8_t shortContent[] = { 0x04, 0x81, 0x80, 0xAA, 0xBB, 0xCC };
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(shortContent, sizeof(shortContent)), EAENC_BER, tag, area, bytesRead)
+            == EDEC_NEED_MORE);
+    }
+
+    SUBCASE("the reserved length form is malformed, not incomplete") {
+        // 0xFF is reserved by X.690 8.1.3.5(c). No number of further bytes makes it legal, so
+        // reporting EDEC_NEED_MORE would strand a caller waiting forever.
+        const uint8_t reserved[] = { 0x04, 0xFF, 0x00, 0x00, 0x00, 0x00 };
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(reserved, sizeof(reserved)), EAENC_BER, tag, area, bytesRead)
+            == EDEC_RESERVED);
+    }
+
+    SUBCASE("an indefinite length under DER is prohibited, not incomplete") {
+        // 0x80 is the indefinite-length form. BER and CER allow it; DER does not, and that is a
+        // property of the rule set rather than of how much input arrived.
+        const uint8_t indefinite[] = { 0x30, 0x80, 0x02, 0x01, 0x01, 0x00, 0x00 };
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(indefinite, sizeof(indefinite)), EAENC_DER, tag, area, bytesRead)
+            == EDEC_PROHIBITED);
+
+        // Under BER the same bytes read fine, which is what makes the distinction meaningful.
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(indefinite, sizeof(indefinite)), EAENC_BER, tag, area, bytesRead)
+            == EDEC_OK);
+    }
+
+    SUBCASE("an indefinite-length value missing its end-of-contents marker is EDEC_NEED_MORE") {
+        // The status has to survive the recursion through readIndefiniteContent(), which is
+        // where it used to be discarded: a nested value that ran short reported the same false
+        // as a nested value that was wrong.
+        const uint8_t noEoc[] = { 0x30, 0x80, 0x02, 0x01, 0x01 };
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(noEoc, sizeof(noEoc)), EAENC_BER, tag, area, bytesRead)
+            == EDEC_NEED_MORE);
+    }
+
+    SUBCASE("an unknown encoding rule is a caller error") {
+        CHECK(CDecoder::tryReadEncodedValue(
+            SReadOnlyByteSpan(complete, sizeof(complete)),
+            static_cast<EEncodingRule>(0x7F), tag, area, bytesRead)
+            == EDEC_BAD_ARGS);
+    }
+}

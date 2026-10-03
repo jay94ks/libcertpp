@@ -110,9 +110,12 @@ namespace asn1 {
          * @param outLength The number of content octets read, excluding the EOC marker.
          * @param bytesRead The total number of bytes consumed, including the EOC marker.
          * @param depth The current indefinite-length nesting depth.
-         * @return True if the end-of-contents marker was found; otherwise, false.
+         * @return EDEC_OK if the end-of-contents marker was found; EDEC_NEED_MORE if the source
+         *         ran out before it, so that a streaming caller sees a short nested value as
+         *         short rather than as malformed; otherwise whatever the nested value failed
+         *         with.
          */
-        static bool readIndefiniteContent(
+        static EDecoderStatus readIndefiniteContent(
             const TReadOnlySpan<uint8_t>& source,
             EEncodingRule ruleSet,
             size_t& outLength,
@@ -128,9 +131,9 @@ namespace asn1 {
          * @param outArea The output span containing the encoded value.
          * @param bytesRead The number of bytes consumed from the source span.
          * @param depth The current indefinite-length nesting depth.
-         * @return True if an encoded value was successfully read; otherwise, false.
+         * @return The status of the read; see tryReadEncodedValue().
          */
-        static bool readEncodedValue(
+        static EDecoderStatus readEncodedValue(
             const TReadOnlySpan<uint8_t>& source,
             EEncodingRule ruleSet,
             CTag& outTag,
@@ -168,12 +171,12 @@ namespace asn1 {
         /**
          * Parses digitCount ASCII digits from source, starting at offset.
          */
-        static bool ParseFixedDigits(SReadOnlyByteSpan source, size_t offset, size_t digitCount, uint32_t& outValue);
+        static bool parseFixedDigits(SReadOnlyByteSpan source, size_t offset, size_t digitCount, uint32_t& outValue);
 
         /**
          * Validates the calendar fields of an SDateTime, independent of how they were parsed.
          */
-        static bool ValidateTimeFields(const SDateTime& time);
+        static bool validateTimeFields(const SDateTime& time);
 
     public:
         /**
@@ -186,6 +189,42 @@ namespace asn1 {
          * @return True if an encoded value was successfully read; otherwise, false.
          */
         static bool readEncodedValue(
+            const TReadOnlySpan<uint8_t>& source,
+            EEncodingRule ruleSet,
+            CTag& outTag,
+            TReadOnlySpan<uint8_t>& outArea,
+            size_t& bytesRead
+        );
+
+        /**
+         * Reads an encoded ASN.1 value, reporting *why* a read did not succeed.
+         *
+         * The same operation as readEncodedValue() above, which is this call compared against
+         * EDEC_OK. It exists because the distinction between a value that is merely incomplete
+         * and one that is malformed cannot be recovered from a bool, and a caller feeding bytes
+         * in as they arrive -- off a socket, or a stream -- has to make exactly that decision:
+         * EDEC_NEED_MORE means read more and call again with a longer span, and every other
+         * non-OK status means this input will never parse no matter how much is appended.
+         *
+         * Note what EDEC_NEED_MORE does not tell you: how many more bytes. The length octets may
+         * themselves be the part that is truncated, in which case the total is not yet knowable.
+         * @param source The source span containing ASN.1 encoded data.
+         * @param ruleSet The ASN.1 encoding rule set to use.
+         * @param outTag The output tag of the encoded value. Only meaningful on EDEC_OK.
+         * @param outArea The output span containing the encoded value's content. Only meaningful
+         *        on EDEC_OK. Note this is the *content*, while bytesRead covers tag, length and
+         *        content -- iterating by the span descends into a constructed value, iterating by
+         *        bytesRead steps over it.
+         * @param bytesRead The number of bytes consumed from the source span. Only meaningful on
+         *        EDEC_OK.
+         * @return EDEC_OK on success. EDEC_BAD_ARGS for an unknown ruleSet or a tag that cannot
+         *         be decoded at all. EDEC_NEED_MORE if the source ends before the value does.
+         *         EDEC_RESERVED for the reserved 0xFF length form, EDEC_TOO_BIG for a length (or
+         *         an indefinite-length nesting depth) beyond what this decoder will process, and
+         *         EDEC_PROHIBITED for an encoding the chosen rule set forbids -- an indefinite
+         *         length under DER, or a CER segment over its own limit.
+         */
+        static EDecoderStatus tryReadEncodedValue(
             const TReadOnlySpan<uint8_t>& source,
             EEncodingRule ruleSet,
             CTag& outTag,

@@ -22,7 +22,7 @@ namespace asn1 {
         /**
          * Writes digitCount decimal digits of value (assumed to fit) starting at offset.
          */
-        static void WriteFixedDigits(TSpan<uint8_t> destination, size_t offset, size_t digitCount, uint32_t value);
+        static void writeFixedDigits(TSpan<uint8_t> destination, size_t offset, size_t digitCount, uint32_t value);
 
         /**
          * Computes the number of octets a length value occupies when encoded in ASN.1 definite-length form.
