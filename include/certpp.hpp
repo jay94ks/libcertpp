@@ -90,6 +90,7 @@
 #include <certpp/x509/exts/nc.hpp>
 #include <certpp/x509/cert.hpp>
 #include <certpp/x509/crl.hpp>
+#include <certpp/x509/csr.hpp>
 #include <certpp/x509/ocsp.hpp>
 #include <certpp/x509/chain.hpp>
 #include <certpp/dnssec/name.hpp>

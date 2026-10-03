@@ -26,15 +26,17 @@ ChaCha20-Poly1305, XChaCha20-Poly1305, AES-GCM -- and post-quantum ML-KEM
 its `IKem` form), all from scratch); a `dnssec` module (DNSKEY/RRSIG/DS
 conversion, RFC 4034); and an `x509` module that
 both parses and builds DER/PEM X.509 `Certificate`s
-(`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
-request/response (RFC 6960), including ten concrete extension types
+(`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`), OCSP
+request/response (RFC 6960) and PKCS#10 certification requests
+(`CCertRequest`/`CCertRequestBuilder`, RFC 2986, including the PKCS#9
+extensionRequest attribute), including ten concrete extension types
 (BasicConstraints, KeyUsage, ExtendedKeyUsage, SubjectAlternativeName,
 SubjectKeyIdentifier, AuthorityKeyIdentifier, CRLDistributionPoints,
 AuthorityInformationAccess, CertificatePolicies, NameConstraints) under
 `x509/exts/`, each with a parse/build pair, and single-link signature
-verification (`CCert::verifyBy()`, `CCrlReader::verifyBy()`). What it
-deliberately does *not* have is chain building or path validation, and
-CSR (PKCS#10) support. See
+verification (`CCert::verifyBy()`, `CCrlReader::verifyBy()`,
+`CCertRequest::verify()`). What it deliberately does *not* have is chain
+building or path validation. See
 [`docs/architecture.md`](docs/architecture.md) for the full module
 breakdown.
 

@@ -147,6 +147,7 @@ include/
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
+      csr.hpp                            # CCertRequest/CCertRequestBuilder: parse (verifying the self-signature) / build + self-sign a PKCS#10 CertificationRequest; SCertRequestAttribute: one Attribute, PKCS#9 extensionRequest decoded into extensions
     dnssec/
       name.hpp                       # CDnsName: presentation <-> canonical wire-format domain names (RFC 4034 6.2 case folding); compression pointers deliberately rejected
       records.hpp                     # EDnsAlgorithms/EDnsDigests (IANA numbers, pinned); SDnskey (RDATA + RFC 4034 App. B key tag), SDsRecord (RDATA + the 5.1.4 digest over owner name || DNSKEY RDATA), SRrsig (RDATA + toSignedPrefix())
@@ -263,9 +264,10 @@ src/
     ocspcodec.cpp
     exts/                          # one .cpp per exts/ header, same abbreviated filenames
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
-    cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
+    cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()/subjectFrom(); the shared encode/decode/sign/verify statics crl.cpp/ocsp.cpp/csr.cpp reach through friendship
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
+    csr.cpp                            # CCertRequest/CCertRequestBuilder implementation (RFC 2986), built entirely on CCert's own encodeName()/encodeAlgorithmIdentifier()/encode+decodeSubjectPublicKeyInfo()/encodeExtensions()/parseExtensions()/signTbs()/verifySignedBlob() (friend access); own X.690 11.6 SET-OF ordering for the Attributes SET
   dnssec/
     name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
     records.cpp                  # SDnskey/SDsRecord/SRrsig implementation; big-endian field helpers (unlike Poly1305/ChaCha20 next door, which are little-endian)
@@ -360,6 +362,7 @@ tests/
     cert.cpp                  # CCert::importDer() test cases (own self-signed RSA/EC/KeyUsage/private-key fixtures), extension<T>() lookup, CCertBuilder::build() (self-signed RSA/DSA/EC/EdDSA, every digestAlgo/rsaPss combination)
     crl.cpp                      # CCrlWriter::add()/remove()/build() + CCrlReader::decode()/find()/check() round-trip test cases (own self-signed CA fixtures)
     ocsp.cpp                      # COcspCertId/COcspEntry/COcspRequestBuilder/COcspResponse round-trip + signature-verification test cases
+    csr.cpp                       # CCertRequest/CCertRequestBuilder (PKCS#10): five externally-produced fixtures (four `openssl req`, two hand-assembled from RFC 2986 and signed by `openssl dgst`), a byte-exact known answer for this library's own output, present-but-empty `attributes`, tamper rejection, and CCertBuilder::subjectFrom()
     exts/                         # one .cpp per extension type, each building -> encoding -> reparsing its own extension
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
@@ -2743,6 +2746,70 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `CCrlReader`'s. The shared wire helpers both sides need (the nonce and
   basic-response OIDs, single-extension list encoding, `GeneralizedTime`
   formatting) live in a private `OcspCodec` (`src/x509/ocspcodec.hpp`).
+- **`x509/csr.hpp` / `src/x509/csr.cpp`** define the PKCS#10 (RFC 2986)
+  certification-request pair, `CCertRequest`/`CCertRequestBuilder`, named
+  after `COcspRequest`/`COcspRequestBuilder` -- the closest precedent, since a
+  CSR is likewise one object that one party produces and another consumes.
+  The parse side mirrors `CCert`'s surface (`importDer()`/`importPem()`/
+  `importFrom()` with the same `ECertFormat`, `exportDer()`/`exportPem()`/
+  `exportAs()`, `subject()`, `keyAlgo()`/`signAlgo()`, `rawPublicKey()`/
+  `publicKey()`, `signature()`, `rsaPssParams()`, `extensionOf()`/
+  `extension<T>()`), plus `certificationRequestInfo()` -- the exact signed
+  bytes, in the same original-bytes-not-a-re-encoding sense as
+  `CCert::tbsCertificate()`.
+
+  Three things are specific to PKCS#10 and worth knowing:
+
+  1. **The import verifies the self-signature and fails without it.** Every
+     field of a CSR is an unauthenticated claim by whoever produced it; the
+     self-signature is the single thing a request attests (possession of the
+     private half of `subjectPKInfo`), so `importDer()` refuses to report
+     `ERET_OK` until it checks out, and a request signed with an algorithm
+     this library cannot verify is rejected rather than imported unchecked.
+     That is the opposite of `CCert::importDer()`'s deliberate leniency, and
+     for a reason: a certificate's fields are still meaningful to a caller
+     who can't reach the issuer's key, a request's are not. `verify()` is
+     public as well, for re-checking by hand.
+  2. **`attributes [0] IMPLICIT Attributes` is not OPTIONAL.** A request with
+     nothing to carry still writes a present-but-empty SET (`A0 00`), and one
+     that omits the field is rejected -- OpenSSL itself accepts such a
+     request, so the check has to be explicit. `SCertRequestAttribute` holds
+     one attribute's type OID plus its `values SET OF` content verbatim, with
+     the same meaning in both directions so a parsed attribute feeds straight
+     back into a builder. PKCS#9's `extensionRequest`
+     (`CCertRequest::OID_EXTENSION_REQUEST`) is the one attribute decoded
+     further: its `Extensions` value goes through `CCert::parseExtensions()`,
+     so a requested SubjectAlternativeName surfaces as the same
+     `CSanExtension` a certificate's own would.
+  3. **The key is supplied as a whole `SKeyPair` and nothing else.**
+     `CCertRequestBuilder` has no way to name a public key separately from the
+     private key that signs for it, and `build()` re-derives the public half
+     and compares -- so there is no path to an unsigned request, nor to one
+     asking for a key the requester can't prove. `build()` hands its output to
+     `CCertRequest::importDer()`, which means the signature it just produced
+     is re-verified over the bytes as written.
+
+  The CA-side half is **`CCertBuilder::subjectFrom(request)`**, which copies
+  the request's subject name and public key into the certificate builder and
+  deliberately nothing else. There is no method that copies a request's
+  requested extensions, because that is how a CA ends up issuing a CA
+  certificate, or a certificate for a domain the requester doesn't control,
+  because the requester asked for it; a CA that wants to grant one reads that
+  specific extension (`request.extension<CSanExtension>()`), checks it against
+  its own policy and pushes it onto `extensions` itself.
+
+  Almost all of the DER work is shared with `CCert` rather than duplicated:
+  `encodeName()`, `encodeAlgorithmIdentifier()`,
+  `encodeSubjectPublicKeyInfo()`/`decodeSubjectPublicKeyInfo()`,
+  `makePublicKey()`, `encodeExtensions()`, `parseExtensions()`,
+  `resolveSigAlgoForSigning()`/`resolveSigAlgo()`/`parseRsaPssParams()`,
+  `signTbs()` and `verifySignedBlob()` are all `CCert` statics reached through
+  friendship, several of them factored out of `CCertBuilder::build()`'s body
+  for exactly this. `signTbs()`/`verifySignedBlob()` matter most: they are the
+  single place that decides hash-then-sign versus sign-the-message (via
+  `signsMessageDirectly()`) and PKCS#1 v1.5 versus PSS, so a CSR's
+  self-signature cannot be checked by subtly different rules than a
+  certificate's.
 - **`certpp.hpp`** is the single include point for consumers; as new public
   headers are added under `include/certpp/`, add their `#include` here. Two
   public headers are deliberately *not* included: `crypto/kem.hpp` (no
@@ -2913,7 +2980,8 @@ would follow the vendor-and-expose-a-target pattern above, instead.
 
 `x509/` both parses and generates: `CCert`/`CCertBuilder` read and build
 (and sign) a `Certificate`, `CCrlReader`/`CCrlWriter` a `CertificateList`,
-and `COcspRequest`/`COcspResponse` plus their builders an OCSP exchange, all
+`COcspRequest`/`COcspResponse` plus their builders an OCSP exchange, and
+`CCertRequest`/`CCertRequestBuilder` a PKCS#10 `CertificationRequest`, all
 ten extensions have a parse/build pair, and PEM as well as DER is handled
 (`ECertFormat`, `importPem()`/`exportPem()`). A new extension type follows
 `x509/exts/`'s established shape (a concrete `IExtension` subclass with its
@@ -2924,17 +2992,19 @@ list-of-value-object-shaped field, reuses
 those shapes locally.
 
 Single-link signature verification is in place: `CCert::verifyBy(issuer)`,
-`CCrlReader::verifyBy(issuer)` and OCSP's own `verifySignature()` each answer
-"did this issuer sign this?" against the original signed bytes
-(`CCert::tbsCertificate()`/`CCrlReader::tbsCertList()` expose those bytes for
-a caller that wants to do it by hand). What is still missing is the
-*relational* half of X.509, deliberately scoped out for now rather than
-half-built:
+`CCrlReader::verifyBy(issuer)`, `CCertRequest::verify()` and OCSP's own
+`verifySignature()` each answer "did this key sign this?" against the original
+signed bytes (`CCert::tbsCertificate()`/`CCrlReader::tbsCertList()`/
+`CCertRequest::certificationRequestInfo()` expose those bytes for a caller
+that wants to do it by hand). What is still missing is the *relational* half
+of X.509, deliberately scoped out for now rather than half-built:
 
 - **Chain building and path validation** -- name chaining, validity
   windows, `BasicConstraints`/`KeyUsage`/`NameConstraints` enforcement, and
   RFC 5280's "reject an unrecognized critical extension" rule. This library
   parses and preserves everything a validator needs and enforces none of it;
-  see this document's own scope note at the top.
-- **CSR (PKCS#10) generation and parsing**, which nothing in the tree
-  models yet.
+  see this document's own scope note at the top. The same gap shows up on the
+  CA side of PKCS#10: `CCertBuilder::subjectFrom()` hands over a verified
+  request's subject and key, and deciding whether that subject name and those
+  requested extensions *should* be certified is policy this library does not
+  model.
