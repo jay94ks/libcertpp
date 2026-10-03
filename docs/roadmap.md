@@ -1,5 +1,7 @@
 # Roadmap
 
+[한국어](roadmap.ko.md)
+
 What `libcertpp` has been asked for and does not have yet. This file tracks
 requested work and why it was requested; it is not a wish list. Anything
 finished moves out of here and into

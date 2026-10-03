@@ -1,5 +1,7 @@
 # Post-Quantum Cryptography: Review and Implementation Plan
 
+[한국어](pqc-review.ko.md)
+
 This started as a preliminary design review -- "what would it take, and what should go
 first" -- written before any post-quantum (PQ) code existed. Part of what it proposed has
 since been built, so the review sections below have been corrected to describe what is

@@ -1,5 +1,7 @@
 # Architecture
 
+[한국어](architecture.ko.md)
+
 ## Overview
 
 `libcertpp` is a C++17 library, still early-stage but past its initial

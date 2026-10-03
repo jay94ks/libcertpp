@@ -1,5 +1,7 @@
 # Building
 
+[한국어](build.ko.md)
+
 `libcertpp` builds with CMake (3.15+) and requires a C++17 compiler.
 
 ## Configure & build

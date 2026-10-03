@@ -1,5 +1,7 @@
 # Changelog
 
+[한국어](changelog.ko.md)
+
 This repository's git history starts late: everything up to and including
 the initial source commit was developed as uncommitted working-tree state,
 so `git log` says nothing about how any of it came to be. This file is that

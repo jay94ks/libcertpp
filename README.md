@@ -21,22 +21,36 @@ is used by the test suite only).
   reader/writer wrappers, and `CDer`'s arbitrary-precision `INTEGER`/
   `SEQUENCE` DER helpers.
 - **`crypto`**:
-  - Hashing: MD5, SHA-1, SHA-224/256/384/512, SHA3-256, SHA3-512,
-    SHAKE128, SHAKE256 -- all from scratch.
+  - Hashing: MD4, MD5, SHA-1, SHA-224/256/384/512, SHA3-256, SHA3-512,
+    SHAKE128, SHAKE256, BLAKE2s (RFC 7693), and GOST R 34.11-2012
+    ("Streebog", RFC 6986) at both digest lengths -- all from scratch.
+  - MACs and key derivation: HMAC (RFC 2104) over any of those hashes,
+    HKDF (RFC 5869), Poly1305 (RFC 8439), BLAKE2s's native keyed MAC, and
+    SipHash-2-4 (RFC 9018's DNS server-cookie PRF).
   - A CSPRNG (`CRng`), backed directly by the OS (`BCryptGenRandom` on
     Windows, `getrandom(2)`/`/dev/urandom` on Linux, `/dev/urandom` on
     other POSIX platforms).
   - Asymmetric algorithms: RSA (PKCS#1 v1.5 and RSASSA-PSS sign/verify,
     PKCS#1 v1.5 encrypt/decrypt), DSA, ECDSA over NIST P-192 .. P-521,
     secp256k1, and the 14 Brainpool curves, ECDSA over the 10 NIST binary/
-    Koblitz curves, Ed25519/Ed448 (EdDSA, RFC 8032), and X25519
-    (Diffie-Hellman key agreement, RFC 7748).
-  - Symmetric algorithms: AES, DES, TripleDES (CBC/PKCS#7), and the
-    ChaCha20 stream cipher.
-  - Runtime-detected hardware acceleration where available (x86-64):
-    ADX/BMI2 for big-number math, PCLMULQDQ for binary-field math, SHA-NI
-    for SHA-1/SHA-256, AES-NI for AES -- each with a portable fallback and
-    a CMake option to force the portable path.
+    Koblitz curves, Ed25519/Ed448 (EdDSA, RFC 8032), X25519
+    (Diffie-Hellman key agreement, RFC 7748), ECDH over the prime curves
+    (RFC 5903), and GOST R 34.10-2012 (RFC 7091) over its nine named
+    parameter sets.
+  - Symmetric algorithms: AES, DES, TripleDES (CBC, PKCS#7-padded or
+    unpadded), and the ChaCha20 stream cipher.
+  - AEADs: ChaCha20-Poly1305 (RFC 8439), XChaCha20-Poly1305
+    (draft-irtf-cfrg-xchacha, with its 192-bit nonce), and AES-GCM
+    (NIST SP 800-38D). All three operate in place -- the output may alias
+    the input -- allocate nothing per call for a reused context, and
+    compare tags in constant time without writing plaintext before the tag
+    verifies.
+  - Hardware acceleration where available (x86-64), each with a portable
+    fallback and a CMake option to force it: ADX/BMI2 for big-number math,
+    PCLMULQDQ for binary-field math and GHASH, SHA-NI for SHA-1/SHA-256,
+    AES-NI for AES, and a four-block SSE2 ChaCha20 keystream. All but the
+    last are chosen by a runtime CPUID check; SSE2 needs none, being part
+    of the x86-64 ABI.
   - Post-quantum cryptography: ML-KEM (FIPS 203) for all three parameter
     sets, validated against NIST's ACVP vectors -- reachable either as
     `IKem::builtIn(EKEM_MLKEM768)` like every other algorithm here, or as
@@ -49,6 +63,12 @@ is used by the test suite only).
   SubjectAlternativeName, SubjectKeyIdentifier, AuthorityKeyIdentifier,
   CRLDistributionPoints, AuthorityInformationAccess, CertificatePolicies,
   NameConstraints).
+- **`dnssec`** -- DNSKEY/RRSIG/DS conversion (RFC 4034): canonical
+  wire-format names, the RDATA of each record, the Appendix B key tag, the
+  DS digest, and the re-encoding between DNSSEC's wire formats and this
+  library's keys and signatures (RFC 3110/5702 for RSA, 6605 for ECDSA,
+  8080 for EdDSA). DNSSEC reuses none of X.509's encodings, which is why
+  this is its own module rather than a corner of `x509`.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full module
 breakdown, file by file.
@@ -94,6 +114,11 @@ root, an intermediate, a leaf, then sign/verify data with the leaf's key)
   git history.
 - [`docs/pqc-review.md`](docs/pqc-review.md) -- post-quantum cryptography
   review and roadmap.
+- [`docs/roadmap.md`](docs/roadmap.md) -- what has been asked for and is
+  not implemented yet, plus the outstanding constant-time and performance
+  work.
+
+Every document has a Korean translation beside it, named `<name>.ko.md`.
 
 ## Status
 

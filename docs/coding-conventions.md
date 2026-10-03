@@ -1,5 +1,7 @@
 # Coding Conventions
 
+[한국어](coding-conventions.ko.md)
+
 These reflect the conventions already established in the existing headers
 and sources (`include/certpp/common.hpp`, `include/certpp/version.hpp`,
 `include/certpp/asn1/tag.hpp`, `include/certpp/asn1/decoder.hpp`,
