@@ -187,9 +187,9 @@ namespace x509 {
         return _serialNumber.toSpan().sequencialEqual(cert.serialNumber().toSpan()) ? ERET_OK : ERET_INVAL;
     }
 
-    /* Loads a CRL (CertificateList, RFC 5280 5.1) from raw DER data. signatureAlgorithm/
-     * signatureValue are read past (required by the grammar) but not retained -- this class
-     * exposes no signature-verification API, only the parsed revocation data. */
+    /* Loads a CRL (CertificateList, RFC 5280 5.1) from raw DER data. signatureAlgorithm and
+     * signatureValue are retained, not just read past: verifyBy() needs the algorithm and the
+     * signature, and tbsCertList() needs the signed bytes they cover. */
     ERetCode CCrlReader::decode(const COctet& rawData) {
         if (rawData.empty()) {
             return ERET_INVAL;

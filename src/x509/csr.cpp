@@ -1,4 +1,5 @@
 #include <certpp/x509/csr.hpp>
+#include <certpp/x509/chain/pem.hpp>
 #include <certpp/asn1/reader.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/asn1/encoder.hpp>
@@ -285,7 +286,11 @@ namespace x509 {
         size_t cursor = 0;
         CString label;
         COctet blockDer;
-        while (CCert::findNextPemBlock(text, cursor, label, blockDer)) {
+        // --> PEM framing lives on CPemChainFormat, which owns all of it; a request is the same
+        // envelope around different DER. A block that is present but unusable (malformed, or
+        // password-encrypted) ends the scan with its own code rather than being skipped over.
+        ERetCode scan = ERET_OK;
+        while ((scan = CPemChainFormat::nextBlock(text, cursor, label, blockDer)) == ERET_OK) {
             // "CERTIFICATE REQUEST" is RFC 7468 7's own label; "NEW CERTIFICATE REQUEST" is the
             // older Netscape-era spelling that several tools (and Windows' certreq) still emit
             // for exactly the same DER.
@@ -294,7 +299,9 @@ namespace x509 {
             }
         }
 
-        return ERET_BADREQ;
+        // ERET_NOTFOUND means the file held no CERTIFICATE REQUEST block at all, which from this
+        // entry point's perspective is the same bad input as a file that held nothing usable.
+        return (scan == ERET_NOTFOUND) ? ERET_BADREQ : scan;
     }
 
     /* Imports the certification request from raw data in the specified format. */
@@ -479,7 +486,7 @@ namespace x509 {
         }
 
         CString text;
-        if (!CCert::appendPemBlock(text, "CERTIFICATE REQUEST", der)) {
+        if (!CPemChainFormat::appendBlock(text, "CERTIFICATE REQUEST", der)) {
             return ERET_NOMEM;
         }
 

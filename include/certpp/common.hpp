@@ -71,6 +71,9 @@ namespace certpp {
         ERET_NOTIMPL    = 0x08u,     // --> Not implemented
         ERET_ALREADY    = 0x09u,     // --> Already exists or already in the desired state
         ERET_AGAIN      = 0x0au,     // --> Try again (e.g., temporary failure)
+        ERET_NOTFOUND   = 0x0bu,     // --> The thing looked for is not there, which for a search
+                                     // is an ordinary outcome rather than a failure. Distinct
+                                     // from ERET_BADREQ, which says the input was wrong.
 
         // --
         ERET_KEY_ERROR  = 0x10u,     // --> Public/Private key error (e.g. mismatch or invalid combination).

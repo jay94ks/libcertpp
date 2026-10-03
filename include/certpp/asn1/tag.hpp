@@ -115,7 +115,7 @@ namespace asn1 {
         /* Represents the Object Identifier ASN.1 tag. */
         static constexpr Shortcut OBJ_ID = { 0, uint32_t(EAUTAG_OBJ_ID) };
 
-        /* Represents the UTF8String ASN.1 tag. */
+        /* Represents the Enumerated ASN.1 tag. */
         static constexpr Shortcut ENUMERATED = { 0, uint32_t(EAUTAG_ENUMERATED) };
 
         /* Represents the Sequence ASN.1 tag. */

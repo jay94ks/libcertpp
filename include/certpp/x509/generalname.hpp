@@ -183,9 +183,15 @@ namespace x509 {
 
         /**
          * @brief The minimum distance below base() this constraint applies from (0, the DER
-         * default, if absent -- meaning it applies starting at base() itself). Rarely anything
-         * but 0 in practice.
-         * @return The minimum distance.
+         * default, if absent -- meaning it applies starting at base() itself).
+         *
+         * RFC 5280 4.2.1.10 does not merely make a non-zero value rare, it forbids one:
+         * "within this profile, the minimum and maximum fields are not used with any name
+         * forms, thus minimum MUST be zero". A validator that honours a non-zero minimum
+         * narrows the subtree the constraint covers, which lets through exactly the names the
+         * constraint was there to exclude -- so a non-zero value here is grounds to reject the
+         * certificate, not to apply the offset.
+         * @return The minimum distance, which a conforming certificate states as 0 or omits.
          */
         inline int64_t minimum() const { return _minimum; }
 
@@ -197,8 +203,13 @@ namespace x509 {
 
         /**
          * @brief The maximum distance below base() this constraint applies to. Only meaningful
-         * when hasMaximum() is true; almost never present in practice.
-         * @return The maximum distance.
+         * when hasMaximum() is true.
+         *
+         * As with minimum(), RFC 5280 4.2.1.10 forbids the field outright -- "maximum MUST be
+         * absent" -- so hasMaximum() returning true is a non-conformance to reject rather than
+         * a bound to enforce. It is reported rather than dropped so the caller can see that the
+         * certificate carried it.
+         * @return The maximum distance, meaningful only when hasMaximum() is true.
          */
         inline int64_t maximum() const { return _maximum; }
 

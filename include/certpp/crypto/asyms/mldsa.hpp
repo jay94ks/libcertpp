@@ -107,6 +107,13 @@ namespace crypto {
         ERetCode checkPrivateKey(const IPrivateKeyPtr& key) const override;
         IPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const override;
         IPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const override;
+
+        // --> Re-exposes IAsymmetric's COctet convenience overloads, which the SReadOnlyByteSpan
+        // overrides above would otherwise hide: name lookup stops at the first scope holding the
+        // name, so without these a caller holding a concrete CMlDsa cannot pass a COctet at all,
+        // while the same call through an IAsymmetricPtr compiles.
+        using IAsymmetric::createPublicKey;
+        using IAsymmetric::createPrivateKey;
         IAsymmetricContextPtr createContext() const override;
     };
 

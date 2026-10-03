@@ -534,6 +534,19 @@ namespace x509 {
         ERetCode decode(const CBuffer& data);
 
         /**
+         * Decodes the OCSP request from a COctet, which is what every other decoder in this
+         * module takes -- and what COcspRequestBuilder::build() produces, so without this
+         * overload the module's own writer could not be fed to its own reader without an
+         * intermediate re-wrap.
+         *
+         * @param rawData The data to decode the OCSP request from.
+         * @return ERetCode indicating success or failure.
+         */
+        inline ERetCode decode(const COctet& rawData) {
+            return decode(CBuffer(rawData.toPtr(), rawData.size()));
+        }
+
+        /**
          * Verifies this request's optionalSignature against requestorCert's public key -- only
          * meaningful for a request that was actually signed (see requestorName()'s own doc
          * comment: a present requestorName doesn't by itself mean the request was signed).
@@ -1025,7 +1038,7 @@ namespace x509 {
          */
         ERetCode build(const CCert& responder, COctet& out) const;
     };
-}
+} // namespace x509
 } // namespace certpp
 
 #endif

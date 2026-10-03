@@ -292,8 +292,11 @@ namespace crypto {
         virtual ERetCode encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret) = 0;
 
         /**
-         * Recovers the shared secret this context's bound private key's matching public key was
-         * last encapsulated to. An invalid/corrupted ciphertext must not be observably
+         * Recovers the shared secret that was encapsulated to this context's bound private
+         * key's matching public key. Nothing about the encapsulating side is remembered here --
+         * the result is a function of the ciphertext and the bound private key, which is why a
+         * receiver can decapsulate a ciphertext produced by a peer it has never spoken to.
+         * An invalid/corrupted ciphertext must not be observably
          * distinguishable (in timing or in the returned ERetCode) from a valid one that simply
          * decapsulates to a different secret -- see docs/pqc-review.md's "What's genuinely hard"
          * section on the Fujisaki-Okamoto implicit-rejection requirement this implies for any

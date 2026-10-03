@@ -425,6 +425,13 @@ namespace crypto {
         ERetCode checkPrivateKey(const IKemPrivateKeyPtr& key) const override;
         IKemPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const override;
         IKemPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const override;
+
+        // --> Re-exposes IKem's COctet convenience overloads, which the SReadOnlyByteSpan
+        // overrides above would otherwise hide: name lookup stops at the first scope holding the
+        // name, so without these a caller holding a concrete MLKEM cannot pass a COctet at all,
+        // while the same call through an IKemPtr compiles.
+        using IKem::createPublicKey;
+        using IKem::createPrivateKey;
         IKemContextPtr createContext() const override;
     };
 

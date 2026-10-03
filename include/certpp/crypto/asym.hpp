@@ -277,7 +277,10 @@ namespace crypto {
         }
 
         /**
-         * @return The size of the signature produced by this context's bound private key.
+         * @return The largest signature this context's bound private key can produce -- a buffer
+         *         size, not a length. An ECDSA signature is DER and so varies in length between
+         *         signatures over the same key; sign() narrows its output span to the real
+         *         length, and that narrowed size is what a caller must carry forward.
          */
         inline size_t sizeOfSign() const {
             return _sizeOfSign;

@@ -7,6 +7,7 @@
 ![Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-success)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15193/badge)](https://www.bestpractices.dev/projects/15193)
 
 **X.509, ASN.1 and cryptography in C++17, implemented from scratch.**
 

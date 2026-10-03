@@ -214,14 +214,27 @@ namespace certpp {
         /**
          * Fills the span with the specified value.
          *
-         * @param value The value to fill the span with.
+         * @param value The value to fill every element with.
          */
         inline void fill(const T& value) noexcept {
             if (empty()) {
                 return;
             }
 
-            std::memset(data, value, size * sizeof(T));
+            // --> memset writes one byte at a time, so it only spells "fill with this value" for
+            // a one-byte T; for a wider one it would smear the low byte across every element
+            // (fill(1) on a uint32_t span giving 0x01010101, not 1). The byte-wise path stays for
+            // the byte spans that are almost every use here, because it is the one the project's
+            // bulk-operation convention asks for; the element-wise path is what correctness
+            // requires elsewhere, and a compiler vectorizes it into the same store loop.
+            if constexpr (sizeof(T) == 1) {
+                std::memset(data, int(value), size);
+            }
+            else {
+                for (size_t i = 0; i < size; ++i) {
+                    data[i] = value;
+                }
+            }
         }
 
         /**
@@ -400,7 +413,11 @@ namespace certpp {
             }
 
             size_t min = size < other.size ? size : other.size;
-            int cmp = std::memcmp(data, other.data, min);
+            // --> `min` counts elements, so the byte count memcmp wants is min * sizeof(T). This
+            // read it as a byte count until a wiki example put a TReadOnlySpan<wchar_t> through
+            // it: the two spans' first half compared equal and the call reported a match. The
+            // mutable overload above has always had the multiply, so the two disagreed.
+            int cmp = std::memcmp(data, other.data, min * sizeof(T));
 
             if (cmp != 0) {
                 return cmp;

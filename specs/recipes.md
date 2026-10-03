@@ -96,7 +96,10 @@ hasher->finish(SByteSpan(digest, sizeof(digest)));
 ```
 
 `push()` may be called repeatedly; the result does not depend on how the input
-was chunked. `finish()` consumes the state — `reset()` before reusing.
+was chunked. `finish()` is a *query*: it finalizes a copy, so the live state
+survives and `push()` still works afterwards. That is what makes a running
+digest possible — hash a prefix, read it, keep hashing. Call `reset()` to start
+a *new* message, not to make `finish()` safe.
 
 ## HMAC and HKDF
 

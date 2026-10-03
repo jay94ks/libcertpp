@@ -1,4 +1,5 @@
 #include <certpp/x509/chain.hpp>
+#include <certpp/x509/chain/pem.hpp>
 #include <certpp/x509/exts/aki.hpp>
 #include <certpp/x509/exts/ski.hpp>
 #include <certpp/crypto/asym.hpp>
@@ -564,11 +565,20 @@ namespace x509 {
 
     /* Creates the built-in implementation of a format. */
     IChainFormatPtr IChainFormat::builtIn(EChainFormats which) {
-        // --> The concrete formats live under x509/chain/ and are not implemented yet, so this
-        // reports "no implementation" for every format rather than pretending. It is the one
-        // place that has to know which exist, which is why adding a format is a change here and
-        // nowhere else.
-        (void)which;
+        // --> The one place that has to know which concrete formats exist under x509/chain/,
+        // which is why adding a format is a change here and nowhere else. A format with no
+        // implementation yet reports "no implementation" rather than pretending.
+        switch (which) {
+            case ECHAINFMT_PEM:
+                // --> Deliberately the certificates-only form: a caller who wants private keys
+                // written out in the clear constructs CPemChainFormat(true) itself and can be
+                // seen to have asked for it. See CPemChainFormat's own doc comment.
+                return std::make_shared<CPemChainFormat>();
+
+            default:
+                break;
+        }
+
         return IChainFormatPtr();
     }
 
