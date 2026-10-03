@@ -2122,3 +2122,120 @@ algorithms:
   assuming the ECDSA shape for these.
 - DNSSEC (RFC 9558) would additionally need the DNSKEY/RRSIG wire formats,
   which differ again from the X.509 ones.
+
+## A `dnssec` module, and what its vectors could not see
+
+DNSSEC shares none of X.509's encodings, which is the whole reason this is a
+separate module rather than a corner of `x509`. A certificate carries a public
+key as a `SubjectPublicKeyInfo` and an ECDSA signature as a DER
+`SEQUENCE { r, s }`; DNSSEC writes the bare key material and the bare
+concatenation `r | s`. So a DNSKEY cannot be handed to
+`IAsymmetric::createPublicKey()` and an RRSIG signature cannot be handed to
+`verify()` -- something has to re-encode in between, and `CDnssecKeys` is that
+something.
+
+Per algorithm: RSA (RFC 3110) writes an exponent length, the exponent, then the
+modulus, where this library wants `SEQUENCE { INTEGER modulus, INTEGER
+exponent }` -- the two operands appear in opposite order, so getting it
+backwards produces a key whose modulus is 3. ECDSA (RFC 6605) writes `x | y`,
+which is the SEC1 uncompressed point less its `0x04` prefix. EdDSA (RFC 8080)
+is already in the right form and is handled by an explicit case rather than a
+default, so an algorithm nobody has implemented is rejected instead of being
+silently treated as raw.
+
+The signature direction has one step that cannot be skipped: a DER `INTEGER`
+carries no leading zero octets, so writing `r` and `s` back out without
+left-padding each to the curve's field size shifts `s` left by however many
+octets `r` was short. RFC 6605 section 2 requires a fixed width. The test for
+it constructs a signature with leading zeros in both halves *and* a trailing
+zero, since a round trip over values that happen to be full-width proves
+nothing.
+
+### Two gaps the negative controls found in the vector set itself
+
+Eight published examples went in -- RFC 6605 6.1/6.2, RFC 8080's four EdDSA
+examples, RFC 5702's two RSA ones -- reproducing every key tag (55648, 10771,
+3613, 35217, 9713, 38353, 9033, 3740) and every DS digest. They are strong
+vectors because the key tag and the DS digest are both taken over the *whole*
+RDATA, so no error in field order, field width or owner-name canonicalisation
+survives them.
+
+But two deliberate breakages did survive, which is the point of trying them:
+
+- **Byte-swapping the flags field changed nothing.** Every ECDSA and EdDSA
+  example uses flags 257, and 257 is `0x0101` -- identical in either byte
+  order. Six of the eight vectors cannot constrain the flags field's endianness
+  at all. RFC 5702's RSA examples use 256 (`0x0100`) and can, which is why they
+  are in the suite even though they publish no DS record to check.
+- **The case-folding test was vacuous.** It uppercased an owner name before
+  passing it to a helper that folds internally, so it compared the canonical
+  form against itself. It now compares against a non-folding spelling, which is
+  what actually demonstrates that the folding is load-bearing for the DS
+  digest.
+
+### RFC 4034 Appendix B.1 contradicts itself
+
+The algorithm-1 (RSA/MD5) key tag is defined there as "the most significant 16
+bits of the least significant 24 bits in the public key modulus", glossed as
+"the 4th to last and 3rd to last octets". Those disagree by one: the octets the
+gloss names are bits 16..31, which are not inside the least significant 24 bits
+at all, while the normative clause means bits 8..23 -- the third- and
+second-to-last octets. The arithmetic definition is the one implemented, and
+the code says so, because a later reader checking only the gloss would
+otherwise "correct" it into a bug. It is unverified against any published
+vector because there is none: algorithm 1 is forbidden by RFC 8624. It is
+implemented rather than skipped because a resolver still has to compute the tag
+of a record it is about to reject.
+
+## Merging eight algorithms at once: what integration caught
+
+The eight requested algorithms were implemented in parallel, each in its own
+worktree, which means each was written against a tree that did not contain the
+other seven. Most of what that costs is merge conflicts in the registration
+points. Two things were more than that.
+
+### `EHashers` was renumbered, across an ABI boundary
+
+`EHASH_MD4` arrived inserted before `EHASH_MD5` -- which reads better, since
+MD4 and MD5 belong together -- and thereby moved `EHASH_SHA256` from 4 to 5 and
+every enumerator after it. The reasoning offered for it was that nothing in
+this repository casts or persists an `EHashers` value, which is true and is
+exactly what makes the mistake invisible from inside the repository. It ships
+as a shared object and is consumed as an installed package: a caller compiled
+against the older header goes on passing 4 and silently gets SHA-224 instead of
+SHA-256.
+
+New hashers are now appended, with a comment at the append point saying why the
+tidier grouping is not available. `EHASH_BLAKE2S` and the two Streebog
+enumerators were moved below the same line when they merged.
+
+### A stale justification, and a check nothing had ever tested
+
+`CEcdsa`'s `deriveSharedSecret()` deliberately omits a small-subgroup test, and
+its comment justified that with "every prime curve `CEcCurve` ships has
+cofactor 1" -- true when written. The GOST parameter sets include two with
+cofactor 4, so that sentence became false the moment the two branches met,
+without either file changing. The GOST sets' own note that their cofactor
+"matters only for the VKO key agreement this library doesn't implement" became
+false at the same moment, for the same reason.
+
+The conclusion survives: `CEcCurve::decodePoint()` tests `n*Q == infinity`
+unconditionally, and every `EcPublicKey` is built either through it or as `d*G`
+by `generateKeyPair()`, so a small-order point cannot reach key agreement. Only
+the stated reason was wrong, and only the reason was changed. (A first attempt
+at this added the check to `deriveSharedSecret()` as well, on the belief that
+the path was reachable; it was not, and the duplicate scalar multiplication was
+removed again.)
+
+What the episode did expose is that **the subgroup check had never been tested**.
+On a cofactor-1 curve it cannot fail -- the only point orders are 1 and n, and
+order 1 is the infinity already rejected -- so no curve in the library could
+exercise it until the GOST sets arrived. There is now a case that does, built
+from a concrete witness: `2P` is the infinity exactly when `y == 0`, so an
+order-2 point is a root of `x^3 + a*x + b` taken with `y = 0`. Computing
+`gcd(x^p - x, x^3 + a*x + b)` over F_p for `ECURVE_GOST256A` gives a cubic with
+exactly one root, so that curve has exactly one order-2 point, and the test
+asserts it is on the curve, in field range, of order exactly 2, and refused by
+both `decodePoint()` and `createPublicKey()`. Disabling the check fails that
+case and **leaves the other sixteen ECDH cases passing**, which is the
+measurement of how much coverage there was before.

@@ -525,3 +525,91 @@ TEST_CASE("ECDH: the derived secret feeds CHkdf, which is how a caller turns it 
 
     CHECK(toHex(aliceKeys) == toHex(bobKeys));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The order-n subgroup check, on a curve where it is not redundant.
+//
+// CEcCurve::decodePoint() tests n*Q == infinity for every point it decodes. On the NIST and
+// Brainpool curves that test can never fail -- cofactor 1 means the only point orders are 1 and
+// n, and order 1 is the infinity decodePoint() rejects first -- so until the GOST parameter sets
+// arrived, nothing in this library could tell whether the check worked.
+//
+// ECURVE_GOST256A and ECURVE_GOST512C have cofactor 4, so they do contain points of small order.
+// 2P is the infinity exactly when y == 0, so an order-2 point is a root of x^3 + a*x + b taken
+// with y = 0. The x below is that root for ECURVE_GOST256A, found by computing
+// gcd(x^p - x, x^3 + a*x + b) over F_p; the cubic has exactly one root there, so this is *the*
+// order-2 point of that curve.
+//
+// It is not the infinity, both coordinates are below p, and it satisfies the curve equation, so
+// it passes every other condition decodePoint() applies. The subgroup check is the only thing
+// that rejects it -- which makes this the one case in the suite that actually exercises it.
+
+TEST_CASE("decodePoint rejects an order-2 point on a cofactor-4 curve") {
+    const char* GOST256A_ORDER2_X =
+        "0100FE73F595FF158E974B44D478D9588744FE5C192AC47EA63075DCE7A14AAA";
+    const char* ZERO_256 =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
+    CEcCurve curve;
+    REQUIRE(CEcCurve::knownCurves(ECURVE_GOST256A, curve));
+
+    CBigNum x;
+    REQUIRE(CBigNum::fromHex(GOST256A_ORDER2_X, x));
+
+    // First, that this point really is on the curve and in range -- otherwise it would be
+    // rejected for a dull reason and this case would prove nothing about the subgroup check.
+    const SEcPoint order2(x, CBigNum());
+    REQUIRE(curve.isOnCurve(order2));
+    REQUIRE(x < curve.p);
+
+    // And that its order really is 2: doubling it gives the point at infinity.
+    REQUIRE(curve.scalarMul(order2, CBigNum(uint64_t(2))).infinity);
+
+    // n is odd, so n*Q for an order-2 Q is Q itself, not the infinity -- which is what the
+    // subgroup check sees.
+    REQUIRE_FALSE(curve.scalarMul(order2, curve.n).infinity);
+
+    // Therefore decodePoint() must refuse it, and so must createPublicKey() on top.
+    const std::vector<uint8_t> sec1 = sec1Point(GOST256A_ORDER2_X, ZERO_256);
+
+    SEcPoint decoded;
+    CHECK_FALSE(curve.decodePoint(
+        SReadOnlyByteSpan(sec1.data(), sec1.size()), decoded));
+
+    CEcdsa gost(ECURVE_GOST256A);
+    CHECK_FALSE(gost.createPublicKey(SReadOnlyByteSpan(sec1.data(), sec1.size())));
+}
+
+TEST_CASE("ECDH agrees on the cofactor-4 curves") {
+    // The other half: the subgroup check must not reject legitimate keys on the very curves
+    // where it is load-bearing.
+    for (EEcKnownCurves which : { ECURVE_GOST256A, ECURVE_GOST512C }) {
+        CEcCurve params;
+        REQUIRE(CEcCurve::knownCurves(which, params));
+
+        CEcdsa curve(which);
+        const size_t flen = params.fieldByteLen();
+
+        SKeyPair alice;
+        SKeyPair bob;
+        REQUIRE(curve.generateKeyPair(SKeySize(flen * 8), alice) == ERET_OK);
+        REQUIRE(curve.generateKeyPair(SKeySize(flen * 8), bob) == ERET_OK);
+
+        IAsymmetricContextPtr aliceCtx = curve.createContext();
+        IAsymmetricContextPtr bobCtx = curve.createContext();
+        REQUIRE(aliceCtx);
+        REQUIRE(bobCtx);
+        aliceCtx->keyPair(alice);
+        bobCtx->keyPair(bob);
+
+        std::vector<uint8_t> aliceSecret(flen);
+        std::vector<uint8_t> bobSecret(flen);
+        SByteSpan aliceOut(aliceSecret.data(), aliceSecret.size());
+        SByteSpan bobOut(bobSecret.data(), bobSecret.size());
+
+        REQUIRE(aliceCtx->deriveSharedSecret(bob.publicKey, aliceOut) == ERET_OK);
+        REQUIRE(bobCtx->deriveSharedSecret(alice.publicKey, bobOut) == ERET_OK);
+
+        CHECK(toHex(aliceSecret) == toHex(bobSecret));
+    }
+}

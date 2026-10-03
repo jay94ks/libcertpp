@@ -374,14 +374,22 @@ namespace crypto {
                 }
 
                 // 4. There is deliberately NO small-subgroup check (an n*Q == infinity test, nor
-                // a cofactor multiplication): every prime curve CEcCurve ships has cofactor 1
-                // -- see its own doc comment -- so the group has exactly the orders 1 and n, and
-                // order 1 is the point at infinity that check 1 already rejected. Any point
-                // passing checks 1-3 therefore has order n. This is the opposite situation from
-                // X25519 (crypto/asyms/x25519.cpp's validatePublicValue(), check 3), whose
-                // cofactor is 8 and which must therefore test for a low-order point explicitly
-                // -- and from CEc2Curve's binary curves, whose cofactors are 2 or 4. Absent, not
-                // forgotten.
+                // a cofactor multiplication) -- because CEcCurve::decodePoint() already made it,
+                // unconditionally, and every EcPublicKey reaching here was built either by
+                // createPublicKey() (which goes through decodePoint()) or by generateKeyPair()
+                // (whose Q is d*G and so is in the subgroup by construction). Repeating it would
+                // cost a second scalar multiplication to re-derive a fact already established.
+                //
+                // Note that "the curves are cofactor 1, so the only orders are 1 and n" is NOT
+                // the reason, though it was when this was written and the comment used to say
+                // so. ECURVE_GOST256A and ECURVE_GOST512C have cofactor 4 and do contain points
+                // of small order -- any root of x^3 + a*x + b with y = 0 has order 2 -- so on
+                // those curves the test is doing real work; it is just doing it at the decode
+                // boundary rather than here. Compare X25519
+                // (crypto/asyms/x25519.cpp's validatePublicValue(), check 3, cofactor 8), which
+                // has no equivalent decode-time check and must therefore test explicitly.
+                // Absent, not forgotten -- and absent for a reason that survives the GOST
+                // curves' arrival.
 
                 const size_t flen = curve.fieldByteLen();
                 if (out.size < flen) {

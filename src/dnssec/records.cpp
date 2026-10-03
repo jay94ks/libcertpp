@@ -132,10 +132,21 @@ namespace dnssec {
         const uint8_t* data = rdata.begin();
         const size_t size = rdata.size();
 
-        // RFC 4034 Appendix B.1: algorithm 1 is special-cased to the next-to-bottom and bottom
-        // octets of the RSA modulus, which sit at the very end of the RDATA. It is forbidden by
-        // RFC 8624, but a resolver still has to be able to compute the tag of a record it is
-        // about to reject, so the rule is implemented rather than skipped.
+        // RFC 4034 Appendix B.1 special-cases algorithm 1 to "the most significant 16 bits of
+        // the least significant 24 bits in the public key modulus". Those are bits 8..23, i.e.
+        // the third- and second-to-last octets, which is what this computes -- and since the
+        // modulus is the last field of an RSA DNSKEY, the last octet of the modulus is the last
+        // octet of the RDATA, so indexing from the end of the RDATA is the same thing.
+        //
+        // Appendix B.1 then glosses that as "the 4th to last and 3rd to last octets", which
+        // disagrees with its own normative clause by one: those octets are bits 16..31, which
+        // are not inside the least significant 24 bits at all. The arithmetic definition is the
+        // one followed here; the parenthetical is simply wrong, and this comment exists so that
+        // a later reader checking the gloss does not "correct" this into a bug.
+        //
+        // Unverified against any published vector, because there is none for algorithm 1 -- it
+        // is forbidden by RFC 8624. It is implemented rather than skipped because a resolver
+        // still has to compute the tag of a record it is about to reject.
         if (algorithm == EDNSALG_RSAMD5) {
             if (size < 7) {
                 return false;

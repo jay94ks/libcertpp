@@ -53,6 +53,42 @@ this file:
 When you add a new subsystem or change a convention, update the relevant
 file under `docs/` (or add a new one) rather than expanding this file.
 
+### Bilingual documentation
+
+Every document has an English original and a Korean translation beside it,
+named `<name>.ko.md` — `README.md`/`README.ko.md`,
+`docs/architecture.md`/`docs/architecture.ko.md`, and so on. The rules:
+
+- **English is the source of truth.** Write and review changes in the
+  English file first; the Korean file is a translation of it, never the
+  other way round, and never the place a fact appears first.
+- **Both move together.** A change to a document is not finished until its
+  `.ko.md` counterpart carries the same change. A Korean file that
+  describes an older state of the code is worse than no Korean file,
+  because nothing signals that it is stale.
+- **Each file links to its counterpart on line 3**, as the only content
+  between the `# Title` heading and the opening paragraph:
+  `[한국어](README.ko.md)` in the English file, `[English](README.md)` in
+  the Korean one. Use the path relative to the file doing the linking.
+- **Cross-document links stay inside their language.** A link from one
+  Korean document to another points at the other document's `.ko.md`. Only
+  link across languages where no translation exists, and then say so
+  inline — the existing files use a trailing `(영문)` for that.
+- **Translate the prose, not the identifiers.** Type names, function
+  names, enumerators, file paths, CMake options, RFC numbers and shell
+  commands stay exactly as they are. The same goes for anything inside a
+  code fence: translate the comments around a block, never the code in it.
+- **Gloss a technical term on first use and then use the English term.**
+  The established pattern is `큰 수(big-number)`, `이진체(binary-field)`,
+  `임의 정밀도 정수` — Korean gloss in parentheses after the English term,
+  or a settled Korean rendering where one exists. Do not invent a Korean
+  word for something that is normally written in English (`span`, `nonce`,
+  `salt`, `padding` stay as they are).
+- **Prose style is formal `-습니다`**, matching `README.ko.md`.
+
+`examples/README.md` currently has no Korean counterpart; it is the one
+exception, and adding one would be welcome.
+
 ## Build
 
 ```sh
