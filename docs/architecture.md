@@ -147,6 +147,9 @@ include/
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
+      chain.hpp                          # SCertEntry/CCertCollection: certificates (+ optional keys, PKCS#9 attributes) with issuer-linkage lookups and buildChain(); IChainFormat: container-format interface, EChainFormats, builtIn()/detect()
+      chain/                              # one IChainFormat implementation per container format, the same arrangement exts/ has for extension types
+        pem.hpp                            # CPemChainFormat: concatenated RFC 7468 PEM blocks -- and the whole of this library's PEM handling (CCert::importPem()/exportPem() delegate to it). No password, no encryption
     dnssec/
       name.hpp                       # CDnsName: presentation <-> canonical wire-format domain names (RFC 4034 6.2 case folding); compression pointers deliberately rejected
       records.hpp                     # EDnsAlgorithms/EDnsDigests (IANA numbers, pinned); SDnskey (RDATA + RFC 4034 App. B key tag), SDsRecord (RDATA + the 5.1.4 digest over owner name || DNSKEY RDATA), SRrsig (RDATA + toSignedPrefix())
@@ -266,6 +269,9 @@ src/
     cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
+    chain.cpp                          # CCertCollection implementation (lookups, buildChain(), verifyLinks(), checkKeyPairing()) + IChainFormat::detect()/builtIn(), the one place that knows which container formats exist
+    chain/
+      pem.cpp                           # CPemChainFormat implementation: encapsulation-boundary scanning, labels, base64 framing, PKCS#9 "Bag Attributes", and the SEC1/PKCS#8/RFC 8410 private-key block encodings
   dnssec/
     name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
     records.cpp                  # SDnskey/SDsRecord/SRrsig implementation; big-endian field helpers (unlike Poly1305/ChaCha20 next door, which are little-endian)
@@ -364,6 +370,9 @@ tests/
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
+    chain.cpp                     # CCertCollection test cases against a real root/intermediate/leaf hierarchy issued in the test itself
+    chain/
+      pem.cpp                       # CPemChainFormat test cases: round-trip, append-not-replace, malformed/truncated/encrypted containers, CRLF and inter-block text, plus certs/openssl-*.pem -- fixtures written by OpenSSL 3.4.0, not by this library
 <<<<<<< HEAD
     realcerts.cpp                # real commercial certificates on disk under certs/implemented/ (github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate), plus certs/unimplemented/ for ones whose signature algorithm importDer() cannot resolve at all (ML-DSA)
 =======
@@ -2761,6 +2770,38 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `CCrlReader`'s. The shared wire helpers both sides need (the nonce and
   basic-response OIDs, single-extension list encoding, `GeneralizedTime`
   formatting) live in a private `OcspCodec` (`src/x509/ocspcodec.hpp`).
+- **`x509/chain.hpp` / `src/x509/chain.cpp`** define `SCertEntry` (a
+  certificate, an optional private key, and the PKCS#9 `friendlyName`/
+  `localKeyId` a PKCS#12 bag carries), `CCertCollection` (the lookups and
+  `buildChain()` that order a set of certificates by who issued whom -- *not*
+  path validation, see the scope note) and `IChainFormat`, the interface a
+  container format implements. `IChainFormat::builtIn()` is the only place
+  that has to know which formats exist, so adding one is a change there and
+  nowhere else; `detect()` tells PEM from PFX by their first bytes.
+- **`x509/chain/pem.hpp` / `src/x509/chain/pem.cpp`** define
+  `CPemChainFormat`, and with it **all** of this library's PEM handling.
+  Multi-block scanning, encapsulation boundaries, labels, base64 framing and
+  "this file also carries a private key" are container concerns, so they live
+  here rather than in `CCert`, whose native form is DER;
+  `CCert::importPem()`/`exportPem()`/`detectCertFormat()` are thin
+  delegations, kept because one certificate in a file is the common case.
+  `load()` appends and commits nothing until the whole file has parsed, so a
+  container that breaks half way through leaves the collection as it was;
+  key blocks are paired with certificates by `CCert::privateKey()`'s own
+  public-key comparison rather than by position, so a crossed or
+  someone-else's key in the file cannot be mispaired. A certificate whose
+  algorithm this library doesn't implement is loaded rather than dropped (it
+  parses; only its key is unavailable), a structurally broken block makes the
+  whole container `ERET_BADREQ`, and a password-encrypted key block --
+  `ENCRYPTED PRIVATE KEY`, or RFC 1421's `Proc-Type: 4,ENCRYPTED` -- is
+  `ERET_NOTSUP`, because PEM has no password to open it with. **PEM has no
+  confidentiality at all**: `needsPassword()` is false, the `password`
+  argument is ignored outright, and a private key written out goes to disk in
+  the clear -- which is why writing one is opt-in (`CPemChainFormat(true)`,
+  what `CCert::exportPem(out, true)` constructs) and `builtIn()` returns the
+  certificates-only form. PKCS#9 attributes ride outside the boundaries in
+  openssl's own `Bag Attributes` shape, which RFC 7468 5.2 explicitly allows
+  and any other reader skips.
 - **`certpp.hpp`** is the single include point for consumers; as new public
   headers are added under `include/certpp/`, add their `#include` here. Two
   public headers are deliberately *not* included: `crypto/kem.hpp` (no
@@ -2933,7 +2974,8 @@ would follow the vendor-and-expose-a-target pattern above, instead.
 (and sign) a `Certificate`, `CCrlReader`/`CCrlWriter` a `CertificateList`,
 and `COcspRequest`/`COcspResponse` plus their builders an OCSP exchange, all
 ten extensions have a parse/build pair, and PEM as well as DER is handled
-(`ECertFormat`, `importPem()`/`exportPem()`). A new extension type follows
+(`ECertFormat`, `importPem()`/`exportPem()`, both of which delegate to
+`CPemChainFormat` -- see `x509/chain/pem.hpp` below). A new extension type follows
 `x509/exts/`'s established shape (a concrete `IExtension` subclass with its
 own `OID`, added to `ext.cpp`'s dispatch table, plus the matching
 `IExtensionBuilder`) and, if it needs to hold a GeneralName-shaped or

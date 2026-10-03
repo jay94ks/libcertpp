@@ -66,6 +66,13 @@ namespace x509 {
     };
 
     /**
+     * Forward declaration of the PEM container format, which owns this library's PEM handling
+     * (see `x509/chain/pem.hpp`) and is a friend of CCert -- declared rather than included,
+     * since chain/pem.hpp itself includes this header.
+     */
+    class CPemChainFormat;
+
+    /**
      * @brief Represents an X.509 certificate.
      */
     class CERTPP_API CCert {
@@ -79,6 +86,13 @@ namespace x509 {
         friend class COcspResponseBuilder;
         friend class COcspRequest;
         friend class COcspRequestBuilder;
+
+        /* The PEM container format reads and writes certificates, and needs two things this
+         * class keeps to itself: _asym (the already-resolved algorithm a candidate private key
+         * block has to parse under) and lookupKeyAlgoOid() (KEY_ALGOS's own OID for a key
+         * algorithm name, so the OID a PKCS#8 key block carries and the one importDer()
+         * resolved come from one table rather than two). Everything else it needs is public. */
+        friend class CPemChainFormat;
 
     private:
         /**
@@ -132,6 +146,13 @@ namespace x509 {
         /* Linear lookup of hash within one of the *_SIG_OIDS tables above (table/count identify
          * which one), used 3x by resolveSigAlgoForSigning() (once each for RSA/DSA/ECDSA). */
         static bool lookupSigOid(const SSigHashOid* table, size_t count, crypto::EHashers hash, CString& outOid);
+
+        /* KEY_ALGOS's own OID for a keyAlgo() display name -- the reverse of the lookup
+         * importDer()'s resolveKeyAlgo() does. Exists for CPemChainFormat, which needs the OID
+         * to write a PKCS#8 PrivateKeyInfo and must not reach it from a second table of its own
+         * that could drift out of step with this one. False for a name KEY_ALGOS doesn't list,
+         * including the dotted-decimal OID text resolveKeyAlgo() falls back to. */
+        static bool lookupKeyAlgoOid(const CString& name, CString& outOid);
 
     private:
         COctet _rawData;        // --> Raw certificate data, DER-encoded.
@@ -363,96 +384,14 @@ namespace x509 {
          * certificate "thumbprint"/"fingerprint" in most tooling. */
         static bool computeThumbprint(const COctet& rawData, COctet& out);
 
-        /* Finds the next "-----BEGIN <label>-----" / "-----END <label>-----" block in text at or
-         * after cursor (RFC 7468), decoding its Base64 body (via CBase64::decode(), which already
-         * tolerates the body's own embedded line breaks) into outDer. Advances cursor past the
-         * block found. False once no further "-----BEGIN " marker exists, or the block found is
-         * structurally malformed (missing its closing markers, or a body that doesn't decode) --
-         * either way, importPem() stops scanning for more blocks rather than trying to recover
-         * mid-file. */
-        static bool findNextPemBlock(const CString& text, size_t& cursor, CString& outLabel, COctet& outDer);
-
-        /* Unwraps a PKCS#8 PrivateKeyInfo (SEQUENCE { version INTEGER, AlgorithmIdentifier,
-         * privateKey OCTET STRING, ... }), used by tryAttachPrivateKey()'s "PRIVATE KEY" block
-         * handling, to reach the algorithm-specific key blob inside -- the AlgorithmIdentifier
-         * itself isn't inspected (only whether the resulting blob happens to parse under this
-         * certificate's own algorithm matters). For RSA this blob is the final PKCS#1
-         * RSAPrivateKey directly; for Ed25519/Ed448/X25519 (RFC 8410) it's itself a further
-         * DER-encoded OCTET STRING wrapping the raw seed -- see unwrapOctetString(). */
-        static bool unwrapPkcs8PrivateKey(const COctet& data, COctet& outInner);
-
-        /* Unwraps one OCTET STRING TLV, giving back its content. Used by tryAttachPrivateKey()
-         * for RFC 8410's double-OCTET-STRING PKCS#8 encoding: unwrapPkcs8PrivateKey() reaches the
-         * outer "privateKey OCTET STRING" field, and for Ed25519/Ed448/X25519 that field's own
-         * content is itself a separately DER-encoded OCTET STRING (CurvePrivateKey) wrapping the
-         * raw seed -- one more unwrapOctetString() call reaches that. */
-        static bool unwrapOctetString(const COctet& data, COctet& outContent);
-
-        /* Parses a standard SEC1 ECPrivateKey (RFC 5915) blob -- e.g. from a PEM "EC PRIVATE KEY"
-         * block produced by openssl or another tool, not just exportPem()'s own
-         * buildSec1PrivateKey() output -- back into this library's own native EC private-key wire
-         * format (rawPrivateKey()'s own shape, see its doc comment), for tryAttachPrivateKey() to
-         * hand to IAsymmetric::createPrivateKey(). False if data isn't a well-formed SEC1 key, or
-         * is missing its OPTIONAL publicKey field (this library's own format has no such
-         * optionality, so there's nothing to fall back to without re-deriving the public point,
-         * which this method doesn't attempt). */
-        static bool convertSec1ToNative(const COctet& data, COctet& outNative);
-
-        /* Converts a PKCS#8-wrapped DSA private key's inner blob (a bare INTEGER x -- PKCS#8's
-         * own DSA convention, unlike RSA's, whose inner blob is already the complete traditional
-         * key) into this library's own traditional DSAPrivateKey wire format (version, p, q, g,
-         * y, x -- see rawPrivateKey()'s doc comment), reusing this certificate's own already-known
-         * p/q/g (keyAlgoParams()) and y (rawPublicKey()) rather than separately parsing PKCS#8's
-         * own AlgorithmIdentifier parameters, which would just be the same p/q/g again. Not
-         * static, unlike this class's other PEM conversion helpers, since it needs those two
-         * fields from *this. */
-        bool convertPkcs8DsaInnerToNative(const COctet& innerX, COctet& outNative) const;
-
-        /* Tries candidate as this certificate's own private key, attempting every shape
-         * exportPem() (or an external tool, e.g. openssl) might have produced, in order, until
-         * one both parses under this certificate's own algorithm and matches its public key:
-         * as-is (RSA PKCS#1, DSA's OpenSSL-traditional format, or this library's own native EC
-         * format), traditional SEC1 (a non-PKCS#8 "EC PRIVATE KEY" block), and PKCS#8, trying its
-         * inner blob four ways in turn -- directly (RSA), further unwrapped as an OCTET STRING
-         * (RFC 8410 Ed25519/Ed448/X25519), as SEC1 (EC's usual PKCS#8 form, e.g. `openssl req
-         * -newkey ec ...`, which wraps a SEC1 ECPrivateKey rather than a raw scalar), and via
-         * convertPkcs8DsaInnerToNative() (DSA's usual PKCS#8 form, whose inner blob is a bare x,
-         * not the traditional format directly). A candidate that matches none of these -- an
-         * encrypted key, or simply a different key entirely --
-         * just isn't attached, the same "an algorithm/format this library doesn't handle doesn't
-         * fail the rest of the importFrom" contract importDer() itself documents. Delegates to
-         * privateKey(IPrivateKeyPtr&) for the actual attach, so a candidate that parses but isn't
-         * this certificate's own key pair is still rejected. */
-        bool tryAttachPrivateKey(const COctet& candidate);
-
-        /* Appends one "-----BEGIN <label>-----\n<Base64 body, line-wrapped>-----END
-         * <label>-----\n" PEM block (RFC 7468) to text, for exportPem()'s own use. False only if
-         * CBase64::encode() itself fails (out of memory). */
-        static bool appendPemBlock(CString& text, const char* label, const COctet& der);
-
-        /* Detects whether data is DER or PEM, for importFrom()'s ECERT_AUTO: skips leading ASCII
-         * whitespace, then checks for PEM's own fixed "-----BEGIN " encapsulation boundary marker
-         * (RFC 7468) -- present means ECERT_PEM, absent means ECERT_DER (a DER Certificate's own
-         * first byte, 0x30 for its outer SEQUENCE, isn't distinctive enough on its own to be
-         * worth checking, unlike PEM's unmistakable text marker). */
+        /* Detects whether data is DER or PEM, for importFrom()'s ECERT_AUTO -- by asking
+         * IChainFormat::detect(), which sniffs exactly the same "-----BEGIN" encapsulation
+         * boundary marker (RFC 7468) for the same reason, and is where that knowledge lives now
+         * that CPemChainFormat owns this library's PEM handling. Anything that isn't PEM is
+         * reported as ECERT_DER (a DER Certificate's own first byte, 0x30 for its outer
+         * SEQUENCE, isn't distinctive enough on its own to be worth checking, unlike PEM's
+         * unmistakable text marker). */
         static ECertFormat detectCertFormat(SReadOnlyByteSpan data);
-
-        /* Builds a standards-compliant SEC1 ECPrivateKey (RFC 5915) DER blob from this
-         * certificate's own EC private scalar (rawPrivateKey()) and public point
-         * (rawPublicKey())/curve OID (keyAlgoParams()) -- used by exportPem() so its
-         * "EC PRIVATE KEY" block round-trips through any standard tool, unlike
-         * rawPrivateKey()'s own internal wire format (see its doc comment). The inverse of
-         * convertSec1ToNative(). False if this isn't an EC certificate with both halves
-         * available. */
-        bool buildSec1PrivateKey(COctet& out) const;
-
-        /* Builds a standards-compliant PKCS#8 PrivateKeyInfo (RFC 8410) DER blob wrapping
-         * rawPrivateKey()'s raw seed/scalar bytes -- used by exportPem() so its "PRIVATE KEY"
-         * block round-trips through any standard tool for Ed25519/Ed448/X25519, which have no
-         * traditional-format PEM encoding of their own (see exportPem()'s own comment). The OID
-         * is looked up from KEY_ALGOS by keyAlgo()'s own name. False if this certificate's
-         * algorithm isn't one KEY_ALGOS names, or rawPrivateKey() is empty. */
-        bool buildPkcs8EddsaPrivateKey(COctet& out) const;
 
     public:
         /**
@@ -481,16 +420,24 @@ namespace x509 {
         /**
          * @brief Imports the X.509 certificate from PEM-encoded raw data (a ".pem" file's
          * contents). The file may hold more than one "-----BEGIN ... -----" block -- the first
-         * CERTIFICATE block found becomes this certificate (via importDer()); any other block
-         * (typically a private key, e.g. "RSA PRIVATE KEY"/"PRIVATE KEY"/"EC PRIVATE KEY") is
-         * tried as this certificate's own private key afterward, best-effort (see
-         * tryAttachPrivateKey()'s own comment on which formats actually parse) -- a key block
-         * that's absent, unsupported, or simply isn't this certificate's own key pair just leaves
-         * privateKey() unset rather than failing the importFrom.
+         * CERTIFICATE block found becomes this certificate; any other block (typically a private
+         * key, e.g. "RSA PRIVATE KEY"/"PRIVATE KEY"/"EC PRIVATE KEY") is tried as this
+         * certificate's own private key afterward, best-effort -- a key block that's absent,
+         * unsupported, or simply isn't this certificate's own key pair just leaves privateKey()
+         * unset rather than failing the importFrom.
+         *
+         * @note This is a convenience over CPemChainFormat (x509/chain/pem.hpp), which owns this
+         * library's PEM handling: the file is loaded as the container it is, and the first entry
+         * is taken. One consequence is worth knowing: a PEM file is read whole, so a *structurally
+         * broken* block anywhere in it (a missing "-----END", a body that isn't base64) fails the
+         * import, where an earlier version of this method stopped scanning at that point and
+         * silently reported success with whatever it had already found.
          *
          * @param data The raw PEM certificate data.
          * @return ERET_OK on success; ERET_INVAL if data is empty; ERET_BADREQ if no CERTIFICATE
-         * block is found, or it isn't a well-formed X.509 Certificate.
+         * block is found, a block is structurally broken, or a CERTIFICATE block isn't a
+         * well-formed X.509 Certificate; ERET_NOTSUP if the file carries a password-encrypted
+         * private-key block (which has no password to be opened with here).
          */
         ERetCode importPem(const COctet& data);
 
@@ -844,12 +791,14 @@ namespace x509 {
 
         /**
          * @brief Exports the certificate in PEM format.
+         * @note A convenience over CPemChainFormat (x509/chain/pem.hpp), which owns this
+         * library's PEM handling: this certificate is saved as a one-entry container.
          * @param output The output buffer for the PEM-encoded certificate.
          * @param includePrivateKey Whether to also include privateKey() (if attached), as a
          * "<ALGO> PRIVATE KEY" block -- works for every algorithm this library implements (see
-         * this method's own comment in cert.cpp for which label each one gets, and the
+         * CPemChainFormat::appendPrivateKeyBlock() for which label each one gets, and the
          * interoperability caveat for Ed25519/Ed448/X25519, which have no traditional-format PEM
-         * convention of their own).
+         * convention of their own). **The key is written in the clear**; PEM has no encryption.
          * @return The result code of the operation.
          */
         ERetCode exportPem(COctet& output, bool includePrivateKey = false) const;

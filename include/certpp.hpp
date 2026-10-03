@@ -92,6 +92,7 @@
 #include <certpp/x509/crl.hpp>
 #include <certpp/x509/ocsp.hpp>
 #include <certpp/x509/chain.hpp>
+#include <certpp/x509/chain/pem.hpp>
 #include <certpp/dnssec/name.hpp>
 #include <certpp/dnssec/records.hpp>
 #include <certpp/dnssec/keys.hpp>
