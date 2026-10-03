@@ -1366,6 +1366,29 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   caller's only copy of the ciphertext with unauthenticated plaintext before
   noticing the forgery. The comparison goes through `CSecure::equalsMask`, not
   `memcmp`.
+- **`crypto/aeads/xchacha20poly1305.hpp` /
+  `src/crypto/aeads/xchacha20poly1305.cpp`** define `CXChaCha20Poly1305`,
+  draft-irtf-cfrg-xchacha's extended-nonce variant -- the one WireGuard and
+  libsodium use. It is a thin wrapper rather than a second AEAD:
+  `subkey = HChaCha20(key, nonce[0:16])`, then `CChaCha20Poly1305` under that
+  subkey with the 96-bit nonce `00000000 || nonce[16:24]`. The API and every
+  contract (in-place operation, no per-call allocation, constant-time
+  verify-before-write) are `CChaCha20Poly1305`'s, inherited by delegation
+  rather than restated.
+
+  The 192-bit nonce is the whole point: 96 bits is too short to pick at
+  random, since a birthday collision becomes likely after roughly 2^48 records
+  under one key, so RFC 8439 effectively requires a counter -- and a counter
+  requires state that survives restarts and is not shared between senders. At
+  192 bits random nonces are safe for any realistic record count, so a key can
+  be used by parties that cannot coordinate a counter at all. The cost is one
+  extra ChaCha20 permutation per record.
+
+  Nothing can be cached across calls, because the subkey depends on the nonce.
+  The per-record subkey and inner nonce therefore live in a stack struct
+  (`Inner` in the `.cpp`) that keys a stack `CChaCha20Poly1305` and zeroes the
+  subkey in its destructor, which keeps the no-allocation contract without a
+  `mutable` member or a non-const `seal()`.
 - **`src/crypto/syms/chacha20core.hpp`/`.cpp`** define `ChaCha20Core`, the
   block function, extracted from the stream cipher so the AEAD can share it --
   the arrangement `DesCore` and `KeccakCore` already have. The AEAD needs it at
@@ -1390,6 +1413,15 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   1 KiB/4 KiB/16 KiB/64 KiB against it. Deliberately breaking the per-lane
   counter feed-forward leaves all seven RFC-vector cases passing and fails
   only those two.
+
+  `hchacha20()` lives here for the same reason the block function does -- it is
+  the same twenty rounds -- and differs from `block()` in two ways that are
+  each self-consistent if got wrong: the 128-bit nonce fills words 12 through
+  15 (there is no counter), and there is **no feed-forward**, so the rounds'
+  output is emitted as-is, words 0-3 followed by words 12-15. Reusing
+  `block()` for it would produce a subkey that round-trips against itself and
+  matches no other implementation, which is why it is a separate function
+  rather than a flag on the existing one.
 - **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
   `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via

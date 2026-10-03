@@ -41,6 +41,12 @@ namespace crypto {
         /** Keystream block length in bytes. */
         static constexpr size_t BLOCK_BYTES = 64;
 
+        /** HChaCha20's nonce length in bytes (128 bits). */
+        static constexpr size_t HNONCE_BYTES = 16;
+
+        /** HChaCha20's output length in bytes. */
+        static constexpr size_t SUBKEY_BYTES = 32;
+
         /**
          * The prepared state: the four constants, the eight key words and the three nonce words,
          * with word 12 (the counter) left for each block to fill in.
@@ -99,6 +105,29 @@ namespace crypto {
         static void block(
             const uint8_t key[KEY_BYTES], uint32_t counter,
             const uint8_t nonce[NONCE_BYTES], uint8_t out[BLOCK_BYTES]
+        );
+
+        /**
+         * HChaCha20 (draft-irtf-cfrg-xchacha 2.2): the nonce-extension function XChaCha20 uses to
+         * turn a 192-bit nonce into a subkey plus a 96-bit one.
+         *
+         * It shares the twenty rounds with the block function, which is why it lives here, and
+         * differs from it in exactly two ways -- both of which produce something self-consistent
+         * if got wrong, so neither is caught by a round trip:
+         *
+         * - **there is no feed-forward.** The block function adds the original state back to the
+         *   rounds' output, which is what makes it non-invertible as a stream cipher; HChaCha20
+         *   does not, and adding it anyway yields a subkey no other implementation agrees with.
+         * - the 128-bit nonce occupies words 12 through 15, taking the counter's slot as well as
+         *   the three nonce words, and the output is words 0-3 followed by words 12-15 -- the two
+         *   ends of the state, not its first 32 bytes.
+         * @param key The 32-byte key.
+         * @param nonce The 16-byte nonce; for XChaCha20, the first 16 of its 24 nonce bytes.
+         * @param out Receives the 32-byte subkey.
+         */
+        static void hchacha20(
+            const uint8_t key[KEY_BYTES], const uint8_t nonce[HNONCE_BYTES],
+            uint8_t out[SUBKEY_BYTES]
         );
     };
 

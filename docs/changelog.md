@@ -1593,6 +1593,59 @@ All six new/changed units were additionally checked with Clang under
 `-fno-ms-compatibility`, so they do not repeat the portability breakage fixed
 in `d297767`.
 
+## XChaCha20-Poly1305, so nonces can be random
+
+The AEAD above needs a nonce that never repeats under one key, and 96 bits is
+too short to get that by picking at random: a birthday collision becomes likely
+after roughly 2^48 records, so the nonce has to be a counter, and a counter has
+to survive restarts and not be shared between senders. XChaCha20-Poly1305
+(draft-irtf-cfrg-xchacha, the variant WireGuard and libsodium use) takes a
+192-bit nonce, which is long enough that random nonces are safe for any
+realistic record count — so a key can be used by parties that cannot coordinate
+a counter at all.
+
+- `ChaCha20Core::hchacha20()` — the draft's nonce-extension function.
+- `CXChaCha20Poly1305` (`crypto/aeads/xchacha20poly1305.hpp`) — the AEAD, as a
+  wrapper: `subkey = HChaCha20(key, nonce[0:16])`, then `CChaCha20Poly1305`
+  under that subkey with the 96-bit nonce `00000000 || nonce[16:24]`.
+
+It delegates rather than reimplementing RFC 8439 2.8, so the in-place aliasing,
+the counter-1 start, the MAC field order and the constant-time
+verify-before-write are the existing AEAD's, inherited rather than restated.
+The subkey depends on the nonce, so a reused context can cache nothing; it goes
+in a stack struct that keys a stack `CChaCha20Poly1305` and zeroes itself in its
+destructor, which keeps the no-per-call-allocation contract without a `mutable`
+member or a non-const `seal()`.
+
+### HChaCha20 is not the block function
+
+It shares the twenty rounds, which is why it lives in `ChaCha20Core`, and
+differs in two ways that each produce something *self-consistent* if got wrong:
+the 128-bit nonce fills words 12–15 (there is no counter), and there is **no
+feed-forward** — the rounds' output is emitted as-is, words 0–3 then 12–15.
+Reusing `block()` verbatim yields a subkey that round-trips perfectly against
+itself and agrees with no other implementation.
+
+The whole construction was written in Python first and checked against the
+draft's vectors before any C++ existed — 2.2.1 (HChaCha20), A.3.1 (the AEAD),
+and A.3.2.2 (the XChaCha20 stream at counter 1, which pins the inner nonce
+independently of the MAC).
+
+### Negative controls
+
+| change | result |
+|---|---|
+| feed-forward added back into HChaCha20 | 5 test cases fail |
+| subkey taken as output words 0–7 instead of 0–3 ‖ 12–15 | 5 fail |
+| inner nonce built as `nonce[16:24] ‖ 00000000` | 3 fail |
+| `open()` forced to return true | 2 fail (incl. the tampered-AAD case) |
+
+The third is the instructive one: the subkey is identical either way, so the
+HChaCha20 vectors still pass and only the AEAD ciphertexts catch it. That is why
+the test checks the subkey separately from the ciphertext rather than only end
+to end — when the end-to-end vector fails, the subkey assertion says which half
+is wrong.
+
 ## Fe25519: a constant-time field for X25519
 
 Raised downstream alongside the AEAD request: X25519's own test comments note
