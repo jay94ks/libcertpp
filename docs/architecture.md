@@ -2712,7 +2712,7 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `SEQUENCE { r, s }` -- which the EC implementation unpacks itself rather than
   `verifyBy()` doing it.
 
-  were a digest. It is a *single-link* check: no name chaining, no validity
+  `verifyBy()` is a *single-link* check: no name chaining, no validity
   window, no constraint enforcement. An RSASSA-PSS-signed certificate is
   routed through `IAsymmetricContext::verifyPss()` with the hash and salt
   length its own `RSASSA-PSS-params` specify, rather than PKCS#1 v1.5's
