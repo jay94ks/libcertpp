@@ -38,6 +38,8 @@
 #include <certpp/crypto/hashers/sha3_512.hpp>
 #include <certpp/crypto/hashers/shake128.hpp>
 #include <certpp/crypto/hashers/shake256.hpp>
+#include <certpp/crypto/hmac.hpp>
+#include <certpp/crypto/hkdf.hpp>
 #include <certpp/crypto/keys.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/eccurve.hpp>

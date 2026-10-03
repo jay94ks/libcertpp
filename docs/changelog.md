@@ -1442,3 +1442,71 @@ The test also cross-checks the table against the units already built:
 computed from γ₂ alone (two independent routes to one number), every set's
 `k`/`l`/`tau` must fit the samplers' own maxima, and `omega` must fit the
 single byte `HintBitPack` writes it into.
+
+## HMAC and HKDF, for a downstream link-encryption handshake
+
+Requested downstream: cppskit's libcskcwk needs to encrypt node-to-node mesh
+links. libcertpp already had the key agreement (X25519) and the ciphers; what
+was missing was a KDF and an AEAD. This is the KDF half.
+
+`CHmac` (`crypto/hmac.hpp`) implements RFC 2104 over any of this library's
+fixed-output hashers, with the streaming shape `IHasher` uses — `reset()` to
+key it, `push()`, `finish()` — and a one-shot `compute()`. Re-keying an
+existing instance reuses the underlying hasher, so HKDF's expand loop does not
+allocate per output block.
+
+`CHkdf` (`crypto/hkdf.hpp`) implements RFC 5869 as three entry points:
+`extract()`, `expand()` and `derive()` for the two together. A concrete
+utility rather than one implementation of an `IKdf` family, following `CRng`'s
+precedent — HKDF's two-step shape does not generalize to a password-based KDF
+(salt plus iteration count, no `info`) without an interface that fits neither
+well, so introducing one now would be speculative.
+
+### Two decisions worth recording
+
+**`verify()` exists so callers don't reach for `memcmp`.** A MAC comparison
+that stops at the first differing byte tells an attacker how long a prefix
+they guessed, which is enough to forge a tag a byte at a time. `CHmac::verify`
+goes through `CSecure::equalsMask` and also handles RFC 2104 4's truncated
+tags, comparing only the bytes the caller presented.
+
+**The block sizes live in `CHmac`, not on `IHasher`.** HMAC needs the hash's
+block size (64, 128, or the SHA-3 rate) and `IHasher` exposes only
+`byteWidth()`. Putting it on the interface would mean changing `IHasher`'s
+constructor and all ten implementations — a second API change in a row for the
+downstream consumer who had just absorbed `finish()`'s `const`. The cost of
+keeping it local is that a hasher added later is unsupported by HMAC until
+someone extends `blockBytesOf()`, which fails loudly at `reset()` rather than
+silently computing a wrong tag. If a second consumer ever needs the block
+size, it should move onto `IHasher` rather than be duplicated.
+
+SHAKE128/SHAKE256 are refused: they are XOFs with a caller-chosen output
+length, and RFC 2104 is defined over a fixed-output hash. SHA3-256/512 are
+accepted using their sponge rate, though KMAC is what NIST actually recommends
+for SHA-3.
+
+### The tests found my own transcription errors, twice
+
+Both suites failed on the first run, and in both cases the implementation was
+right and the test data was wrong. Worth recording because the way it was
+diagnosed matters more than the typos:
+
+- **HMAC**: one of fifteen transcribed vectors (RFC 4231 case 4, SHA-512) was
+  wrong. Rather than guess, every vector was checked against Python's `hmac`
+  module — 14 matched, which located the error immediately and proved the C++
+  correct.
+- **HKDF**: three of six Appendix A cases failed, and the pattern was the
+  clue — A.2, A.4 and A.5 passed while A.1, A.3 and A.6 failed, and those
+  three share one input. The IKM had been written as 21 octets of `0x0b` where
+  RFC 5869 specifies **22**. The expected values were correct all along; the
+  input was a byte short. Testing 21, 22 and 23 octets against the RFC's
+  published PRK confirmed it in one step.
+
+Had the expected values been generated from this implementation instead of
+transcribed, both errors would have been invisible — which is the whole
+argument for external vectors.
+
+RFC 4231's seven cases across SHA-1/256/384/512 and all six of RFC 5869's
+Appendix A cases now pass, each checked through the one-shot path, the
+streaming path at four different chunk sizes, and a single-bit tamper at every
+tag position.
