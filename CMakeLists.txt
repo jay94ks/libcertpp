@@ -192,6 +192,14 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        # StreebogCore's combined S/P/L table is derived at first use and has to be checked
+        # against a literal reading of the spec, which means calling the core directly.
+        if(CERTPP_TEST_REL STREQUAL "crypto/hashers/streebogcore")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/hashers/streebogcore.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/fe25519")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/fe25519.cpp

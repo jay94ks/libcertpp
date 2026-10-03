@@ -14,15 +14,17 @@ memory-backed implementation); an `asn1` module
 BER/CER/DER TLVs plus per-type codecs for BOOLEAN, INTEGER, ENUMERATED,
 NULL, OCTET STRING, BIT STRING/NamedBitList, OBJECT IDENTIFIER, character
 strings, UTCTime/GeneralizedTime, and SEQUENCE/SET OF); a `crypto` module
-(hashing, including MD4 for NTLM/EAP-MSCHAPv2's NT hash and BLAKE2s with both
-its native keyed MAC and HMAC-BLAKE2s; `CSipHash`, SipHash-2-4 as RFC 9018's
-DNS server-cookie PRF; a CSPRNG; asymmetric algorithms -- RSA, DSA, ECDSA over
-prime and binary curves plus ECDH key agreement over the prime ones (RFC 5903,
-on `CEcdsa`'s own context), Ed25519, Ed448, X25519 -- symmetric ones -- AES,
-DES, TripleDES, ChaCha20 -- AEADs -- ChaCha20-Poly1305,
-XChaCha20-Poly1305, AES-GCM -- and post-quantum ML-KEM (FIPS 203,
-`crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and its
-`IKem` form), all from scratch); and an `x509` module that
+(hashing, including MD4 for NTLM/EAP-MSCHAPv2's NT hash, BLAKE2s with both its
+native keyed MAC and HMAC-BLAKE2s, and GOST R 34.11-2012 ("Streebog") at both
+digest lengths; `CSipHash`, SipHash-2-4 as RFC 9018's DNS server-cookie PRF; a
+CSPRNG; asymmetric algorithms -- RSA, DSA, ECDSA over prime and binary curves
+plus ECDH key agreement over the prime ones (RFC 5903, on `CEcdsa`'s own
+context), Ed25519, Ed448, X25519, and GOST R 34.10-2012 over its nine named
+parameter sets -- symmetric ones -- AES, DES, TripleDES, ChaCha20 -- AEADs --
+ChaCha20-Poly1305, XChaCha20-Poly1305, AES-GCM -- and post-quantum ML-KEM
+(FIPS 203, `crypto/kems/mlkem.hpp`, holding both the raw-span algorithm and
+its `IKem` form), all from scratch); a `dnssec` module (DNSKEY/RRSIG/DS
+conversion, RFC 4034); and an `x509` module that
 both parses and builds DER/PEM X.509 `Certificate`s
 (`CCert`/`CCertBuilder`), CRLs (`CCrlReader`/`CCrlWriter`) and OCSP
 request/response (RFC 6960), including ten concrete extension types

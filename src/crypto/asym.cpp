@@ -6,6 +6,7 @@
 #include <certpp/crypto/asyms/ed448.hpp>
 #include <certpp/crypto/asyms/x25519.hpp>
 #include <certpp/crypto/asyms/ecdsa2.hpp>
+#include <certpp/crypto/asyms/gost3410.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -116,6 +117,33 @@ namespace crypto {
 
             case EASYM_K571:
                 return std::make_shared<CEcdsa2>(ECURVE2_K571);
+
+            case EASYM_GOST256TEST:
+                return std::make_shared<CGost3410>(ECURVE_GOST256TEST);
+
+            case EASYM_GOST256A:
+                return std::make_shared<CGost3410>(ECURVE_GOST256A);
+
+            case EASYM_GOST256B:
+                return std::make_shared<CGost3410>(ECURVE_GOST256B);
+
+            case EASYM_GOST256C:
+                return std::make_shared<CGost3410>(ECURVE_GOST256C);
+
+            case EASYM_GOST256D:
+                return std::make_shared<CGost3410>(ECURVE_GOST256D);
+
+            case EASYM_GOST512TEST:
+                return std::make_shared<CGost3410>(ECURVE_GOST512TEST);
+
+            case EASYM_GOST512A:
+                return std::make_shared<CGost3410>(ECURVE_GOST512A);
+
+            case EASYM_GOST512B:
+                return std::make_shared<CGost3410>(ECURVE_GOST512B);
+
+            case EASYM_GOST512C:
+                return std::make_shared<CGost3410>(ECURVE_GOST512C);
 
             default:
                 return nullptr;

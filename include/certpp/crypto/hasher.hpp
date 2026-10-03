@@ -37,6 +37,8 @@ namespace crypto {
         // mistake invisible from in here.
         EHASH_MD4,         /**< MD4 hash algorithm (broken; legacy interop only) */
         EHASH_BLAKE2S,     /**< BLAKE2s hash algorithm (RFC 7693), 32-byte digest */
+        EHASH_STREEBOG256, /**< GOST R 34.11-2012 ("Streebog"), 256-bit hash code (RFC 6986) */
+        EHASH_STREEBOG512, /**< GOST R 34.11-2012 ("Streebog"), 512-bit hash code (RFC 6986) */
 
         /** Marker for the maximum value of EHashers. */
         EHASH_MAX

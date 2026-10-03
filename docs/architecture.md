@@ -13,19 +13,21 @@ sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, and an `x509` module.
 
 `crypto` has: an `IHasher` interface with from-scratch MD4/MD5/SHA-1/SHA-224/
-SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s
-implementations; a CSPRNG utility
-(`CRng`); an `IAsymmetric` interface with seven concrete implementations
+SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s/
+Streebog-256/Streebog-512 implementations; a CSPRNG utility
+(`CRng`); an `IAsymmetric` interface with eight concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
 decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
 P-521, secp256k1, or the 14 Brainpool curves (RFC 5639), plus ECDH key
 agreement over the same curves (RFC 5903 / SP 800-56A); `CEcdsa2`, ECDSA
 over the 10 NIST binary/Koblitz curves B-163/K-163 .. B-571/K-571;
-`Ed25519`/`Ed448`, EdDSA (RFC 8032); and `X25519`, Diffie-Hellman key
-agreement (RFC 7748)); an `ISymmetric` interface with four concrete
-implementations (`AES`, `DES`, `TripleDES` -- all CBC, PKCS#7-padded or
-unpadded -- and the `ChaCha20` stream cipher); and two AEADs outside that
-interface, `CChaCha20Poly1305` (RFC 8439 2.8) and `CAesGcm` (NIST SP
+`Ed25519`/`Ed448`, EdDSA (RFC 8032); `X25519`, Diffie-Hellman key
+agreement (RFC 7748); and `CGost3410`, GOST R 34.10-2012 (RFC 7091) over
+any of its nine parameter sets); an `ISymmetric` interface with four
+concrete implementations (`AES`, `DES`, `TripleDES` -- all CBC,
+PKCS#7-padded or unpadded -- and the `ChaCha20` stream cipher); and three
+AEADs outside that interface, `CChaCha20Poly1305` (RFC 8439 2.8),
+`CXChaCha20Poly1305` (draft-irtf-cfrg-xchacha) and `CAesGcm` (NIST SP
 800-38D) -- all from scratch, no third-party dependency.
 
 `x509` parses (and, for `CCert`, also builds/self-signs) DER-encoded
@@ -93,10 +95,12 @@ include/
         shake128.hpp                # SHAKE128, the 128-bit-security sibling of SHAKE256 -- same shape, shares KeccakCore
         shake256.hpp                # SHAKE256, the Keccak/SHA-3-family XOF (FIPS 202); output length fixed per instance via the constructor, not the algorithm
         blake2s.hpp                 # BLAKE2s (RFC 7693), unkeyed; little-endian HAIFA construction, digest length 1-32 bound into the parameter block
+        streebog256.hpp             # Streebog256: GOST R 34.11-2012 with a 256-bit hash code (RFC 6986) -- its own IV, not a cut of the 512-bit digest
+        streebog512.hpp             # Streebog512: GOST R 34.11-2012 with a 512-bit hash code (RFC 6986)
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
       kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- header-only design, not yet implemented/wired
       rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
-      eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass point arithmetic (affine coordinates); EEcKnownCurves + CEcCurve::knownCurves() name the built-in P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool (RFC 5639, 14 curves) domain parameters
+      eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass point arithmetic (affine coordinates); EEcKnownCurves + CEcCurve::knownCurves() name the built-in P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool (RFC 5639, 14 curves) and GOST R 34.10-2012 (9 parameter sets, 2 of them cofactor-4) domain parameters
       ec2curve.hpp                 # CEc2Curve/SEc2Point: binary-curve point arithmetic over CGf2m (affine coordinates); EEc2KnownCurves + CEc2Curve::knownCurves() name the 10 built-in B-163/K-163 .. B-571/K-571 domain parameters
       asym.hpp                   # IAsymmetric (algorithm descriptor/factory) + IAsymmetricContext (bound-key sign/verify + deriveSharedSecret key agreement + encrypter/decrypter factory) + IAsymmetricTransformer (encrypt/decrypt session)
       asyms/                      # concrete IAsymmetric implementations, one file each (mirrors hashers/)
@@ -107,6 +111,7 @@ include/
         ed25519.hpp                    # Ed25519: EdDSA over edwards25519 (RFC 8032), keygen + sign/verify only
         ed448.hpp                       # Ed448: EdDSA over edwards448/"Goldilocks" (RFC 8032), keygen + sign/verify only
         x25519.hpp                      # X25519: Diffie-Hellman key agreement over Curve25519 (RFC 7748), keygen + IAsymmetricContext::deriveSharedSecret() only
+        gost3410.hpp                     # CGost3410: GOST R 34.10-2012 (RFC 7091) over any ECURVE_GOST* parameter set, keygen + sign/verify only -- not ECDSA with a different curve (different s/verification equation, GOST's own hash-to-integer rule, and RFC 9215's own key/signature byte orders)
       transform.hpp                # ITransformer: generic streaming transform interface shared by IAsymmetricTransformer and ISymmetricTransformer
       sym.hpp                      # ISymmetric (algorithm descriptor/factory) + ISymmetricContext (bound-key encrypter/decrypter factory) + ISymmetricTransformer
       syms/                        # concrete ISymmetric implementations, one file each (mirrors asyms/)
@@ -187,6 +192,10 @@ src/
       blake2score.hpp                  # Blake2sCore: private, the whole BLAKE2s state machine (parameter block, compression, buffering, finalization), shared by blake2s.cpp and blake2smac.cpp
       blake2score.cpp
       blake2s.cpp                       # BLAKE2s: drives Blake2sCore unkeyed, at the constructor's digest length
+      streebogcore.hpp                 # StreebogCore: private, shared Streebog g_N round function (S/P/L collapsed into one 8x256 table derived from Pi and A at first use) + the mod-2^512 N/EPSILON accumulators, used by streebog256.cpp/streebog512.cpp; also the one place the RFC 6986 byte order is written down
+      streebogcore.cpp
+      streebog256.cpp                   # Streebog-256: own IV ((00000001)^64), own context/padding, emits MSB_256 of the final state
+      streebog512.cpp                   # Streebog-512: own IV (0^512), own context/padding, emits the whole final state
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
     kem.cpp                    # IKem::builtIn(): returns null for every EKems value, since no KEM is implemented yet
     rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
@@ -212,7 +221,7 @@ src/
       ghash.hpp                       # Ghash: private GHASH + GCM's GF(2^128) multiply (bit-reflected; PCLMULQDQ path behind CERTPP_DISABLE_HWACCEL_SIMD), used only by aesgcm.cpp
       ghash.cpp
       aesgcm.cpp                       # CAesGcm: AesCore (counter mode) + Ghash, SP 800-38D 7.1's framing
-    eccurve.cpp                  # CEcCurve/SEcPoint implementation, plus CEcCurve::_knownCurves' definition (the P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool domain parameters, in EEcKnownCurves order)
+    eccurve.cpp                  # CEcCurve/SEcPoint implementation, plus CEcCurve::_knownCurves' definition (the P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool and GOST R 34.10-2012 domain parameters, in EEcKnownCurves order -- the GOST ones parsed out of RFC 4357/7091/7836/9215 and machine-checked on-curve/order-checked before hardcoding)
     ec2curve.cpp                 # CEc2Curve/SEc2Point implementation, plus CEc2Curve::_knownCurves' definition (the 10 B-*/K-* domain parameters, in EEc2KnownCurves order -- each independently verified on-curve and order-checked before hardcoding, see this module's doc comment)
     asym.cpp                   # IAsymmetric::builtIn(): dispatches EAsymmetrics to a concrete asyms/ implementation
     asyms/                       # concrete IAsymmetric implementations, one file each
@@ -223,6 +232,7 @@ src/
       ed25519.cpp                    # Ed25519 implementation (edwards25519 field/point arithmetic, EdDSA logic), plus the private EdPublicKey/EdPrivateKey/EdContext classes
       ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
       x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
+      gost3410.cpp                      # CGost3410 implementation, plus the private GostPublicKey/GostPrivateKey/GostContext classes
   x509/
     ext.cpp                    # UnknownExtension (fallback IExtension) + IExtension::create()'s OID-dispatch table
     generalname.cpp             # CGeneralName::decode()/decodeList() (GeneralName CHOICE parsing)
@@ -285,6 +295,7 @@ tests/
       b163.cpp, k163.cpp, b233.cpp, k233.cpp, b283.cpp, k283.cpp,
       b409.cpp, k409.cpp, b571.cpp, k571.cpp
                                      # the 10 binary/Koblitz curves, each: same coverage as p192.cpp
+      gost3410.cpp                   # GOST R 34.10-2012 test cases: RFC 7091 section 7's (r, s) known answer, RFC 9215 appendix D's three test certificates end to end (hash + signature + both byte orders), sign/verify round trips on all nine parameter sets, and wrong-key/tampered-message/tampered-signature/swapped-half negatives
     hashers/
       md4.cpp                    # MD4 test cases (RFC 1320 A.5 vectors + the documented NT hash of "password" + boundary/chunking tests)
       md5.cpp                    # MD5 test cases (RFC 1321 vectors + FIPS-style stress/chunking tests)
@@ -297,6 +308,8 @@ tests/
       shake128.cpp                        # SHAKE128 test cases (Python hashlib vectors + one NIST CSRC-published empty-message vector, cross-checked against hashlib)
       shake256.cpp                        # SHAKE256 test cases (known-answer vectors generated locally via Python's hashlib, incl. rate-block-boundary cases)
       blake2s.cpp                         # BLAKE2s test cases (RFC 7693 Appendix B, the 256-entry unkeyed reference KAT, every digest length 1-32, block-boundary lengths, chunk-invariance)
+      streebog.cpp                         # Streebog-256/-512 test cases (RFC 6986's two example messages, the published empty-message digests, chunk-invariance, that the 256-bit digest is not a cut of the 512-bit one, and RFC 9385's HMAC SKEYSEED -- the only available vector whose hash input is an exact multiple of the 64-byte block)
+      streebogcore.cpp                     # StreebogCore test cases: Pi' is a bijection, Tau satisfies the Tau(8w+t) == w+8t identity the fast table is built on, the combined LPS table agrees with the literal three-pass spec reading, and the mod-2^512 accumulators carry correctly
     rng.cpp                       # CRng::fill() test cases
     siphash.cpp                   # CSipHash test cases (all 64 of the SipHash reference's vectors_sip64 entries, chunking, key-reuse/restart semantics, error paths)
     syms/

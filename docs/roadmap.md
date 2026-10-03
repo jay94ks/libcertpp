@@ -18,15 +18,17 @@ gets answered one way or the other, so it is recorded rather than dropped.
 
 | Algorithm | Standard | For |
 | --------- | -------- | --- |
-| GOST R 34.10-2012 signatures, GOST R 34.11-2012 (Streebog) hash | RFC 7091, RFC 6986 | Russian-profile certificates and DNSSEC |
+| GOST R 34.10-2012 / Streebog **X.509 and DNSSEC wiring** (the algorithms themselves are done) | RFC 9215, RFC 9558 | Russian-profile certificates and DNSSEC |
 
 Landed, and now described in [`docs/architecture.md`](architecture.md):
 SipHash-2-4 (RFC 9018's DNS server-cookie PRF), BLAKE2s in all three forms
 (RFC 7693, for WireGuard), XChaCha20-Poly1305 with HChaCha20
 (draft-irtf-cfrg-xchacha), AES-GCM and an unpadded CBC mode (SP 800-38D and
 SP 800-38A, for IKEv2), ECDH over the prime curves (RFC 5903, also IKEv2),
-MD4 (RFC 1320, for EAP-MSCHAPv2's NT hash), and the DNSKEY/RRSIG conversion
-utility (RFC 4034, with RFC 5702/6605/8080 for the per-algorithm encodings).
+MD4 (RFC 1320, for EAP-MSCHAPv2's NT hash), the DNSKEY/RRSIG conversion
+utility (RFC 4034, with RFC 5702/6605/8080 for the per-algorithm encodings),
+and GOST R 34.11-2012 (Streebog) with GOST R 34.10-2012 over its nine named
+parameter sets.
 
 ### Notes that affect the implementations
 
@@ -55,11 +57,21 @@ utility (RFC 4034, with RFC 5702/6605/8080 for the per-algorithm encodings).
   stated plainly in `deriveSharedSecret()`'s doc comment, naming the
   IKEv2 ephemeral handshake as the case where it matters and pointing
   callers at X25519 where the protocol allows a choice.
+- **GOST's algorithms are implemented; only the encodings are left.**
+  `Streebog256`/`Streebog512` and `CGost3410` (nine parameter sets) are in
+  `crypto/`, validated against RFC 6986/7091/9215/9385 -- see
+  [`docs/changelog.md`](changelog.md). What remains is OIDs and wire
+  formats: the `id-tc26-signwithdigest-*` signature OIDs with an omitted
+  `parameters` field, the `SubjectPublicKeyInfo` whose `parameters` carries
+  the parameter-set OID and whose key bits are a BIT STRING *encapsulating
+  an OCTET STRING*, and the signature value as a raw `s || r` blob rather
+  than a DER `SEQUENCE { r, s }` -- so `CCert::verifyBy()` cannot assume the
+  ECDSA shape for these.
 - **GOST's DNSSEC story is split.** RFC 5933 registered the 2001 signature
   algorithm, and RFC 8624 says not to use it; the 2012 algorithms have
-  their own later registration. Which DNSSEC algorithm numbers to support
-  needs confirming against the current IANA registry before the DNSKEY
-  utility commits to any of them.
+  their own later registration (RFC 9558). Which DNSSEC algorithm numbers to
+  support needs confirming against the current IANA registry before the
+  DNSKEY utility commits to any of them.
 
 ## Constant-time and performance
 

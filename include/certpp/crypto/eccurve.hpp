@@ -37,6 +37,20 @@ namespace crypto {
         ECURVE_BPOOL384T1,   /**< brainpoolP384t1 (RFC 5639, the "twisted" counterpart of brainpoolP384r1). */
         ECURVE_BPOOL512T1,   /**< brainpoolP512t1 (RFC 5639, the "twisted" counterpart of brainpoolP512r1). */
 
+        // --> GOST R 34.10-2012 parameter sets (see src/crypto/eccurve.cpp for each one's
+        // authoritative source). Unlike every curve above, two of these have a cofactor of 4
+        // rather than 1, so a point can legitimately lie on the curve without belonging to the
+        // order-n subgroup -- which is why decodePoint()'s subgroup check is not redundant.
+        ECURVE_GOST256TEST,  /**< id-GostR3410-2001-TestParamSet (RFC 7091 section 7.1). Testing only. */
+        ECURVE_GOST256A,     /**< id-tc26-gost-3410-2012-256-paramSetA (RFC 7836 appendix A.2). */
+        ECURVE_GOST256B,     /**< id-tc26-gost-3410-2012-256-paramSetB, a.k.a. id-GostR3410-2001-CryptoPro-A-ParamSet. */
+        ECURVE_GOST256C,     /**< id-tc26-gost-3410-2012-256-paramSetC, a.k.a. id-GostR3410-2001-CryptoPro-B-ParamSet. */
+        ECURVE_GOST256D,     /**< id-tc26-gost-3410-2012-256-paramSetD, a.k.a. id-GostR3410-2001-CryptoPro-C-ParamSet. */
+        ECURVE_GOST512TEST,  /**< id-tc26-gost-3410-2012-512-paramSetTest (RFC 9215 appendix E). Testing only. */
+        ECURVE_GOST512A,     /**< id-tc26-gost-3410-12-512-paramSetA (RFC 7836 appendix A.1). */
+        ECURVE_GOST512B,     /**< id-tc26-gost-3410-12-512-paramSetB (RFC 7836 appendix A.1). */
+        ECURVE_GOST512C,     /**< id-tc26-gost-3410-2012-512-paramSetC (RFC 7836 appendix A.2). */
+
         ECURVE_MAX /**< Sentinel value representing the maximum known curve ID. */
     };
 
@@ -79,8 +93,10 @@ namespace crypto {
 
     /**
      * A short Weierstrass curve's domain parameters (y^2 = x^3 + a*x + b mod p), plus its base
-     * point g and subgroup order n (cofactor h is always 1 for the NIST curves this library
-     * ships, so it isn't tracked separately). Backs the P256/P384/P521 concrete IAsymmetric
+     * point g and subgroup order n (the cofactor isn't tracked separately: it's 1 for every
+     * NIST/Brainpool curve this library ships, and the two GOST parameter sets where it's 4 --
+     * ECURVE_GOST256A and ECURVE_GOST512C -- need it only for the VKO key agreement this
+     * library doesn't implement, not for signing). Backs the P256/P384/P521 concrete IAsymmetric
      * implementations, each of which owns one static CEcCurve instance describing its specific
      * curve; public rather than a src/-only implementation detail since the underlying group
      * arithmetic isn't tied to any one algorithm (matching CBigNum's own reasoning).
@@ -94,7 +110,7 @@ namespace crypto {
     class CERTPP_API CEcCurve {
     private:
         /**
-         * Known curves (e.g., NIST P-256, P-384, P-521).
+         * Known curves (e.g., NIST P-256, P-384, P-521, the GOST R 34.10-2012 parameter sets).
          */
         static const CEcCurve _knownCurves[ECURVE_MAX - 1];
 
