@@ -22,6 +22,12 @@ wrote to `examples/output/`, so they need to run in sequence the first time:
    arbitrary data with its private key and verify it back, including a deliberately tampered
    message (expected to fail) and a verify pass using only the public certificate.
 
+**`05_benchmark`** is not part of that sequence. It reads and writes nothing, takes no setup,
+and can be run on its own in any order -- it measures this library's own signature, key
+agreement, hashing and AEAD throughput, and it is where README.md's performance figures come
+from. Run it two or three times and take the best; a 20-30% spread between runs on a loaded
+machine is normal.
+
 `examples/output/` is gitignored; delete it (or just rerun from step 1) to regenerate
 everything with fresh keys. `examples/common.hpp` is shared file I/O/printing boilerplate, not
 an example of its own.

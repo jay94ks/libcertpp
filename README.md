@@ -173,6 +173,60 @@ suite that passes against broken code measures nothing. See
 [`docs/changelog.md`](docs/changelog.md) for cases where that caught something
 the published vectors could not.
 
+## Performance
+
+Measured by [`examples/05_benchmark.cpp`](examples/05_benchmark.cpp), so these
+are reproducible rather than claimed: build it and run it on your own hardware.
+Release/MSVC on a loaded 4-core i7-11370H laptop, each figure the fastest of
+three batches of 20 iterations, best of three runs. The run-to-run spread is
+20--30%, so nothing smaller than that is a result.
+
+| Signature | sign | verify |
+|---|---|---|
+| Ed25519 | **0.21 ms** | **0.92 ms** |
+| ML-DSA-65 | 2.09 ms | 0.67 ms |
+| ECDSA P-256 | 1.05 ms | 3.53 ms |
+| ECDSA P-384 | 2.58 ms | 6.88 ms |
+| ECDSA P-521 | 5.53 ms | 15.2 ms |
+| Ed448 | 2.80 ms | 14.0 ms |
+| RSA-2048 | 9.82 ms | 0.17 ms |
+
+| Key agreement / KEM | keygen | operation |
+|---|---|---|
+| X25519 | 0.38 ms | 0.19 ms derive |
+| ML-KEM-768 | — | 0.18 ms encap / 0.20 ms decap |
+| ECDH P-256 | 3.42 ms | 1.57 ms derive |
+
+| 64 KiB throughput | | | |
+|---|---|---|---|
+| SHA-256 | **1500 MiB/s** | ChaCha20-Poly1305 | 563 MiB/s |
+| MD5 | 560 MiB/s | XChaCha20-Poly1305 | 558 MiB/s |
+| BLAKE2s | 395 MiB/s | AES-256-GCM | 370 MiB/s |
+| SHA-512 | 342 MiB/s | | |
+| SHA3-256 | 103 MiB/s | | |
+| Streebog-256 | 70 MiB/s | | |
+
+Four things in there are worth explaining, because each is a property of the
+implementation rather than noise:
+
+- **Ed25519 is an order of magnitude off an optimized implementation** (which
+  verifies in 50--100 µs), and everything else is further off than that. It is
+  the one curve on a dedicated constant-time field (`Fe25519`); the prime
+  curves still run on the general-purpose `CBigNum` with Montgomery reduction.
+- **Signing beats verification on the prime curves** — P-256 signs in 1.05 ms
+  and verifies in 3.53 ms — because signing multiplies the *fixed* base point
+  and uses a precomputed window table, while verification multiplies a
+  caller-supplied point and cannot.
+- **RSA-2048 is lopsided by design**: `e = 65537` makes verification three
+  multiplies, while signing is a full CRT exponentiation on a schoolbook
+  big-number backend.
+- **AES-256-GCM sits below ChaCha20-Poly1305 despite AES-NI**, because GHASH
+  rather than the cipher is the bottleneck and an AEAD composes as
+  `1/total = 1/cipher + 1/mac`.
+
+[`docs/roadmap.md`](docs/roadmap.md) has the targets, what is already done, and
+what each remaining gap actually needs.
+
 ## Status
 
 Early-stage and under active development; interfaces may still change. **Not

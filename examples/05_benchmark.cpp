@@ -1,0 +1,277 @@
+// Example 5: measure this library's own throughput, on this machine.
+//
+// Unlike examples 01-04 this one is standalone -- it reads and writes nothing under
+// examples/output/ and can be run on its own, in any order. It exists because the figures in
+// README.md and docs/roadmap.md are otherwise unverifiable claims: a reader who wants to know
+// what libcertpp costs on *their* hardware should be able to run the same harness that produced
+// them rather than take a number on trust.
+//
+// Methodology, and why it is shaped this way: every figure is the fastest of OUTER batches of
+// ITERS iterations. The fastest rather than the mean, because a benchmark on a machine with
+// other work running measures the scheduler as much as the code, and the quickest batch is the
+// one least contaminated by it. Run the whole thing two or three times and take the best; a
+// spread of 20-30% between runs on a loaded laptop is normal, and nothing smaller than that is
+// a result.
+//
+// These are not microbenchmarks of primitives in isolation. Each signature figure includes the
+// per-call allocation and context bookkeeping a real caller pays for, because that is what a
+// caller actually experiences.
+
+#include "common.hpp"
+
+#include <chrono>
+#include <functional>
+#include <vector>
+
+using namespace certpp;
+using namespace certpp::crypto;
+
+namespace {
+    constexpr int OUTER = 3;
+    constexpr int ITERS = 20;
+    constexpr size_t BULK_BYTES = 64 * 1024;
+
+    /* Runs body() iters times, outer times over, and returns the fastest batch's per-call time
+     * in milliseconds. */
+    double fastestMs(int outer, int iters, const std::function<void()>& body) {
+        double best = 0.0;
+
+        for (int o = 0; o < outer; ++o) {
+            const auto started = std::chrono::steady_clock::now();
+            for (int i = 0; i < iters; ++i) {
+                body();
+            }
+            const auto ended = std::chrono::steady_clock::now();
+
+            const double ms =
+                std::chrono::duration<double, std::milli>(ended - started).count() / iters;
+
+            if (o == 0 || ms < best) {
+                best = ms;
+            }
+        }
+
+        return best;
+    }
+
+    void printMs(const char* label, int iters, const std::function<void()>& body) {
+        printf("  %-26s %9.3f ms\n", label, fastestMs(OUTER, iters, body));
+    }
+
+    void printThroughput(const char* label, size_t bytes, const std::function<void()>& body) {
+        const double ms = fastestMs(OUTER, ITERS, body);
+        printf("  %-26s %9.1f MiB/s\n", label,
+            (double(bytes) / (1024.0 * 1024.0)) / (ms / 1000.0));
+    }
+
+    /* Signs and verifies one fixed input. digestBytes of 0 means the scheme hashes the message
+     * itself (Ed25519/Ed448/ML-DSA), where the parameter carries the message rather than a
+     * digest -- see IAsymmetricContext::sign()'s own doc comment. */
+    void benchSignVerify(
+        const char* name, EAsymmetrics algo, SKeySize keySize, size_t digestBytes, int iters
+    ) {
+        IAsymmetricPtr algorithm = IAsymmetric::builtIn(algo);
+        SKeyPair pair;
+
+        if (!algorithm || algorithm->generateKeyPair(keySize, pair) != ERET_OK || !pair) {
+            printf("  %-26s (unavailable)\n", name);
+            return;
+        }
+
+        IAsymmetricContextPtr ctx = algorithm->createContext();
+        ctx->keyPair(pair);
+
+        const std::vector<uint8_t> message(digestBytes ? digestBytes : 32, 0x5a);
+        const SReadOnlyByteSpan messageSpan(message.data(), message.size());
+
+        std::vector<uint8_t> scratch(ctx->sizeOfSign());
+        SByteSpan signature(scratch.data(), scratch.size());
+        if (ctx->sign(messageSpan, signature) != ERET_OK) {
+            printf("  %-26s (sign failed)\n", name);
+            return;
+        }
+
+        const std::vector<uint8_t> fixedSig(signature.data, signature.data + signature.size);
+        const SReadOnlyByteSpan sigSpan(fixedSig.data(), fixedSig.size());
+
+        char label[96];
+        snprintf(label, sizeof(label), "%s sign", name);
+        printMs(label, iters, [&] {
+            std::vector<uint8_t> out(ctx->sizeOfSign());
+            SByteSpan span(out.data(), out.size());
+            ctx->sign(messageSpan, span);
+        });
+
+        snprintf(label, sizeof(label), "%s verify", name);
+        printMs(label, iters, [&] { ctx->verify(messageSpan, sigSpan); });
+    }
+
+    /* Key generation and one shared-secret derivation against a second key pair. */
+    void benchAgreement(const char* name, EAsymmetrics algo, SKeySize keySize, int iters) {
+        IAsymmetricPtr algorithm = IAsymmetric::builtIn(algo);
+        SKeyPair mine, peer;
+
+        if (!algorithm || algorithm->generateKeyPair(keySize, mine) != ERET_OK
+            || algorithm->generateKeyPair(keySize, peer) != ERET_OK) {
+            printf("  %-26s (unavailable)\n", name);
+            return;
+        }
+
+        IAsymmetricContextPtr ctx = algorithm->createContext();
+        ctx->keyPair(mine);
+
+        std::vector<uint8_t> probe(256);
+        SByteSpan probeSpan(probe.data(), probe.size());
+        if (ctx->deriveSharedSecret(peer.publicKey, probeSpan) != ERET_OK) {
+            printf("  %-26s (agreement unsupported)\n", name);
+            return;
+        }
+
+        char label[96];
+        snprintf(label, sizeof(label), "%s keygen", name);
+        printMs(label, iters, [&] {
+            SKeyPair fresh;
+            algorithm->generateKeyPair(keySize, fresh);
+        });
+
+        snprintf(label, sizeof(label), "%s derive", name);
+        printMs(label, iters, [&] {
+            std::vector<uint8_t> out(256);
+            SByteSpan span(out.data(), out.size());
+            ctx->deriveSharedSecret(peer.publicKey, span);
+        });
+    }
+
+    void benchHash(const char* name, EHashers which, const std::vector<uint8_t>& data) {
+        IHasherPtr hasher;
+        if (IHasher::create(which, hasher) != ERET_OK || !hasher) {
+            printf("  %-26s (unavailable)\n", name);
+            return;
+        }
+
+        std::vector<uint8_t> digest(hasher->byteWidth() ? hasher->byteWidth() : 64);
+        printThroughput(name, data.size(), [&] {
+            hasher->reset();
+            hasher->push(SReadOnlyByteSpan(data.data(), data.size()));
+            hasher->finish(SByteSpan(digest.data(), digest.size()));
+        });
+    }
+
+    void benchKem() {
+        IKemPtr kem = IKem::builtIn(EKEM_MLKEM768);
+        SKemKeyPair pair;
+
+        if (!kem || kem->generateKeyPair(768, pair) != ERET_OK || !pair.publicKey) {
+            printf("  %-26s (unavailable)\n", "ML-KEM-768");
+            return;
+        }
+
+        IKemContextPtr encap = kem->createContext();
+        IKemContextPtr decap = kem->createContext();
+        encap->keyPair(pair.publicKey, nullptr);
+        decap->keyPair(nullptr, pair.privateKey);
+
+        std::vector<uint8_t> ct(encap->sizeOfCiphertext());
+        std::vector<uint8_t> ss(encap->sizeOfSharedSecret());
+        SByteSpan ctSpan(ct.data(), ct.size());
+        SByteSpan ssSpan(ss.data(), ss.size());
+
+        if (encap->encapsulate(ctSpan, ssSpan) != ERET_OK) {
+            printf("  %-26s (encapsulate failed)\n", "ML-KEM-768");
+            return;
+        }
+
+        // --> decapsulate() needs one fixed ciphertext to work against; a fresh one per call
+        // would measure encapsulate() as well.
+        const std::vector<uint8_t> fixedCt(ct.begin(), ct.begin() + ctSpan.size);
+
+        printMs("ML-KEM-768 encapsulate", 50, [&] {
+            std::vector<uint8_t> c(encap->sizeOfCiphertext());
+            std::vector<uint8_t> s(encap->sizeOfSharedSecret());
+            SByteSpan cs(c.data(), c.size());
+            SByteSpan sp(s.data(), s.size());
+            encap->encapsulate(cs, sp);
+        });
+
+        printMs("ML-KEM-768 decapsulate", 50, [&] {
+            std::vector<uint8_t> s(decap->sizeOfSharedSecret());
+            SByteSpan sp(s.data(), s.size());
+            decap->decapsulate(SReadOnlyByteSpan(fixedCt.data(), fixedCt.size()), sp);
+        });
+    }
+
+    void benchAeads(const std::vector<uint8_t>& bulk) {
+        const std::vector<uint8_t> key(32, 0x01);
+        const std::vector<uint8_t> nonce12(12, 0x02);
+        const std::vector<uint8_t> nonce24(24, 0x03);
+        std::vector<uint8_t> out(bulk.size());
+        std::vector<uint8_t> tag(16);
+
+        const SReadOnlyByteSpan keySpan(key.data(), key.size());
+        const SReadOnlyByteSpan plain(bulk.data(), bulk.size());
+        const SReadOnlyByteSpan noAad(nullptr, 0);
+        const SByteSpan outSpan(out.data(), out.size());
+        const SByteSpan tagSpan(tag.data(), tag.size());
+
+        CChaCha20Poly1305 chacha;
+        if (chacha.reset(keySpan)) {
+            printThroughput("ChaCha20-Poly1305", bulk.size(), [&] {
+                chacha.seal(SReadOnlyByteSpan(nonce12.data(), nonce12.size()),
+                    noAad, plain, outSpan, tagSpan);
+            });
+        }
+
+        CXChaCha20Poly1305 xchacha;
+        if (xchacha.reset(keySpan)) {
+            printThroughput("XChaCha20-Poly1305", bulk.size(), [&] {
+                xchacha.seal(SReadOnlyByteSpan(nonce24.data(), nonce24.size()),
+                    noAad, plain, outSpan, tagSpan);
+            });
+        }
+
+        // --> AES-256-GCM lands *below* ChaCha20-Poly1305 here despite AES-NI, because GHASH is
+        // the bottleneck rather than the cipher, and the two compose as 1/total = 1/cipher +
+        // 1/mac. See docs/changelog.md's AES-GCM entry.
+        CAesGcm gcm;
+        if (gcm.reset(keySpan)) {
+            printThroughput("AES-256-GCM", bulk.size(), [&] {
+                gcm.seal(SReadOnlyByteSpan(nonce12.data(), nonce12.size()),
+                    noAad, plain, outSpan, tagSpan);
+            });
+        }
+    }
+}
+
+int main() {
+    printf("libcertpp benchmark -- fastest of %d batches of %d iterations\n\n", OUTER, ITERS);
+
+    printf("= Signatures =\n");
+    benchSignVerify("RSA-2048", EASYM_RSA, 2048, 32, ITERS);
+    benchSignVerify("Ed25519", EASYM_ED25519, 256, 0, ITERS);
+    benchSignVerify("Ed448", EASYM_ED448, 456, 0, ITERS);
+    benchSignVerify("ECDSA P-256", EASYM_P256, 256, 32, ITERS);
+    benchSignVerify("ECDSA P-384", EASYM_P384, 384, 48, ITERS);
+    benchSignVerify("ECDSA P-521", EASYM_P521, 521, 64, ITERS);
+    benchSignVerify("ML-DSA-65", EASYM_MLDSA65, 65, 0, ITERS);
+
+    printf("\n= Key agreement and encapsulation =\n");
+    benchAgreement("X25519", EASYM_X25519, 256, ITERS);
+    // --> ECDH over a prime curve is the slowest thing here and runs fewer iterations for it.
+    benchAgreement("ECDH P-256", EASYM_P256, 256, 10);
+    benchKem();
+
+    const std::vector<uint8_t> bulk(BULK_BYTES, 0xa5);
+
+    printf("\n= Hashing, %zu KiB buffer =\n", BULK_BYTES / 1024);
+    benchHash("SHA-256", EHASH_SHA256, bulk);
+    benchHash("SHA-512", EHASH_SHA512, bulk);
+    benchHash("SHA3-256", EHASH_SHA3_256, bulk);
+    benchHash("BLAKE2s", EHASH_BLAKE2S, bulk);
+    benchHash("Streebog-256", EHASH_STREEBOG256, bulk);
+    benchHash("MD5", EHASH_MD5, bulk);
+
+    printf("\n= AEAD seal, %zu KiB =\n", BULK_BYTES / 1024);
+    benchAeads(bulk);
+
+    return 0;
+}
