@@ -101,6 +101,12 @@ X25519(RFC 7748), 소수체 곡선 위의 ECDH(RFC 5903), 그리고 9종의 명�
 RDATA, 키 태그, DS 다이제스트, 그리고 DNSSEC의 와이어 포맷과 이 라이브러리의
 키·서명 사이의 재인코딩.
 
+**JSON 및 BSON** — JSON 값의 파싱·직렬화(`CJson`, `parseJson()`)와 중첩된
+배열·객체 및 escape된 Unicode 문자열을 포함하는 BSON 문서의 인코딩·디코딩을
+지원합니다. BSON 정수는 라이브러리의 `double` 숫자 타입으로 변환되며, JSON에
+대응하는 값이 없는 BSON 타입은 거부합니다. `-DCERTPP_WITHOUT_JSON=ON`으로
+설정하면 유틸리티를 빌드에서 제외할 수 있습니다.
+
 **하드웨어 가속** — 큰 수 연산용 ADX/BMI2, 이진체 연산 및 GHASH용 PCLMULQDQ,
 SHA-NI, AES-NI, 그리고 4블록 SSE2 ChaCha20 키스트림. 각각 바이트 단위로 동일한
 결과를 내도록 요구되는 소프트웨어 폴백과, 그것을 강제하는 CMake 스위치를 함께

@@ -91,6 +91,7 @@ Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`),
 | Constant-time compare / wipe | `utils/secure.hpp` | `CSecure::equals()`, `equalsMask()`, `select()`, `zero()` |
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | Hex | `utils/hex.hpp` | `CHex` |
+| Parse / build JSON values and BSON documents | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
 | Random bytes | `crypto/rng.hpp` | `CRng::fill(span)` |
 
 ## Buffers and spans

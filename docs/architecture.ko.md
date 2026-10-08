@@ -7,7 +7,8 @@
 `libcertpp`는 C++17 라이브러리이며, 아직 초기 단계이지만 최초의 뼈대는
 넘어섰습니다. `common` 기반, `version` 모듈, `utils`
 모듈(DJB 해시 유틸리티, `CHex` 16진 디코딩, `CBase64` base64, 임의 정밀도
-정수인 `CBigNum`, 이진체(binary-field, GF(2^m)) 원소인 `CGf2m`), `io`
+정수인 `CBigNum`, 이진체(binary-field, GF(2^m)) 원소인 `CGf2m`, JSON 파싱과
+직렬화를 위한 `CJson`), `io`
 계층(span, 증가 가능한 배열, 크기 조절 가능한 작업용 바이트
 버퍼(`CBuffer`), 고정 크기 소유 버퍼(`COctet`), 그리고 스트림 추상),
 `asn1` 모듈(태그 인코드/디코드, TLV 디코더/인코더, 순차 reader/writer 래퍼,
@@ -74,6 +75,7 @@ include/
       hex.hpp                   # CHex: 16진 문자열 -> 바이트 디코더("0x"/"0X" 접두사 선택적). CBigNum::fromHex()/CGf2m::fromHex()가 공유
       secure.hpp                 # CSecure: 컴파일러가 제거할 수 없는 영 소거, 그리고 constant-time equals()/equalsMask()/select() — 실행 시간이 입력에 의존해서는 안 되는 연산들
       base64.hpp                 # CBase64: base64 코덱. 스트리밍 push()/finish() 변환과 정적 일괄 encode()/decode() 둘 다. EBase64Mode
+      json.hpp                   # CJson: JSON 값 트리, parseJson()/parseBson(), toString()/toBson()
       bignum.hpp                 # CBigNum: 임의 정밀도 음이 아닌 정수 (RSA/DSA/EC/Ed25519 연산)
       montgomery.hpp              # CMontgomery: 홀수 모듈러스 하나와 미리 계산한 Montgomery 상수들. EC 체 연산을 위한 나눗셈 없는 mul/add/sub/dbl/neg/modExp
       gf2m.hpp                    # CGf2m: 고정 용량 GF(2^m) 이진체 원소(다항식 기저). EGf2mKnownField + CGf2m::knownField()/knownFieldPtr()가 B-*/K-* 이진 곡선들이 공유하는 다섯 가지 체 크기를 지칭합니다
@@ -179,6 +181,7 @@ src/
   utils/
     djb.cpp                    # CDjb::compute()/computeAsUpper()/computeAsLower()
     hex.cpp                     # CHex::decode()
+    json.cpp                    # JSON/BSON 파싱과 직렬화, 문자열 escape 및 BSON 경계 검사
     base64.cpp                   # CBase64 스트리밍 push()/finish() + 정적 일괄 encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin 소수 판정 + crypto::CRng를 통한 소수 생성
     montgomery.cpp                # CMontgomery: -m^-1 mod 2^32 Newton 반복, R^2 mod m, 그리고 CBigNum의 원시 limb 위의 CIOS Montgomery 곱셈
@@ -312,6 +315,7 @@ tests/
   name.cpp                    # CName 테스트 케이스
   utils/
     djb.cpp                    # CDjb 해시 테스트 케이스
+    json.cpp                    # JSON/BSON primitive, 중첩 값, 잘못된 입력, escape 및 왕복 테스트
     base64.cpp                  # CBase64 스트리밍/일괄 인코드/디코드 테스트 케이스. PEM 줄바꿈 포함
     bignum.cpp                 # CBigNum 산술/modexp/modinverse/소수 판정 테스트 케이스
     divmod.cpp                  # CBigNum::divMod()를 공개 API로 만든 비트 직렬 참조에 대해 차분 퍼징. 더해서 알고리즘 D의 add-back 분기를 위한 구성된 입력(무작위 테스트로는 도달 불가)
@@ -890,6 +894,16 @@ CMakeLists.txt              # certpp(그리고 CERTPP_BUILD_TESTS=ON이면 테�
   만들어 줍니다. `CCert::importPem()`/`exportPem()`이 주요 소비자입니다.
   `io/base64.hpp`는 이것이 **아니라는** 점에 유의하십시오. 아무것도 선언하지
   않고 `certpp.hpp`가 의도적으로 포함하지 않는 빈 자리표시 헤더입니다.
+- **`utils/json.hpp` / `src/utils/json.cpp`**는 `CJson`을 정의합니다. null,
+  boolean, number, string, array, object를 담는 JSON 값 트리입니다.
+  `parseJson()`은 완전한 JSON 값 하나만 받고, `toString()`은 문자열과 객체
+  키의 escape를 처리하며 유한한 `double`의 왕복 정밀도를 보존합니다. 깊이
+  제한을 넘는 값과 유한하지 않은 숫자는 `null`로 출력됩니다.
+  `toBson()`과 `parseBson()`은 중첩 객체/배열, boolean, string, null, double,
+  BSON 정수(`double`로 변환)를 포함하는 BSON 문서를 처리하며, 지원하지 않는
+  BSON 타입은 거부합니다. BSON scalar 루트는 인코딩할 수 없습니다.
+  `CERTPP_WITHOUT_JSON`을 켜면 `certpp.hpp`의 선택적 include가 비활성화되고,
+  설치 헤더에서 `json.hpp`가 빠지며 `tests/utils/json.cpp`도 건너뜁니다.
 - **`io/octet.hpp` / `src/io/octet.cpp`**는 `COctet`을 정의합니다. 소유하는
   고정 크기 바이트 버퍼(`TString<T>`와 달리 크기 조절/증가 불가)입니다 —
   `store()`가 내용을 교체하고(복사해 소유권을 가집니다. null 포인터나 크기 0은
@@ -2882,10 +2896,12 @@ CMakeLists.txt              # certpp(그리고 CERTPP_BUILD_TESTS=ON이면 테�
     키는 `y`를 담고 있지 않으므로 그것을 읽는 데 `g^x mod p` 비용이 든다는
     점에 유의하십시오.
 - **`certpp.hpp`**은 소비자를 위한 단일 포함 지점입니다. `include/certpp/`
-  아래에 새 공개 헤더를 추가하면 그 `#include`를 여기 추가하십시오. 공개 헤더
-  둘이 의도적으로 포함되어 있지 *않습니다*. `crypto/kem.hpp`(뒤에 구현이 아직
-  없습니다 — 그 자체 항목 참고)와, 빈 자리표시인 `io/base64.hpp`(`CBase64`는
-  `utils/base64.hpp`에 있습니다)입니다.
+  아래에 새 공개 헤더를 추가하면 그 `#include`를 여기 추가하십시오.
+  선택적 `utils/json.hpp` include는 `CERTPP_WITHOUT_JSON`으로 가드되며,
+  JSON을 비활성화하면 CMake가 이 정의를 소비자에게도 전파합니다. 그 밖에
+  의도적으로 포함하지 않는 공개 헤더는 둘입니다. `crypto/kem.hpp`(뒤에 구현이
+  아직 없습니다 — 그 자체 항목 참고)와, 빈 자리표시인 `io/base64.hpp`
+  (`CBase64`는 `utils/base64.hpp`에 있습니다)입니다.
 - **`tests/`**는 모든 테스트 케이스를 담고 있고, `CERTPP_BUILD_TESTS`(기본
   `ON`)로 소스 파일당 실행 파일 하나로 빌드되어 CTest에 등록됩니다. 파일
   배치/이름 관례는

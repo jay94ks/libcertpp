@@ -12,6 +12,22 @@ back what your own code wrote, you have tested nothing about
 interoperability.** Check against a published vector, a certificate someone
 else issued, or a second implementation.
 
+## JSON
+
+**A valid JSON `null` is not a parse failure.** `parseJson("null")` returns a
+non-null `CJsonPtr` whose `isNull()` is true; a null pointer means parsing
+failed. Check the pointer before inspecting the value, then use `isNull()` for
+the JSON null case.
+
+**`toString(maxDepth)` replaces values beyond the depth limit with JSON
+`null`.** The output remains valid JSON, but it is no longer a lossless
+serialization of the original tree. Do not use a limited-depth rendering for
+persistence or signing.
+
+**BSON integer values are converted to `double`.** The JSON value model has no
+integer type, so BSON `int64` values above 2^53 may lose precision. BSON types
+without a JSON equivalent are rejected rather than silently discarded.
+
 ## Signing and verifying
 
 **An output span's `size` is narrowed by the callee.** You pass capacity; you

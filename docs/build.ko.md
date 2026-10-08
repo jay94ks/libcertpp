@@ -33,6 +33,7 @@ cmake --build build
 | 옵션                  | 기본값  | 효과                                                           |
 |------------------------|---------|----------------------------------------------------------------|
 | `CERTPP_BUILD_SHARED`  | `ON`    | `certpp`를 정적 라이브러리(`.lib`/`.a`)가 아니라 공유 라이브러리(`.dll`/`.so`)로 빌드합니다. |
+| `CERTPP_WITHOUT_JSON`  | `OFF`   | JSON 유틸리티 구현과 엄브렐라 헤더의 include를 제외하고, 설치 시 해당 헤더를 빼며, JSON 테스트 실행 파일을 건너뛰고, `CERTPP_WITHOUT_JSON` 정의를 소비자에게 전파합니다. |
 | `CERTPP_BUILD_TESTS`   | `ON`    | `tests/` 아래의 테스트 실행 파일들을 빌드하고 CTest에 등록합니다. |
 | `CERTPP_BUILD_EXAMPLES` | `ON`   | `examples/` 아래의 프로그램들을 `certpp_example_<name>` 실행 파일로 빌드합니다. 이들은 CTest에 등록되지 않습니다 (인증서를 `examples/output/`에 기록하며, 순서대로 직접 실행하도록 만들어져 있습니다). [`examples/README.md`](../examples/README.md)(영문)를 참고하세요. |
 | `CERTPP_RNG_FALLBACK`  | `OFF`   | OS CSPRNG(Windows에서는 `BCryptGenRandom`, Linux에서는 `getrandom(2)`과 그것이 안 될 때의 `/dev/urandom`, 그 외 POSIX 플랫폼에서는 `/dev/urandom`)를 사용할 수 없는 경우 `crypto::CRng::fill()`이 `std::random_device`로 폴백하도록 허용합니다. 기본값인 `OFF`에서는 폴백이 컴파일 단계에서 제외되고, 그런 경우 `fill()`은 대신 `ERET_NOTSUP`을 반환합니다 -- `std::random_device`는 모든 표준 라이브러리에서 암호학적으로 안전하다고 보장되지 않으므로, OS 수준 CSPRNG가 정말로 존재하지 않는 환경을 위한 임시 방편으로만 켜십시오. |

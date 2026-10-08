@@ -19,6 +19,43 @@ using namespace certpp::crypto;
 using namespace certpp::x509;
 ```
 
+## JSON 파싱과 직렬화
+
+```cpp
+CJsonPtr value = parseJson(R"({"enabled":true,"labels":["cert","json"]})");
+if (!value) {
+    return; // 입력이 완전하고 유효한 JSON 값 하나가 아닙니다.
+}
+
+CJson::KeyedValue enabled = value->byKey("enabled");
+if (enabled.value && enabled.value->asBool()) {
+    std::string encoded = value->toString();
+}
+```
+
+`parseJson()`은 루트 primitive를 포함해 완전한 JSON 값 하나를 받습니다.
+유효한 JSON `null`과 파싱 실패를 구분하려면 `value->isNull()`을 사용하십시오.
+유효한 `null`의 반환값은 null이 아닌 `CJsonPtr`입니다.
+
+```cpp
+CJsonPtr document = parseJson(R"({"enabled":true,"count":3})");
+if (!document) {
+    return;
+}
+
+CBuffer bson;
+if (!document->toBson(bson)) {
+    return;
+}
+
+CJsonPtr decoded = parseBson(bson.toSpan());
+```
+
+BSON 루트는 document이므로 `toBson()`은 JSON object와 array만 받습니다.
+`parseBson(span, true)`는 루트 document를 array로 해석하며 `"0"`, `"1"`처럼
+연속된 문자열 키를 요구합니다. BSON 정수 타입은 JSON `double` 값으로 변환되며,
+지원하지 않는 BSON 타입은 파싱에 실패합니다.
+
 ## 인증서를 파싱하고 읽기
 
 ```cpp

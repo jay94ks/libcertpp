@@ -14,6 +14,9 @@
 #include <certpp/utils/bignum.hpp>
 #include <certpp/utils/montgomery.hpp>
 #include <certpp/utils/gf2m.hpp>
+#if !defined(CERTPP_WITHOUT_JSON)
+#include <certpp/utils/json.hpp>
+#endif
 
 #include <certpp/io/span.hpp>
 #include <certpp/io/array.hpp>

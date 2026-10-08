@@ -102,6 +102,12 @@ verifies end to end in the test suite.
 names, RDATA, key tags, DS digests, and the re-encoding between DNSSEC's wire
 formats and this library's keys and signatures.
 
+**JSON and BSON** — parse and serialize JSON values (`CJson`, `parseJson()`),
+and encode/decode BSON documents, including nested arrays/objects and escaped
+Unicode strings. BSON maps integer values to the library's `double` number
+type and rejects BSON types without a JSON equivalent. Disable the utility at
+configure time with `-DCERTPP_WITHOUT_JSON=ON`.
+
 **Hardware acceleration** — ADX/BMI2 for big-number arithmetic, PCLMULQDQ for
 binary fields and GHASH, SHA-NI, AES-NI, and a four-block SSE2 ChaCha20
 keystream. Each has a portable fallback expected to produce byte-identical

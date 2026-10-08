@@ -15,6 +15,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(CERTPP_BUILD_SHARED "Build certpp as a shared library" ON)
+option(CERTPP_WITHOUT_JSON "Exclude the JSON utility from the library" OFF)
 option(CERTPP_RNG_FALLBACK "Allow crypto::CRng to fall back to std::random_device if the OS CSPRNG is unavailable" OFF)
 option(CERTPP_DISABLE_HWACCEL_SIMD "Disable CPU SIMD/extended-instruction hardware acceleration (PCLMULQDQ for CGf2m and GHASH, ADX/BMI2 for CBigNum, SSE2 for ChaCha20's keystream -- and, transitively, every asymmetric algorithm built on them, plus both AEADs), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
@@ -23,6 +24,10 @@ option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware accelerati
 file(GLOB_RECURSE CERTPP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
+
+if(CERTPP_WITHOUT_JSON)
+    list(FILTER CERTPP_SOURCES EXCLUDE REGEX "/utils/json\\.cpp$")
+endif()
 
 if(CERTPP_BUILD_SHARED)
     add_library(certpp SHARED ${CERTPP_SOURCES})
@@ -56,6 +61,7 @@ target_compile_definitions(certpp
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AES}>:CERTPP_DISABLE_HWACCEL_AES=1>
     PUBLIC
         $<$<BOOL:${CERTPP_BUILD_SHARED}>:__SHARED_LIBCERTPP__=1>
+        $<$<BOOL:${CERTPP_WITHOUT_JSON}>:CERTPP_WITHOUT_JSON=1>
 )
 
 set_target_properties(certpp PROPERTIES
@@ -72,9 +78,16 @@ install(TARGETS certpp
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(DIRECTORY include/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+if(CERTPP_WITHOUT_JSON)
+    install(DIRECTORY include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        PATTERN "json.hpp" EXCLUDE
+    )
+else()
+    install(DIRECTORY include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+endif()
 
 install(EXPORT certpp-targets
     FILE certpp-targets.cmake
@@ -125,6 +138,10 @@ if(CERTPP_BUILD_TESTS)
     file(GLOB_RECURSE CERTPP_TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp
     )
+
+    if(CERTPP_WITHOUT_JSON)
+        list(FILTER CERTPP_TEST_SOURCES EXCLUDE REGEX "/utils/json\\.cpp$")
+    endif()
 
     foreach(CERTPP_TEST_SOURCE ${CERTPP_TEST_SOURCES})
         file(RELATIVE_PATH CERTPP_TEST_REL ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CERTPP_TEST_SOURCE})

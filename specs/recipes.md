@@ -20,6 +20,43 @@ using namespace certpp::crypto;
 using namespace certpp::x509;
 ```
 
+## Parse and serialize JSON
+
+```cpp
+CJsonPtr value = parseJson(R"({"enabled":true,"labels":["cert","json"]})");
+if (!value) {
+    return; // The input was not one complete, valid JSON value.
+}
+
+CJson::KeyedValue enabled = value->byKey("enabled");
+if (enabled.value && enabled.value->asBool()) {
+    std::string encoded = value->toString();
+}
+```
+
+`parseJson()` accepts one complete JSON value, including a root primitive.
+Use `value->isNull()` to distinguish a valid JSON `null` from a parse failure:
+the valid `null` result is a non-null `CJsonPtr`.
+
+```cpp
+CJsonPtr document = parseJson(R"({"enabled":true,"count":3})");
+if (!document) {
+    return;
+}
+
+CBuffer bson;
+if (!document->toBson(bson)) {
+    return;
+}
+
+CJsonPtr decoded = parseBson(bson.toSpan());
+```
+
+BSON's root is a document, so `toBson()` accepts only JSON objects and arrays.
+`parseBson(span, true)` interprets the root document as an array and requires
+its keys to be the sequential strings `"0"`, `"1"`, and so on. BSON integer
+types become JSON `double` values; unsupported BSON types fail parsing.
+
 ## Parse a certificate and read it
 
 ```cpp

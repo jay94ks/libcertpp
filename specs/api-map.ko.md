@@ -91,6 +91,7 @@
 | constant-time 비교/지우기 | `utils/secure.hpp` | `CSecure::equals()`, `equalsMask()`, `select()`, `zero()` |
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | 16진수 | `utils/hex.hpp` | `CHex` |
+| JSON 값과 BSON 문서 파싱/생성 | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
 | 무작위 바이트 | `crypto/rng.hpp` | `CRng::fill(span)` |
 
 ## 버퍼와 span

@@ -33,6 +33,7 @@ cmake --build build
 | Option                | Default | Effect                                                        |
 |------------------------|---------|----------------------------------------------------------------|
 | `CERTPP_BUILD_SHARED`  | `ON`    | Builds `certpp` as a shared library (`.dll`/`.so`) instead of a static one (`.lib`/`.a`). |
+| `CERTPP_WITHOUT_JSON`  | `OFF`   | Excludes the JSON utility implementation and umbrella-header include, omits its header from installation, skips its test executable, and propagates `CERTPP_WITHOUT_JSON` to consumers. |
 | `CERTPP_BUILD_TESTS`   | `ON`    | Builds the test executables under `tests/` and registers them with CTest. |
 | `CERTPP_BUILD_EXAMPLES` | `ON`   | Builds the programs under `examples/` as `certpp_example_<name>` executables. They are not registered with CTest (they write certificates to `examples/output/` and are meant to be run by hand, in order); see [`examples/README.md`](../examples/README.md). |
 | `CERTPP_RNG_FALLBACK`  | `OFF`   | Lets `crypto::CRng::fill()` fall back to `std::random_device` if the OS CSPRNG (`BCryptGenRandom` on Windows; `getrandom(2)` falling back to `/dev/urandom` on Linux; `/dev/urandom` on other POSIX platforms) is unavailable; default `OFF` compiles the fallback out and `fill()` returns `ERET_NOTSUP` in that case instead -- turn it on only as a stopgap for an environment that genuinely lacks an OS-level CSPRNG, since `std::random_device` is not guaranteed to be cryptographically secure on every standard library. |

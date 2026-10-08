@@ -7,7 +7,8 @@
 `libcertpp` is a C++17 library, still early-stage but past its initial
 scaffolding: a `common` foundation, a `version` module, a `utils` module
 (a DJB hash utility, `CHex` hex decoding, `CBase64` base64, `CBigNum` an
-arbitrary-precision integer, and `CGf2m` a binary-field (GF(2^m)) element),
+arbitrary-precision integer, `CGf2m` a binary-field (GF(2^m)) element, and
+`CJson` JSON parsing/serialization),
 an `io` layer (spans, a growable array, a resizable working byte buffer
 (`CBuffer`), a fixed-size owning one (`COctet`), and a stream
 abstraction), an `asn1` module (tag encode/decode, a TLV decoder/encoder,
@@ -75,6 +76,7 @@ include/
       hex.hpp                   # CHex: hex-string-to-bytes decoder (optional "0x"/"0X" prefix), shared by CBigNum::fromHex()/CGf2m::fromHex()
       secure.hpp                 # CSecure: zeroization the compiler may not elide, plus constant-time equals()/equalsMask()/select() -- the operations whose running time must not depend on their inputs
       base64.hpp                 # CBase64: base64 codec, both a streaming push()/finish() transform and static one-shot encode()/decode(); EBase64Mode
+      json.hpp                   # CJson: JSON value tree, parseJson()/parseBson(), toString()/toBson()
       bignum.hpp                 # CBigNum: arbitrary-precision non-negative integer (RSA/DSA/EC/Ed25519 math)
       montgomery.hpp              # CMontgomery: one odd modulus + its precomputed Montgomery constants; division-free mul/add/sub/dbl/neg/modExp for the EC field arithmetic
       gf2m.hpp                    # CGf2m: fixed-capacity GF(2^m) binary field element (polynomial basis); EGf2mKnownField + CGf2m::knownField()/knownFieldPtr() name the 5 field sizes the B-*/K-* binary curves share
@@ -180,6 +182,7 @@ src/
   utils/
     djb.cpp                    # CDjb::compute()/computeAsUpper()/computeAsLower()
     hex.cpp                     # CHex::decode()
+    json.cpp                    # JSON/BSON parsing and serialization, string escaping and BSON bounds checks
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
     montgomery.cpp                # CMontgomery: the -m^-1 mod 2^32 Newton iteration, R^2 mod m, and the CIOS Montgomery multiply over CBigNum's raw limbs
@@ -310,6 +313,7 @@ tests/
   name.cpp                    # CName test cases
   utils/
     djb.cpp                    # CDjb hash test cases
+    json.cpp                    # JSON/BSON primitives, nested values, malformed input, escapes and round trips
     base64.cpp                  # CBase64 streaming/one-shot encode/decode test cases, incl. PEM line breaking
     bignum.cpp                 # CBigNum arithmetic/modexp/modinverse/primality test cases
     divmod.cpp                  # CBigNum::divMod() differentially fuzzed against a bit-serial reference built from the public API, plus constructed inputs for Algorithm D's add-back branch (unreachable by random testing)
@@ -917,6 +921,17 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   `CCert::importPem()`/`exportPem()` are its main consumers. Note
   `io/base64.hpp` is **not** this: it is an empty placeholder header that
   declares nothing and that `certpp.hpp` deliberately does not include.
+- **`utils/json.hpp` / `src/utils/json.cpp`** define `CJson`, a JSON value
+  tree for null, booleans, numbers, strings, arrays and objects. `parseJson()`
+  accepts exactly one complete JSON value; `toString()` escapes strings and
+  object keys, preserves finite `double` round trips, and emits `null` for
+  non-finite numbers or values beyond its depth limit. `toBson()` and
+  `parseBson()` encode/decode BSON documents, including nested objects and
+  arrays, booleans, strings, nulls, doubles and BSON integers (converted to
+  `double`); unsupported BSON types are rejected. BSON scalar roots cannot be
+  encoded. JSON is included by `certpp.hpp` unless `CERTPP_WITHOUT_JSON` is
+  enabled; that option also omits `json.hpp` from installation and skips
+  `tests/utils/json.cpp`.
 - **`io/octet.hpp` / `src/io/octet.cpp`** define `COctet`, an owning,
   fixed-size byte buffer (not resizable/growable, unlike `TString<T>`) --
   `store()` replaces its content (copying and taking ownership; a null
@@ -2985,7 +3000,9 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
     STRING, and note that a PKCS#8 DSA key carries no `y`, so reading one
     costs a `g^x mod p`.
 - **`certpp.hpp`** is the single include point for consumers; as new public
-  headers are added under `include/certpp/`, add their `#include` here. Two
+  headers are added under `include/certpp/`, add their `#include` here. The
+  optional `utils/json.hpp` include is guarded by `CERTPP_WITHOUT_JSON`, which
+  CMake propagates to consumers when the JSON utility is disabled. Two other
   public headers are deliberately *not* included: `crypto/kem.hpp` (no
   implementation behind it yet -- see its own bullet) and `io/base64.hpp`,
   which is an empty placeholder (`CBase64` lives in `utils/base64.hpp`).
