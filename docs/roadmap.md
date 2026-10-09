@@ -185,6 +185,47 @@ anything.
   3. **Ed448 and P-521 are the outliers** now that the shared reduction is
      fixed, and neither has had a pass of its own.
 
+- **Cross-toolchain divergence, and RSA on GCC.** Measuring both toolchains in
+  one session on the same machine (MSVC 19.36 on Windows and GCC 13.3 on
+  Ubuntu 24.04 **under WSL2**, both Release, best of 3x20 over three runs, run
+  one after the other rather than concurrently so neither could measure the
+  other's compiler) shows GCC equal or faster on almost everything -- SHA3-256
+  by 2.8x, Streebog by 42%, ML-KEM by 30%, AES-256-GCM by 28% -- and two
+  exceptions that run the other way:
+
+  1. **RSA-2048 is 2.4x slower to sign on GCC** (19.1 ms against 8.06 ms) and
+     2.7x slower to verify. The obvious explanation is already ruled out by the
+     source, and it is worth recording so nobody spends a day on it:
+     `CBigNum::mul()` dispatches to `mulAccelerated()` on a `hasAdxBmi2()`
+     check, and that check passes on this CPU for both toolchains -- GCC
+     through the function-level `__attribute__((target("bmi2,adx")))`, MSVC
+     through its unconditional intrinsic use. So this is *not* the portable
+     multiply being taken by accident. The prime curves also running *faster*
+     on GCC argues the backend is not slow in general; RSA is simply where
+     `mulMod()` dominates enough for a codegen difference to become the whole
+     result. What that difference is has not been profiled. The two things
+     worth measuring before anything is changed: whether the Montgomery
+     reduction's shape costs GCC more than it costs MSVC, and whether GCC keeps
+     `row[]`/`r64[]` resident across mulAccelerated()'s Step A / Step B
+     boundary. Nothing here has been diagnosed beyond those exclusions.
+
+  2. **MD5 is 23% slower on GCC** (455 against 593 MiB/s) while every other
+     hash is equal or faster -- one routine, one direction, so a much smaller
+     job than the above.
+
+  Both sets of figures come from the same harness on the same machine, so the
+  comparison is like-for-like; `README.md`'s tables carry the full set. Two
+  limits on that comparison, both of which the table's own numbers invite the
+  reader to forget: the GCC side ran **under WSL2**, a VM rather than bare
+  metal, so it reads as this toolchain in this setup and not as Linux
+  performance in general; and "both Release" hides that CMake's Release
+  defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and optimization
+  level are varied together. Any of this worth chasing further should be
+  re-measured on bare-metal Linux before the gap is called a GCC bug. Note too
+  that MSVC's own numbers came in 10--20% under the set published before them,
+  which is a reminder that the load conditions move these figures as much as
+  the code does.
+
 ## Not planned
 
 - Path validation.

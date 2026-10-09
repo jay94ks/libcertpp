@@ -183,44 +183,72 @@ the published vectors could not.
 
 Measured by [`examples/05_benchmark.cpp`](examples/05_benchmark.cpp), so these
 are reproducible rather than claimed: build it and run it on your own hardware.
-Release/MSVC on a loaded 4-core i7-11370H laptop, each figure the fastest of
-three batches of 20 iterations, best of three runs. The run-to-run spread is
-20--30%, so nothing smaller than that is a result.
+Two toolchains, both Release, both measured in one session on a single
+4-core i7-11370H @ 3.30 GHz: MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3
+on Ubuntu 24.04 **under WSL2**. Each figure is the fastest of three batches of
+20 iterations, best of three runs, and the two were run one after the other
+rather than at once so neither could end up measuring the other's compiler.
+The run-to-run spread is 20--30%, so nothing smaller than that is a result.
+Bold is the fastest entry in its column.
 
-| Signature | sign | verify |
+| Signature | MSVC sign | MSVC verify | GCC sign | GCC verify |
+|---|---|---|---|---|
+| Ed25519 | **0.20 ms** | **0.87 ms** | **0.16 ms** | **0.71 ms** |
+| ML-DSA-65 | 1.67 ms | 0.56 ms | 1.56 ms | 0.45 ms |
+| ECDSA P-256 | 0.92 ms | 2.44 ms | 0.86 ms | 2.31 ms |
+| ECDSA P-384 | 2.10 ms | 5.52 ms | 1.99 ms | 5.50 ms |
+| ECDSA P-521 | 4.64 ms | 13.4 ms | 4.50 ms | 12.4 ms |
+| Ed448 | 2.47 ms | 10.6 ms | 2.46 ms | 10.4 ms |
+| RSA-2048 | 8.06 ms | 0.145 ms | 19.1 ms | 0.392 ms |
+
+| Key agreement / KEM | MSVC keygen | GCC keygen | MSVC operation | GCC operation |
+|---|---|---|---|---|
+| X25519 | 0.33 ms | 0.280 ms | 0.164 ms derive | 0.140 ms derive |
+| ML-KEM-768 | — | — | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
+| ECDH P-256 | 3.15 ms | 2.98 ms | 1.40 ms derive | 1.39 ms derive |
+
+Hashing and AEAD sealing, 64 KiB:
+
+| Hash | MSVC | GCC |
 |---|---|---|
-| Ed25519 | **0.21 ms** | **0.92 ms** |
-| ML-DSA-65 | 2.09 ms | 0.67 ms |
-| ECDSA P-256 | 1.05 ms | 3.53 ms |
-| ECDSA P-384 | 2.58 ms | 6.88 ms |
-| ECDSA P-521 | 5.53 ms | 15.2 ms |
-| Ed448 | 2.80 ms | 14.0 ms |
-| RSA-2048 | 9.82 ms | 0.17 ms |
+| SHA-256 | **1534 MiB/s** | **1552 MiB/s** |
+| MD5 | **593 MiB/s** | 455 MiB/s |
+| BLAKE2s | 412 MiB/s | 401 MiB/s |
+| SHA-512 | 353 MiB/s | 364 MiB/s |
+| SHA3-256 | 108 MiB/s | 308 MiB/s |
+| Streebog-256 | 75 MiB/s | 106 MiB/s |
 
-| Key agreement / KEM | keygen | operation |
+| AEAD seal, 64 KiB | MSVC | GCC |
 |---|---|---|
-| X25519 | 0.38 ms | 0.19 ms derive |
-| ML-KEM-768 | — | 0.18 ms encap / 0.20 ms decap |
-| ECDH P-256 | 3.42 ms | 1.57 ms derive |
+| ChaCha20-Poly1305 | 578 MiB/s | **650 MiB/s** |
+| XChaCha20-Poly1305 | 577 MiB/s | 648 MiB/s |
+| AES-256-GCM | 370 MiB/s | 475 MiB/s |
 
-| 64 KiB throughput | | | |
-|---|---|---|---|
-| SHA-256 | **1500 MiB/s** | ChaCha20-Poly1305 | 563 MiB/s |
-| MD5 | 560 MiB/s | XChaCha20-Poly1305 | 558 MiB/s |
-| BLAKE2s | 395 MiB/s | AES-256-GCM | 370 MiB/s |
-| SHA-512 | 342 MiB/s | | |
-| SHA3-256 | 103 MiB/s | | |
-| Streebog-256 | 70 MiB/s | | |
+Two caveats bound how far the GCC column travels. It was measured **under
+WSL2**, which is a VM and not bare metal: the harness is single-threaded
+CPU-bound cryptography, so the hypervisor's share of each measurement ought to
+be small, but that is an argument that it ought to be and not a measurement
+showing that it is. Read the column as "this toolchain in this setup" rather
+than as Linux performance in general. And "both Release" is not "the same
+settings": CMake's Release defaults are `/O2` for MSVC and `-O3` for GCC, so
+what is compared here is toolchain *plus* optimization level, not toolchain
+alone.
 
-Four things in there are worth explaining, because each is a property of the
+The MSVC column replaces an earlier set published for the same CPU, whose own
+text described it as measured under load. Every row here came in equal or
+faster, most by 10--20%; the largest movement is ECDSA P-256 verify, 3.53 ms
+to 2.44 ms, just outside the spread quoted above -- which is why the conditions
+are stated here rather than left implied.
+
+Five things in there are worth explaining, because each is a property of the
 implementation rather than noise:
 
 - **Ed25519 is an order of magnitude off an optimized implementation** (which
   verifies in 50--100 µs), and everything else is further off than that. It is
   the one curve on a dedicated constant-time field (`Fe25519`); the prime
   curves still run on the general-purpose `CBigNum` with Montgomery reduction.
-- **Signing beats verification on the prime curves** — P-256 signs in 1.05 ms
-  and verifies in 3.53 ms — because signing multiplies the *fixed* base point
+- **Signing beats verification on the prime curves** — P-256 signs in 0.92 ms
+  and verifies in 2.44 ms — because signing multiplies the *fixed* base point
   and uses a precomputed window table, while verification multiplies a
   caller-supplied point and cannot.
 - **RSA-2048 is lopsided by design**: `e = 65537` makes verification three
@@ -228,7 +256,18 @@ implementation rather than noise:
   big-number backend.
 - **AES-256-GCM sits below ChaCha20-Poly1305 despite AES-NI**, because GHASH
   rather than the cipher is the bottleneck and an AEAD composes as
-  `1/total = 1/cipher + 1/mac`.
+  `1/total = 1/cipher + 1/mac`. Both toolchains reproduce this, though GCC's
+  margin over ChaCha20-Poly1305 is the wider of the two.
+- **The two toolchains disagree by up to 2.4x, and RSA is where it matters.**
+  GCC is equal or faster on almost everything — SHA3-256 by 2.8x, Streebog by
+  42%, ML-KEM by 30%, AES-256-GCM by 28% — but RSA-2048 signing takes 19.1 ms
+  against MSVC's 8.06 ms, and verification is 2.7x slower too. Note what this
+  is *not*: both toolchains reach `CBigNum::mulAccelerated()`, so GCC is not
+  falling back to the portable multiply, and the prime curves running *faster*
+  on GCC says the backend is not slow in general. RSA is where the backend's
+  cost dominates enough for the difference to show, and why the two codegens
+  differ that much there is not diagnosed. MD5 is the other direction, 23%
+  down. Both are open work in [`docs/roadmap.md`](docs/roadmap.md).
 
 [`docs/roadmap.md`](docs/roadmap.md) has the targets, what is already done, and
 what each remaining gap actually needs.
