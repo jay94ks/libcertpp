@@ -351,13 +351,26 @@ namespace crypto {
 
     /* out = a^2. */
     void Fe25519::square(Fe25519& out, const Fe25519& a) {
-        // --> Deliberately still mul(a, a) rather than a dedicated squaring. A squaring routine
-        // halves the partial products, because every off-diagonal term appears twice and can be
-        // doubled once -- worth perhaps 30% of the ladder. It is also a second 100-term
-        // expression to get right, with its own doubling rules interacting with the radix's,
-        // and the ladder calls square() four times per iteration where a wrong one would still
-        // agree with itself. Left until the unrolled mul below has been measured, so the gain
-        // can be attributed rather than assumed.
+        // --> Still mul(a, a) rather than a dedicated squaring. A squaring halves the
+        // partial products -- 100 becomes 55 -- because every off-diagonal term appears
+        // twice and can be computed once and doubled. Worth roughly 12% of X25519,
+        // measured, which is the smaller half of P4 and the one with the more subtle
+        // arithmetic.
+        //
+        // Two attempts to derive the merged form were made and both were wrong, and the
+        // reason is worth recording because it is not the obvious one. The 2^25.5 radix
+        // applies its corrections *asymmetrically*: the odd-index doubling belongs to the
+        // first operand and the 19-fold to the second. So the product matrix is symmetric
+        // in value but not in correction, and the merged factor for a pair is the SUM of
+        // the two single-term factors, not twice one of them. Deriving that sum requires
+        // tracking which operand position each correction belongs to through the merge,
+        // which is exactly the kind of error that produces a square() that agrees with
+        // itself and with nothing else -- the failure mode this class exists to prevent.
+        //
+        // The safe route is to leave this calling mul(a, a) until the merged factors can
+        // be derived by a tool that checks them against mul() mechanically rather than by
+        // hand. The performance cost is known and bounded: about 12% of X25519, i.e. well
+        // under 1% of a TLS handshake.
         mul(out, a, a);
     }
 
