@@ -3579,3 +3579,79 @@ first two cases and leave nothing behind it.
 Confirmed by negative control: with the one-line condition reverted, the
 `lambda(n)` cases fail and the `phi(n)` and non-inverse cases still pass,
 which is exactly the signature of the reported bug.
+
+## Measuring the library on two toolchains, and what they disagree about
+
+`README.md`'s Performance section carried a single set of figures, from one
+Release/MSVC run. Re-running `examples/05_benchmark.cpp` on both toolchains in
+one session -- MSVC 19.36 on Windows and GCC 13.3 on Ubuntu 24.04 under WSL2,
+same 4-core i7-11370H -- turned that one column into two, and the second is not
+a second copy of the first.
+
+The methodology mattered more than usual here, because a comparison was the
+whole point. The two toolchains ran one after the other rather than
+concurrently: on eight cores, with a compiler that saturates them, running
+both at once would have had each measuring the other's compiler. Each figure
+remains the harness's own fastest-of-three-batches-of-20, best of three runs.
+
+### What the two toolchains disagree about
+
+GCC is equal or faster on most of the library, by a lot in places -- SHA3-256
+by 2.8x, Streebog-256 by 42%, ML-KEM by 30%, AES-256-GCM by 28%, Ed25519
+signing by 18%. Two entries run the other way, and RSA is the one that
+matters:
+
+| | MSVC | GCC |
+|---|---|---|
+| RSA-2048 sign | **8.06 ms** | 19.1 ms |
+| RSA-2048 verify | **0.145 ms** | 0.392 ms |
+| MD5, 64 KiB | **593 MiB/s** | 455 MiB/s |
+
+RSA's two halves moving together, while every prime curve runs *faster* on
+GCC, is a specific shape of result. It rules out the big-number backend being
+slow in general, and points at RSA as the one place `mulMod()` dominates
+enough for a codegen difference to be the whole result.
+
+### The obvious explanation, and why it is wrong
+
+The first thing to try was the one that would have made this a non-issue: GCC
+cannot emit MSVC's `_mulx_u64`/`_addcarry_u64`, so it must be falling back to
+the portable multiply. That is wrong, and `src/utils/bignum.cpp` says so
+directly. `CBigNum::mul()` dispatches on `hasAdxBmi2()` (`bignum.cpp:531`), and
+`mulAccelerated()` reaches the same MULX/ADCX path on both toolchains -- GCC
+through the function-level `__attribute__((target("bmi2,adx")))`, MSVC through
+its unconditional intrinsic use -- and this CPU reports both features. The one
+type mismatch Linux ever found in that code, `uint64_t*` against
+`unsigned long long*`, is fixed and in the changelog above.
+
+So the difference lives in codegen, and it has not been profiled. Two
+candidates worth measuring before anything is changed: the shape of the
+Montgomery reduction, and whether GCC keeps `row[]`/`r64[]` resident across
+`mulAccelerated()`'s Step A / Step B boundary. That is now open work in
+`docs/roadmap.md`, with the exclusions recorded next to it so the ruled-out
+hypothesis does not get re-derived.
+
+### Two limits on the comparison
+
+Both are stated in `README.md` rather than left for the reader to infer:
+
+- **WSL2 is a VM, not bare metal.** The harness is single-threaded CPU-bound
+  cryptography, so the hypervisor's share of each measurement ought to be
+  small -- but that is an argument that it ought to be, not a measurement
+  showing that it is. The GCC column reads as "this toolchain in this setup",
+  not as Linux performance in general.
+- **"Both Release" is not "the same settings".** CMake's Release defaults are
+  `/O2` for MSVC and `-O3` for GCC, so toolchain and optimization level are
+  varied together. Calling the RSA gap a GCC bug would need a re-measurement
+  on bare metal first.
+
+### The old numbers were measured under load
+
+The MSVC column replaces figures published earlier, whose own text described
+them as taken on a loaded machine. Re-measured, every row came in equal or
+faster, most by 10--20%; the largest movement is ECDSA P-256 verify, 3.53 ms
+to 2.44 ms, just outside the harness's own stated 20--30% spread. Nothing in
+the code changed to account for that, which is the useful part of it: it
+measures the conditions, not the library. So the tables now state those
+conditions and the spread explicitly, and treat a difference smaller than
+20--30% as not being a result.
