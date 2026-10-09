@@ -22,15 +22,10 @@ gets answered one way or the other, so it is recorded rather than dropped.
 | --------- | -------- | --- |
 | GOST R 34.10-2012 / Streebog **X.509 and DNSSEC wiring** (the algorithms themselves are done) | RFC 9215, RFC 9558 | Russian-profile certificates and DNSSEC |
 
-Landed, and now described in [`docs/architecture.md`](architecture.md):
-SipHash-2-4 (RFC 9018's DNS server-cookie PRF), BLAKE2s in all three forms
-(RFC 7693, for WireGuard), XChaCha20-Poly1305 with HChaCha20
-(draft-irtf-cfrg-xchacha), AES-GCM and an unpadded CBC mode (SP 800-38D and
-SP 800-38A, for IKEv2), ECDH over the prime curves (RFC 5903, also IKEv2),
-MD4 (RFC 1320, for EAP-MSCHAPv2's NT hash), the DNSKEY/RRSIG conversion
-utility (RFC 4034, with RFC 5702/6605/8080 for the per-algorithm encodings),
-and GOST R 34.11-2012 (Streebog) with GOST R 34.10-2012 over its nine named
-parameter sets.
+Work that was requested here and has since landed is described in
+[`docs/architecture.md`](architecture.md), with the reasoning behind it in
+[`docs/changelog.md`](changelog.md). It is not repeated here, and a list of it
+would go stale on the next thing that lands.
 
 ### Notes that affect the implementations
 

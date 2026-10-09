@@ -22,15 +22,10 @@
 | --- | --- | --- |
 | GOST R 34.10-2012 / Streebog의 **X.509 및 DNSSEC 연결 작업** (알고리즘 자체는 완료됨) | RFC 9215, RFC 9558 | 러시아 프로파일 인증서 및 DNSSEC |
 
-완료되어 이제 [`docs/architecture.ko.md`](architecture.ko.md)에 기술된
-항목들: SipHash-2-4(RFC 9018의 DNS 서버 쿠키 PRF), 세 가지 형태 전부를
-갖춘 BLAKE2s(RFC 7693, WireGuard용), HChaCha20을 포함한
-XChaCha20-Poly1305(draft-irtf-cfrg-xchacha), AES-GCM과 패딩 없는 CBC
-모드(SP 800-38D 및 SP 800-38A, IKEv2용), 소수체 곡선 위의 ECDH(RFC 5903,
-역시 IKEv2용), MD4(RFC 1320, EAP-MSCHAPv2의 NT 해시용), DNSKEY/RRSIG 변환
-유틸리티(RFC 4034, 알고리즘별 인코딩은 RFC 5702/6605/8080), 그리고 9종의
-명명된 매개변수 집합을 지원하는 GOST R 34.11-2012(Streebog)와
-GOST R 34.10-2012.
+여기 요청되었다가 완료된 작업은 [`docs/architecture.ko.md`](architecture.ko.md)에
+기술되어 있고, 그 배경은 [`docs/changelog.ko.md`](changelog.ko.md)에 담겨
+있습니다. 여기에는 반복하지 않으며, 목록으로 만들어 두면 다음 작업이
+완료될 때마다 낡게 됩니다.
 
 ### 구현에 영향을 주는 참고사항
 
