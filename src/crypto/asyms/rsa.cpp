@@ -1,6 +1,7 @@
 #include <certpp/crypto/asyms/rsa.hpp>
 #include <certpp/utils/secure.hpp>
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/io/buffer.hpp>
@@ -409,6 +410,29 @@ namespace crypto {
                 return true;
             }
 
+            /* x^exponent mod modulus, through Montgomery wherever the modulus allows it.
+             *
+             * --> CBigNum::modExp() pays a full Knuth-D long division per squaring, because its
+             * mulMod() is mul() then mod(). For RSA that was most of the cost: a perf profile put
+             * 36.7% of all cycles in CBigNum::divMod(), reached from exactly this call. Building
+             * a CMontgomery instead costs two long divisions, once, in its constructor -- which
+             * an exponentiation of any useful length repays many times over.
+             *
+             * RSA's p, q and n are all odd, so the Montgomery path is the one taken in practice.
+             * The fallback is not decoration: CMontgomery requires an odd modulus and turns
+             * invalid into a no-op returning zero, so an even or zero modulus still has to reach
+             * CBigNum::modExp() to stay correct rather than silently wrong. */
+            static CBigNum modExpMod(
+                const CBigNum& base, const CBigNum& exponent, const CBigNum& modulus
+            ) {
+                const CMontgomery mont(modulus);
+                if (mont.isValid()) {
+                    return mont.modExp(base, exponent);
+                }
+
+                return CBigNum::modExp(base, exponent, modulus);
+            }
+
             /* Private-key exponentiation x^d mod n (RFC 8017 5.1.2), accelerated via CRT when
              * priv's p/q/dp/dq/qInv are all present: m1 = x^dp mod p, m2 = x^dq mod q, combined
              * by Garner's formula (h = qInv*(m1-m2) mod p; m = m2 + h*q) instead of one
@@ -430,8 +454,8 @@ namespace crypto {
                 const CBigNum& qInv = priv.qInv();
 
                 if (!p.isZero() && !q.isZero() && !dp.isZero() && !dq.isZero() && !qInv.isZero()) {
-                    CBigNum m1 = CBigNum::modExp(x, dp, p);
-                    CBigNum m2 = CBigNum::modExp(x, dq, q);
+                    CBigNum m1 = modExpMod(x, dp, p);
+                    CBigNum m2 = modExpMod(x, dq, q);
 
                     CBigNum h(m1);
                     h.modSub(m2, p);
@@ -441,7 +465,7 @@ namespace crypto {
                     m.mul(q);
                     m.add(m2);
 
-                    const bool consistent = (CBigNum::modExp(m, priv.e(), priv.n()) == x);
+                    const bool consistent = (modExpMod(m, priv.e(), priv.n()) == x);
 
                     // --> Each CRT intermediate hands over the factorization, not merely a hint
                     // of it: m1 is m mod p, so m - m1 is a multiple of p and gcd(m - m1, n) is p
@@ -460,7 +484,7 @@ namespace crypto {
                     m.secureClear();
                 }
 
-                return CBigNum::modExp(x, priv.d(), priv.n());
+                return modExpMod(x, priv.d(), priv.n());
             }
 
         public:
@@ -515,7 +539,7 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
-                CBigNum m = CBigNum::modExp(s, pub->e(), pub->n());
+                CBigNum m = modExpMod(s, pub->e(), pub->n());
 
                 CBuffer em(keyBytes);
                 if (!m.toBigEndian(em.toSpan())) {
@@ -624,7 +648,7 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
-                CBigNum m = CBigNum::modExp(s, pub->e(), pub->n());
+                CBigNum m = modExpMod(s, pub->e(), pub->n());
 
                 size_t emBits = modBits - 1;
                 size_t emLen = (emBits + 7) / 8;
@@ -674,7 +698,7 @@ namespace crypto {
                 std::memcpy(emPtr + 3 + padLen, message.data, message.size);
 
                 CBigNum m = CBigNum::fromBigEndian(em.toSpan());
-                CBigNum c = CBigNum::modExp(m, pub->e(), pub->n());
+                CBigNum c = modExpMod(m, pub->e(), pub->n());
 
                 if (!c.toBigEndian(SByteSpan(output.data, keyBytes))) {
                     return ERET_UNKNOWN;
