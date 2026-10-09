@@ -3638,10 +3638,42 @@ matters:
 | RSA-2048 verify | **0.145 ms** | 0.392 ms |
 | MD5, 64 KiB | **593 MiB/s** | 455 MiB/s |
 
+(The MD5 row is what P7 changed, to 572 and 718. The RSA rows are unchanged.)
+
 RSA's two halves moving together, while every prime curve runs *faster* on
 GCC, is a specific shape of result. It rules out the big-number backend being
 slow in general, and points at RSA as the one place `mulMod()` dominates
 enough for a codegen difference to be the whole result.
+
+### P7 -- MD5 on GCC, closed
+
+The 64-step compression loop selected its round function with `if/else` and
+computed the message-word index `g` with `% 16` in rounds 2--4. Both are
+per-step costs that have nothing to do with the algorithm: the round schedule is
+fixed, so the branches are perfectly predictable, and a modulo by 16 is an
+integer division.
+
+Writing the four rounds out explicitly removes both. `g` becomes a mask against
+15, which is a single AND, and the round function is whichever loop body is
+running. The per-round index expressions are the original ones re-based to the
+round's own 16-step range, so the sequence is unchanged.
+
+Measured on the compression function itself, min of 5x50 over 1 MiB, GCC:
+**545 to 341 cycles per block, 8.5 to 5.3 per step, 1.60x**.
+
+Project harness, same session, sequential toolchains:
+
+| | before | after |
+|---|---|---|
+| GCC MD5, 64 KiB | 455 MiB/s | **718 MiB/s** |
+| MSVC MD5, 64 KiB | 593 MiB/s | 572 MiB/s |
+
+P7's goal was GCC being the slower toolchain on MD5. It is no longer: GCC now
+leads MSVC, where before it was 23% behind. The MSVC figure is within this
+machine's noise -- the 593 was measured under load, and the best of five
+re-runs is 572.8.
+
+128/128 tests pass on MSVC and under ASan on GCC.
 
 ### The obvious explanation, and why it is wrong
 

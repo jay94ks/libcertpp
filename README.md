@@ -223,7 +223,7 @@ Hashing and AEAD sealing, 64 KiB:
 | Hash | MSVC | GCC |
 |---|---|---|
 | SHA-256 | **1534 MiB/s** | **1552 MiB/s** |
-| MD5 | **593 MiB/s** | 455 MiB/s |
+| MD5 | 572 MiB/s | **718 MiB/s** |
 | BLAKE2s | 412 MiB/s | 401 MiB/s |
 | SHA-512 | 353 MiB/s | 364 MiB/s |
 | SHA3-256 | 108 MiB/s | 308 MiB/s |
@@ -315,8 +315,8 @@ Each is a property of the implementation rather than noise:
   falling back to the portable multiply, and the prime curves running *faster*
   on GCC says the backend is not slow in general. RSA is where the backend's
   cost dominates enough for the difference to show, and why the two codegens
-  differ that much there is not diagnosed. MD5 is the other direction, 23%
-  down. Both are open work in [`docs/roadmap.md`](docs/roadmap.md).
+  differ that much there is not diagnosed. MD5 was the other direction, 23%
+  down, and P7 has since closed it — see below.
 
 [`docs/roadmap.md`](docs/roadmap.md) has the targets, what is already done, and
 what each remaining gap actually needs.

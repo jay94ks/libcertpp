@@ -446,7 +446,30 @@ separate decision, not a consequence of P1.
 **P6 -- Ed448 and P-521.** The remaining signature outliers, neither of which
 has had a dedicated pass.
 
-**P7 -- MD5 on GCC.** 455 against 593 MiB/s: one scalar routine, no
+**P7 -- MD5 on GCC.** *Done.* 455 against 593 MiB/s: one scalar routine, no
+acceleration involved, independent of everything above. Small and isolated.
+
+The 64-step loop selected its round function with `if/else` and computed the
+message-word index `g` with `% 16` in rounds 2--4. Both are per-step costs
+that have nothing to do with the algorithm: the round schedule is fixed, so the
+branches are perfectly predictable, and a modulo by 16 is an integer division.
+
+Writing the four rounds out explicitly removes both. `g` becomes a mask against
+15, which is a single AND, and the round function is whichever loop body is
+running. Measured on the compression function itself, min of 5x50 over 1 MiB,
+GCC: **545 to 341 cycles per block, 8.5 to 5.3 per step, 1.60x**.
+
+Project harness, same session, sequential toolchains:
+
+| | before | after |
+|---|---|---|
+| GCC MD5, 64 KiB | 455 MiB/s | **718 MiB/s** |
+| MSVC MD5, 64 KiB | 593 MiB/s | 572 MiB/s |
+
+P7's goal was GCC being the slower toolchain on MD5. It is no longer: GCC now
+leads MSVC, where before it was 23% behind. The MSVC figure is within this
+machine's noise -- the 593 was measured under load, and the best of five
+re-runs is 572.8.
 acceleration involved, independent of everything above. Small and isolated.
 
 Deliberately last: the constant-time items below. They are correctness and
