@@ -11,7 +11,8 @@
 직렬화를 위한 `CJson`), `io`
 계층(span, 증가 가능한 배열, 크기 조절 가능한 작업용 바이트
 버퍼(`CBuffer`), 고정 크기 소유 버퍼(`COctet`), 그리고 스트림 추상),
-`asn1` 모듈(태그 인코드/디코드, TLV 디코더/인코더, 순차 reader/writer 래퍼,
+`net` 모듈(IPv4/IPv6/Unix-domain socket 주소와 `CSocket` 연산, OS 오류의
+`ERetCode` 변환), `asn1` 모듈(태그 인코드/디코드, TLV 디코더/인코더, 순차 reader/writer 래퍼,
 그리고 `CDer`의 임의 정밀도 `INTEGER`/`SEQUENCE` DER 보조 함수), `crypto`
 모듈, `x509` 모듈, 그리고 `dnssec` 모듈이 있습니다.
 
@@ -933,6 +934,11 @@ CMakeLists.txt              # certpp(그리고 CERTPP_BUILD_TESTS=ON이면 테�
   있고 그 헤더 가드/include가 공개 헤더와 어떻게 다른지는
   [coding-conventions.ko.md](coding-conventions.ko.md#내부-구현-헤더)를
   보십시오.
+- **`net/sockaddr.hpp` / `src/net/sockaddr.cpp`**는 IPv4, IPv6,
+  Unix-domain 주소와 숫자 주소/호스트 이름 해석을 위한 `SSocketAddress`를
+  정의합니다. **`net/socket.hpp` / `src/net/socket.cpp`**는 stream/datagram
+  소켓을 소유하는 `CSocket` 래퍼를 정의하며, OS 오류를 `ERetCode`로
+  변환합니다. 이 모듈은 TLS나 인증서 경로 검증을 제공하지 않습니다.
 - **`asn1/tag.hpp` / `src/asn1/tag.cpp`**는 `CTag`를 정의합니다. ASN.1
   태그(클래스 + constructed 플래그 + 태그 번호)이며,
   `TReadOnlySpan<uint8_t>`/`TSpan<uint8_t>`와 상호 변환하는

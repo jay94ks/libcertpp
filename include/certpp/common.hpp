@@ -58,33 +58,43 @@ namespace certpp {
      */
     enum ERetCode : uint8_t {
         ERET_OK = 0,
-        ERET_UNKNOWN    = 0xffu,     // --> Unknown error
+        ERET_UNKNOWN        = 0xffu,     // --> Unknown error
 
         // --
-        ERET_INVAL      = 0x01u,     // --> Invalid argument
-        ERET_BADREQ     = 0x02u,     // --> Bad request
-        ERET_NOMEM      = 0x03u,     // --> Out of memory, No memory available.
-        ERET_NOTSUP     = 0x04u,     // --> Not supported
-        ERET_NOSPC      = 0x05u,     // --> No space available
-        ERET_TIMEOUT    = 0x06u,     // --> Operation timed out
-        ERET_BUSY       = 0x07u,     // --> Resource is busy
-        ERET_NOTIMPL    = 0x08u,     // --> Not implemented
-        ERET_ALREADY    = 0x09u,     // --> Already exists or already in the desired state
-        ERET_AGAIN      = 0x0au,     // --> Try again (e.g., temporary failure)
-        ERET_NOTFOUND   = 0x0bu,     // --> The thing looked for is not there, which for a search
-                                     // is an ordinary outcome rather than a failure. Distinct
-                                     // from ERET_BADREQ, which says the input was wrong.
+        ERET_INVAL          = 0x01u,     // --> Invalid argument
+        ERET_BADREQ         = 0x02u,     // --> Bad request
+        ERET_NOMEM          = 0x03u,     // --> Out of memory, No memory available.
+        ERET_NOTSUP         = 0x04u,     // --> Not supported
+        ERET_NOSPC          = 0x05u,     // --> No space available
+        ERET_TIMEOUT        = 0x06u,     // --> Operation timed out
+        ERET_BUSY           = 0x07u,     // --> Resource is busy
+        ERET_NOTIMPL        = 0x08u,     // --> Not implemented
+        ERET_ALREADY        = 0x09u,     // --> Already exists or already in the desired state
+        ERET_AGAIN          = 0x0au,     // --> Try again (e.g., temporary failure)
+        ERET_NOTFOUND       = 0x0bu,     // --> Not found.
 
         // --
-        ERET_KEY_ERROR  = 0x10u,     // --> Public/Private key error (e.g. mismatch or invalid combination).
-        ERET_KEY_SIZE   = 0x11u,     // --> Key size error (e.g., invalid key length)
-        ERET_KEY_FORMAT = 0x12u,     // --> Key format error (e.g., invalid key encoding)
-        ERET_KEY_EMPTY  = 0x13u,     // --> Key is empty or uninitialized
-        ERET_KEY_PARAM  = 0x14u,     // --> Key parameter error (e.g., invalid or missing parameter)
-        ERET_KEY_COMP   = 0x15u,     // --> Key compression error (e.g., invalid or unsupported compression)
+        ERET_KEY_ERROR      = 0x10u,     // --> Public/Private key error (e.g. mismatch or invalid combination).
+        ERET_KEY_SIZE       = 0x11u,     // --> Key size error (e.g., invalid key length)
+        ERET_KEY_FORMAT     = 0x12u,     // --> Key format error (e.g., invalid key encoding)
+        ERET_KEY_EMPTY      = 0x13u,     // --> Key is empty or uninitialized
+        ERET_KEY_PARAM      = 0x14u,     // --> Key parameter error (e.g., invalid or missing parameter)
+        ERET_KEY_COMP       = 0x15u,     // --> Key compression error (e.g., invalid or unsupported compression)
 
         // --
-        ERET_HASH_PIPE  = 0x16u,     // --> Hash pipeline error (e.g., failed during hash processing)
+        ERET_HASH_PIPE      = 0x16u,     // --> Hash pipeline error (e.g., failed during hash processing)
+
+        // --
+        ERET_TOO_LONG       = 0x20u,     // --> Specified value is too long.
+        ERET_NETDOWN        = 0x21u,     // --> Network is down
+        ERET_NOTCONN        = 0x23u,     // --> Socket is not connected
+        ERET_BUF_ERROR      = 0x22u,     // --> Buffer error (e.g., insufficient buffer size)
+        ERET_CONNRESET      = 0x24u,     // --> Connection reset by peer
+        ERET_CONNABORTED    = 0x25u,     // --> Connection aborted by peer
+        ERET_CONNREFUSED    = 0x26u,     // --> Connection refused by peer
+        ERET_HOSTUNREACH    = 0x27u,     // --> Host is unreachable
+        ERET_ADDRINUSE      = 0x28u,     // --> Address already in use
+        ERET_ADDRNOTAVAIL   = 0x29u,     // --> Address not available
     };
 
     /**

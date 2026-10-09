@@ -66,6 +66,10 @@ installing a Release build and linking it into a Debug consumer produces
 `_ITERATOR_DEBUG_LEVEL`/`RuntimeLibrary` mismatch errors at link time, which
 is an MSVC rule rather than anything specific to this library.
 
+On Windows, `certpp` links against Winsock 2 (`ws2_32`) for the `net` module.
+Applications using `CSocket` must initialize Winsock with `WSAStartup` before
+creating sockets and call `WSACleanup` when finished.
+
 ## Notes on `CERTPP_API`
 
 `include/certpp/common.hpp` defines `CERTPP_API` for MSVC dllexport/

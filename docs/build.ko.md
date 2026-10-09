@@ -67,6 +67,10 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
 시점에 `_ITERATOR_DEBUG_LEVEL`/`RuntimeLibrary` 불일치 오류가 발생하는데,
 이는 이 라이브러리에 국한된 것이 아니라 MSVC의 규칙입니다.
 
+Windows에서 `certpp`는 `net` 모듈을 위해 Winsock 2(`ws2_32`)와 링크합니다.
+`CSocket`을 사용하는 애플리케이션은 소켓을 만들기 전에 `WSAStartup`으로
+Winsock을 초기화하고, 사용을 마친 뒤 `WSACleanup`을 호출해야 합니다.
+
 ## `CERTPP_API`에 관한 참고 사항
 
 `include/certpp/common.hpp`는 두 개의 전처리기 스위치를 기준으로 MSVC의

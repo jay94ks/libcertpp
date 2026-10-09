@@ -39,7 +39,7 @@ add_library(certpp::certpp ALIAS certpp)
 
 # crypto/rng.cpp calls BCryptGenRandom (Windows CNG API) directly on Windows.
 if(WIN32)
-    target_link_libraries(certpp PRIVATE bcrypt)
+    target_link_libraries(certpp PRIVATE bcrypt ws2_32)
 endif()
 
 target_include_directories(certpp
@@ -150,6 +150,9 @@ if(CERTPP_BUILD_TESTS)
 
         add_executable(certpp_test_${CERTPP_TEST_NAME} ${CERTPP_TEST_SOURCE})
         target_link_libraries(certpp_test_${CERTPP_TEST_NAME} PRIVATE certpp::certpp doctest)
+        if(WIN32)
+            target_link_libraries(certpp_test_${CERTPP_TEST_NAME} PRIVATE ws2_32)
+        endif()
 
         # Some tests exercise implementation units that are deliberately private to the library:
         # the lattice arithmetic and wire encoding behind ML-KEM and ML-DSA have no public API, so
