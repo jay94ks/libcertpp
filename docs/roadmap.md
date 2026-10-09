@@ -154,26 +154,59 @@ put **36.7% of all cycles in `CBigNum::divMod()`**, reached as
   the profile contains no call to it. Its callers are the prime curves
   (`eccurve.cpp:747`) and Ed448 (`ed448.cpp:65`). **RSA is not among them.**
 
-So every modular multiplication in an RSA-2048 private-key operation is a
+So every modular multiplication in an RSA-2048 private-key operation *was* a
 schoolbook long division. That is a structural omission, not a tuning gap, and
 it is larger than the cross-toolchain question it was filed under -- which is
-probably why the 2.4x reads as a codegen curiosity. Two toolchains cannot
-disagree about a path only one of them takes.
+why the 2.4x read as a codegen curiosity. Two toolchains cannot disagree about
+a path only one of them takes.
 
-This corrects the diagnosis an earlier revision of this section gave, which
-nominated the Montgomery reduction's *shape* as the candidate. The shape is
-irrelevant here: RSA never reaches it. The fix is to route `rsa.cpp`'s
-`CBigNum::modExp` calls (`rsa.cpp:433`, `:434`, `:444`, `:463`, `:518`, `:627`,
-`:677`) through `CMontgomery`, which is why this is now the first optimization
-item rather than the investigation that preceded it.
+This corrected the diagnosis an earlier revision of this section gave, which
+nominated the Montgomery reduction's *shape* as the candidate. The shape was
+irrelevant: RSA never reached it.
 
-Scope is wider than it looks. It touches the CRT blinding and its
-fault-attack countermeasures at `rsa.cpp:417--444`, so it needs its own plan
-and its own verification rather than being folded into a throughput pass:
-`tests/` must prove the CRT result still agrees with a full re-encrypt, and
-the constants (`dp`, `dq`, `qInv`) are derived mod a *different* modulus than
-`n`, so the CRT halves need their own two Montgomery contexts rather than
-sharing one.
+### P1 done, and the cross-toolchain gap went with it
+
+All seven `CBigNum::modExp` call sites in `rsa.cpp` now route through a
+`modExpMod()` helper that builds a `CMontgomery` and falls back to
+`CBigNum::modExp()` for an even or zero modulus -- a fallback that is not
+decoration, since `CMontgomery` turns invalid into a no-op returning zero, and
+a silent zero is worse than a slow answer.
+
+| RSA-2048 | before | after |
+|---|---|---|
+| MSVC sign | 8.06 ms | **4.69 ms** |
+| GCC sign | 19.07 ms | **5.48 ms** |
+| MSVC verify | 0.145 ms | 0.140 ms |
+| GCC verify | 0.392 ms | **0.156 ms** |
+
+**The 2.37x cross-toolchain gap collapsed to 1.17x**, which was not predicted
+and is the more useful half of the result. Knuth-D division is data-dependent --
+it normalizes and trial-subtracts per quotient digit -- so two compilers
+translate it very differently. Montgomery's CIOS passes iterate a fixed number
+of times regardless of operand values, which is the shape that compiles
+similarly everywhere. The gap was a symptom of the algorithm rather than an
+independent codegen defect, and removing the shared inefficiency took it with
+it. So the WSL2 and differing-Release-defaults caveats below apply to the
+*before* column and are largely retired for RSA.
+
+Verified by 128/128 CTest on MSVC, by the RSA/x509/PSS subset on GCC, and
+separately by cross-checking `CMontgomery::modExp` against `CBigNum::modExp`
+over 2400 cases spanning the exponent shapes RSA uses. That last check is not
+something the suite provides: `rsa.cpp`'s round-trips verify a signature with
+the key that produced it, so a mutually-wrong pair of implementations would
+still pass.
+
+One prediction here was wrong and is worth correcting rather than quietly
+dropping. This item previously said the CRT halves "need their own two
+Montgomery contexts rather than sharing one", as though that were extra work
+beyond the conversion. It is not: `modExpMod()` builds a context per call from
+the modulus it is handed, so `privateExp()`'s two branches get `p` and `q`
+contexts automatically and nothing had to be threaded through by hand. The
+fault-attack countermeasures at `rsa.cpp:417--444` likewise needed no change --
+`privateExp()`'s shape is untouched and only the exponentiation beneath it
+moved, so the re-encrypt consistency check still runs on every signature. The
+risk flagged before the work started turned out to be in the *verification*
+rather than the code, which is what the 2400-case cross-check was for.
 
 **P2 -- Bring AES-256-GCM level with ChaCha20-Poly1305.** Its 7x path is already
 in place, so the remaining gap to ChaCha (370 against 578 MiB/s on MSVC, 475
@@ -182,6 +215,17 @@ of value to work on the list: a pure throughput gap on a routine that is
 already vectorized, and a caller reaching for AES-GCM on x86 currently gets
 less than one reaching for ChaCha20. Verify in the harness's AEAD block, both
 toolchains.
+
+Still first among the remaining items, but the margin is narrower than it was
+when the plan was written: P1 removed a 42--71% gap here, and this one is 36%.
+Two things sharpen what the work actually is. The
+`CERTPP_DISABLE_HWACCEL_SIMD` runs above put the GF(2^m)/GHASH path at 7x
+while the ChaCha20 SSE2 path is only 1.6--1.7x, so GHASH's vectorization is
+already paying and the real question is how much of it is left -- measure that
+before assuming the cipher needs AVX2. And P0's 64 B numbers give the
+direction this item is missing: AES-GCM is *already* the faster AEAD at 64 B,
+so a throughput pass that ignored small records would optimize the case where
+AES-GCM already wins least.
 
 **P3 -- ChaCha20-Poly1305, as two separate changes.** P0's 64 B measurement
 split this into a bulk half and a per-record half that want opposite work, and
@@ -335,31 +379,33 @@ with the items above.
   one after the other rather than concurrently so neither could measure the
   other's compiler) shows GCC equal or faster on almost everything -- SHA3-256
   by 2.8x, Streebog by 42%, ML-KEM by 30%, AES-256-GCM by 28% -- and two
-  exceptions that run the other way:
+  exceptions that run the other way, **both since resolved, in opposite
+  directions**:
 
-  1. **RSA-2048 is 2.4x slower to sign on GCC** (19.1 ms against 8.06 ms) and
-     2.7x slower to verify. The obvious explanation is already ruled out by the
-     source, and it is worth recording so nobody spends a day on it:
-     `CBigNum::mul()` dispatches to `mulAccelerated()` on a `hasAdxBmi2()`
-     check, and that check passes on this CPU for both toolchains -- GCC
-     through the function-level `__attribute__((target("bmi2,adx")))`, MSVC
-     through its unconditional intrinsic use. So this is *not* the portable
-     multiply being taken by accident. The prime curves also running *faster*
-     on GCC argues the backend is not slow in general; RSA is simply where
-     `mulMod()` dominates enough for a codegen difference to become the whole
-     result.
+  1. **RSA-2048 was 2.4x slower to sign on GCC** (19.1 ms against 8.06 ms) and
+     2.7x slower to verify. Two hypotheses were ruled out before the right one
+     was found, and the wrong ones are recorded so nobody re-derives them. Not
+     the portable multiply: `CBigNum::mul()` dispatches to `mulAccelerated()`
+     on a `hasAdxBmi2()` check that passes for both toolchains -- GCC through
+     the function-level `__attribute__((target("bmi2,adx")))`, MSVC through
+     unconditional intrinsic use. Not `mulAccelerated()` either: the
+     `CERTPP_DISABLE_HWACCEL_SIMD` runs above leave the ratio essentially
+     unchanged (2.37x accelerated, 2.23x without), and that path is worth
+     nothing measurable even on MSVC. The actual cause was that RSA was never on
+     Montgomery at all -- see P1.
 
-     **Since measured, the second candidate is out, and the first was the wrong
-question.** The `CERTPP_DISABLE_HWACCEL_SIMD` runs above leave the ratio
-essentially unchanged -- 2.37x accelerated, 2.23x without. So the gap does not
-live in `mulAccelerated()`'s MULX/ADCX loops, and GCC is not losing a register
-allocation across its Step A / Step B boundary. Combined with that path being
-worth nothing measurable even on MSVC, the bottleneck is above the multiply.
-What is above it is where this entry stopped being right: see P1.
+     **Resolved, and the gap collapsed with it.** After the conversion, sign
+     takes 4.69 ms on MSVC against 5.48 ms on GCC: 1.17x, down from 2.37x.
+     Knuth-D division is data-dependent -- it normalizes and trial-subtracts
+     per quotient digit -- so two compilers translate it very differently,
+     while Montgomery's CIOS iterates a fixed number of times regardless of
+     operand values. The 2.4x was a symptom of the algorithm, not an
+     independent codegen defect.
 
   2. **MD5 is 23% slower on GCC** (455 against 593 MiB/s) while every other
-     hash is equal or faster -- one routine, one direction, so a much smaller
-     job than the above.
+     hash is equal or faster. Untouched by P1 and still open, and now the only
+     thing left in this item: one scalar routine, one direction, no
+     acceleration involved. P7.
 
   Both sets of figures come from the same harness on the same machine, so the
   comparison is like-for-like; `README.md`'s tables carry the full set. Two
@@ -368,11 +414,14 @@ What is above it is where this entry stopped being right: see P1.
   metal, so it reads as this toolchain in this setup and not as Linux
   performance in general; and "both Release" hides that CMake's Release
   defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and optimization
-  level are varied together. Any of this worth chasing further should be
-  re-measured on bare-metal Linux before the gap is called a GCC bug. Note too
-  that MSVC's own numbers came in 10--20% under the set published before them,
-  which is a reminder that the load conditions move these figures as much as
-  the code does.
+  level are varied together. Neither of those is what made RSA look like a
+  codegen curiosity: a 2.4x gap between two compilers on one source is not a VM
+  artefact or an `/O2`-against-`/O3` artefact, and reading it as one would have
+  been the mistake. Anything still worth chasing here should be re-measured on
+  bare-metal Linux before the gap is called a GCC bug. Note too that MSVC's own
+  numbers came in 10--20% under the set published before them, which is a
+  reminder that the load conditions move these figures as much as the code
+  does.
 
 ## Not planned
 

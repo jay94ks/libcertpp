@@ -200,7 +200,17 @@ Bold is the fastest entry in its column.
 | ECDSA P-384 | 2.10 ms | 5.52 ms | 1.99 ms | 5.50 ms |
 | ECDSA P-521 | 4.64 ms | 13.4 ms | 4.50 ms | 12.4 ms |
 | Ed448 | 2.47 ms | 10.6 ms | 2.46 ms | 10.4 ms |
-| RSA-2048 | 8.06 ms | 0.145 ms | 19.1 ms | 0.392 ms |
+| RSA-2048 | **4.69 ms** | 0.140 ms | 5.48 ms | 0.156 ms |
+
+RSA is the one row the two toolchains now agree on, and getting there is worth
+a note: it was 8.06 ms against 19.1 ms -- a 2.37x gap -- because every modular
+multiplication in a private-key operation went through `CBigNum::modExp()`, and
+`CBigNum::mod()` is a full Knuth-D long division. That is data-dependent work
+(normalizing and trial-subtracting per quotient digit), which two compilers
+translate very differently. `CMontgomery::modExp()` already existed and does the
+same thing without division, and the curves were already on it; RSA was the one
+caller that never was. Routing it there took signing down 42% on MSVC and 71%
+on GCC, and closed most of the gap as a side effect.
 
 | Key agreement / KEM | MSVC keygen | GCC keygen | MSVC operation | GCC operation |
 |---|---|---|---|---|
