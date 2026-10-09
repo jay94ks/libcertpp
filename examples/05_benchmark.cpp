@@ -58,6 +58,12 @@ namespace {
         printf("  %-26s %9.3f ms\n", label, fastestMs(OUTER, iters, body));
     }
 
+    /* Same min-of-min shape as printMs(), at the scale a small record lives at: a 64 B seal() is
+     * hundreds of nanoseconds, which ms renders as a column of zeros. */
+    void printNs(const char* label, int iters, const std::function<void()>& body) {
+        printf("  %-26s %9.0f ns\n", label, fastestMs(OUTER, iters, body) * 1000000.0);
+    }
+
     void printThroughput(const char* label, size_t bytes, const std::function<void()>& body) {
         const double ms = fastestMs(OUTER, ITERS, body);
         printf("  %-26s %9.1f MiB/s\n", label,
@@ -185,6 +191,14 @@ namespace {
         // would measure encapsulate() as well.
         const std::vector<uint8_t> fixedCt(ct.begin(), ct.begin() + ctSpan.size);
 
+        // --> generateKeyPair() earlier in this function is setup, not a measurement: it produces the
+        // pair both contexts above are keyed with. Timed separately here so the keygen column in
+        // README.md's table carries a number instead of a dash.
+        printMs("ML-KEM-768 keygen", 50, [&] {
+            SKemKeyPair fresh;
+            kem->generateKeyPair(768, fresh);
+        });
+
         printMs("ML-KEM-768 encapsulate", 50, [&] {
             std::vector<uint8_t> c(encap->sizeOfCiphertext());
             std::vector<uint8_t> s(encap->sizeOfSharedSecret());
@@ -240,6 +254,53 @@ namespace {
             });
         }
     }
+
+    /* The per-call cost a small record actually pays, which the 64 KiB numbers above average away.
+     * docs/roadmap.md's small-record target (150 ns for a 64 B seal()) is written against this, and
+     * until now nothing in this harness measured it.
+     *
+     * --> Reusing one key and one nonce is not flattering the result: CChaCha20Poly1305::seal()
+     * re-derives the one-time key through ChaCha20Core::block() on every call and builds a new
+     * CPoly1305 for the tag, so there is no cross-call state for a loop to warm. What it does hold
+     * constant is the key, which a caller re-keying per record would not. */
+    void benchSmallRecord() {
+        const std::vector<uint8_t> key(32, 0x01);
+        const std::vector<uint8_t> nonce12(12, 0x02);
+        const std::vector<uint8_t> nonce24(24, 0x03);
+        const std::vector<uint8_t> plain(64, 0x5a);
+        std::vector<uint8_t> out(plain.size());
+        std::vector<uint8_t> tag(16);
+
+        const SReadOnlyByteSpan keySpan(key.data(), key.size());
+        const SReadOnlyByteSpan plainSpan(plain.data(), plain.size());
+        const SReadOnlyByteSpan noAad(nullptr, 0);
+        const SByteSpan outSpan(out.data(), out.size());
+        const SByteSpan tagSpan(tag.data(), tag.size());
+
+        CChaCha20Poly1305 chacha;
+        if (chacha.reset(keySpan)) {
+            printNs("ChaCha20-Poly1305", ITERS, [&] {
+                chacha.seal(SReadOnlyByteSpan(nonce12.data(), nonce12.size()),
+                    noAad, plainSpan, outSpan, tagSpan);
+            });
+        }
+
+        CXChaCha20Poly1305 xchacha;
+        if (xchacha.reset(keySpan)) {
+            printNs("XChaCha20-Poly1305", ITERS, [&] {
+                xchacha.seal(SReadOnlyByteSpan(nonce24.data(), nonce24.size()),
+                    noAad, plainSpan, outSpan, tagSpan);
+            });
+        }
+
+        CAesGcm gcm;
+        if (gcm.reset(keySpan)) {
+            printNs("AES-256-GCM", ITERS, [&] {
+                gcm.seal(SReadOnlyByteSpan(nonce12.data(), nonce12.size()),
+                    noAad, plainSpan, outSpan, tagSpan);
+            });
+        }
+    }
 }
 
 int main() {
@@ -272,6 +333,9 @@ int main() {
 
     printf("\n= AEAD seal, %zu KiB =\n", BULK_BYTES / 1024);
     benchAeads(bulk);
+
+    printf("\n= AEAD seal, 64 B, per record\n");
+    benchSmallRecord();
 
     return 0;
 }
