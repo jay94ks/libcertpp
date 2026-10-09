@@ -243,9 +243,9 @@ out of the per-block path is worth 4.6% and produces identical output. That is
 below this machine's noise floor for a reported change and is **not** recorded
 as done, but it is the only GHASH change tried here that was not a regression.
 
-**P3 -- ChaCha20-Poly1305: the per-record cost is real, and its cause is a
-threshold rather than the lane-counting problem this item assumed.** The 410 ns
-per record is real, but the reason it is 410 is not what this section said.
+**P3 -- ChaCha20-Poly1305: the bulk keystream half is done, the per-record half
+does not exist, and the target is out of reach on the MAC side.** The 410 ns per
+record is real, but the reason it is 410 is not what this section said.
 
 *Where the 410 ns actually goes.* Measured through `seal()` across a sweep of
 sizes rather than by adding up its parts, because an earlier single-pair
@@ -313,16 +313,49 @@ than assumptions: the ~200 ns floor is real and irreducible without removing the
 one-time key derivation, and the scalar-to-vector transition below 256 B cannot be
 reversed in the vector path's favour.
 
-*Bulk (the 1.5 GiB/s target):* AVX2 eight-block keystream, then Poly1305 in
-SIMD. The keystream is the cheaper half -- SSE2 four-block buys 1.6--1.7x
-today, so AVX2 eight-block is that argument one level up. Poly1305 needs
-precomputed powers of `r`, not wider limbs; that negative result is recorded
-in the item below and should not be re-tried. This CPU has both AVX2 and
-VPCLMULQDQ, so the instructions exist; what is missing is the code.
+*Bulk -- the keystream half is done, and the target it was aiming at is not
+reachable.* An AVX2 eight-block keystream is in `chacha20core.cpp`, gated on a
+runtime CPUID check rather than the architecture, because AVX2 is not part of any
+x86-64 ABI. It is worth **1.95x on the keystream** (48.0 to 24.6 us at 64 KiB) and
+**1.34x on the whole AEAD**, which on the project harness moves ChaCha20-Poly1305
+from 578 to 736 MiB/s on MSVC and 650 to 835 on GCC.
+
+It is also gated on 512 bytes and up, deliberately. Eight lanes computed and six
+discarded is a loss for a short payload, which is the same trap the four-block
+path falls into below 256 B, so the fix does not extend to small records.
+
+The 1.5 GiB/s target is not met, and the reason is arithmetic rather than effort.
+Splitting the 64 KiB AEAD shows the two halves are **equal** -- 48.0 us of
+keystream against 48.2 us of Poly1305 -- so the MAC is 50% of the cost and no
+keystream improvement alone can reach the target. At the measured AVX2 keystream
+the budget for cipher and MAC together is 40.7 us, of which the cipher now takes
+24.6, leaving 16.1 us for a MAC that currently needs 48.2. **Poly1305 would have
+to be 3x faster**, which puts the remaining work squarely in the second half.
+
+*Bulk -- the Poly1305 half, and what it actually needs.* Wider scalar limbs are
+already a recorded negative result: three 44-bit limbs with nine 64x64->128
+products per block measured no faster than the portable five-limb 26-bit path,
+and slower again once the carries went through `_addcarry_u64`. So this needs
+SIMD with precomputed powers of `r`, not better scalar arithmetic. The 26-bit
+path's products are fully independent and it propagates no carries at all during
+accumulation, which is exactly what a SIMD version can exploit and what a carry
+chain cannot. This CPU has AVX2 and VPCLMULQDQ, so the instructions exist; what
+is missing is the code.
+
+At 3.92 GHz the 1.5 GiB/s target is 2.43 cycles/byte for cipher and MAC
+together, which is worth stating in cycles/byte so it can be judged against other
+hardware. For calibration, the AVX2 keystream just landed at 1.44 cycles/byte,
+so the MAC's 48.2 us is 3.6 cycles/byte and would have to reach 1.0.
+
+One caveat on the negative result above: the machine was under load for those
+runs. The `_addcarry_u64` version measured 40% down across three consecutive
+runs, which is well outside this machine's noise, but the first version's "no
+faster" was a much smaller margin and deserves re-measuring on a quiet machine
+before the conclusion is leaned on.
 
 The lesson worth carrying to the next pass on this file, and it has two halves.
-Five changes were implemented here on the reasoning that fewer instructions would
-mean less work, and all five cost more, in every case because they widened a
+Six changes were implemented here on the reasoning that fewer instructions would
+mean less work, and five of the six cost more, every time because they widened a
 computation to fill SIMD lanes that the input did not fill. Measure the
 decomposition before proposing the change, not after. The other half: the
 original diagnosis was also wrong in the *opposite* direction, in that it claimed
@@ -356,27 +389,14 @@ Deliberately last: the constant-time items below. They are correctness and
 security work rather than throughput, and their schedule should not compete
 with the items above.
 
-- **ChaCha20-Poly1305 throughput.** Target 1.5 GiB/s per core at
-  16--64 KiB. A four-block SSE2 keystream took a 64 KiB `seal()` from 331
-  to roughly 560 MiB/s, which is most of the available scalar-to-SSE2 win
-  on the cipher side. What remains: an AVX2 eight-block keystream, and
-  Poly1305 in SIMD.
-  Poly1305 is now the larger half, and **wider scalar limbs do not help
-  it**: three 44-bit limbs with nine 64x64->128 products per block measured
-  no faster than the portable five-limb 26-bit path, and slower again once
-  the carries went through `_addcarry_u64`. The 26-bit path's products are
-  fully independent and it propagates no carries at all during
-  accumulation, which beats a nine-product block with a serial 128-bit
-  carry chain. Beating it needs SIMD with precomputed powers of `r`, not
-  wider limbs. At 3.92 GHz the 1.5 GiB/s target is 2.43 cycles/byte for
-  cipher and MAC together, which is near the edge of what AVX2 can do --
-  worth stating in cycles/byte so it can be judged against other hardware.
-
-  One caveat on that negative result: the machine was under load for those
-  runs. The `_addcarry_u64` version measured 40% down across three
-  consecutive runs, which is well outside this machine's noise, but the
-  first version's "no faster" was a much smaller margin and deserves
-  re-measuring on a quiet machine before the conclusion is leaned on.
+- **ChaCha20-Poly1305 throughput.** Target 1.5 GiB/s per core at 16--64 KiB.
+  A four-block SSE2 keystream took a 64 KiB `seal()` from 331 to roughly
+  560 MiB/s, and the AVX2 eight-block keystream now in `chacha20core.cpp` takes
+  it to 736 MiB/s on MSVC and 835 on GCC. **What remains is Poly1305 alone**,
+  and it is the whole of the remaining gap: the two halves of a 64 KiB AEAD
+  measure 48.0 us and 48.2 us, so the MAC is half the cost and would have to be
+  3x faster for the target to be met at all. P3 records what it needs and why
+  the scalar alternative is a dead end.
 - **Small-record cost.** The 150 ns target is **withdrawn**: a `seal()` with an
   empty payload already costs 180--210 ns, so 150 ns is not reachable at any
   payload size without removing the one-time key derivation itself. Below 256 B

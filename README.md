@@ -231,8 +231,8 @@ Hashing and AEAD sealing, 64 KiB:
 
 | AEAD seal, 64 KiB | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 578 MiB/s | **650 MiB/s** |
-| XChaCha20-Poly1305 | 577 MiB/s | 648 MiB/s |
+| ChaCha20-Poly1305 | 736 MiB/s | **835 MiB/s** |
+| XChaCha20-Poly1305 | 748 MiB/s | 840 MiB/s |
 | AES-256-GCM | 370 MiB/s | 475 MiB/s |
 
 The 64 KiB rows above rank AES-256-GCM last. At 64 bytes it is the fastest of
@@ -240,9 +240,9 @@ the three, on both toolchains:
 
 | AEAD seal, 64 B | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 410 ns | 332 ns |
-| XChaCha20-Poly1305 | 545 ns | 449 ns |
-| AES-256-GCM | **225 ns** | **179 ns** |
+| ChaCha20-Poly1305 | 415 ns | 374 ns |
+| XChaCha20-Poly1305 | 555 ns | 445 ns |
+| AES-256-GCM | **225 ns** | **186 ns** |
 
 That inversion is structural rather than incidental. AES-GCM encrypts one
 block where ChaCha20 encrypts two, the second being the block that derives the
@@ -251,6 +251,13 @@ pay, and one that a small record cannot amortize over payload. Both directions
 matter: a bulk sender should read the KiB table, and a caller sealing one
 record at a time should read this one, where AES-NI buys less than ChaCha's
 simpler setup does.
+
+The two tables now disagree by more than they used to, and the reason is worth
+stating. Below 512 bytes ChaCha20 runs the scalar or SSE2 path and this
+measurement is unaffected; at 64 KiB it takes an AVX2 eight-block path added
+recently, which is worth 1.28--1.34x on the whole AEAD. So a bulk sender now
+gets considerably more from ChaCha20 than a per-record caller does, which
+reverses the earlier balance and is why both tables are here rather than one.
 
 These nanosecond figures are the noisiest in the section -- the MSVC runs
 spread 24% on this block against 2% on the KiB one -- so they are best-of-three
