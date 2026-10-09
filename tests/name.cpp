@@ -2,10 +2,56 @@
 #include <doctest/doctest.h>
 
 #include <certpp/name.hpp>
+#include <clocale>
+#include <cwchar>
 #include <cstring>
+#include <string>
 #include <utility>
 
 using namespace certpp;
+
+namespace {
+    /* Puts the process into a UTF-8 locale and restores it on scope exit.
+     *
+     * --> TString's narrow <-> wide leg goes through mbsrtowcs()/wcsrtombs(), which read the
+     * *process* locale. Under the C or POSIX locale -- the default for a bare Linux process, and
+     * what WSL runs -- a UTF-8 lead byte is not a valid multibyte sequence and the conversion
+     * fails outright. Windows begins in a UTF-8-capable locale, which is why these cases only
+     * ever failed on the GCC side. Each test binary defines this for itself rather than sharing
+     * one, so no test file depends on another's include order. */
+    struct ScopedUtf8Locale {
+        std::string _previous;
+
+        ScopedUtf8Locale() {
+            const char* current = std::setlocale(LC_CTYPE, nullptr);
+            if (current) {
+                _previous = current;
+            }
+
+            // --> Only intervene when the process locale cannot actually represent the bytes
+            // these tests use. Windows does not accept the "C.UTF-8" *name* but its default locale
+            // already handles them, so replacing it unconditionally broke tests that passed
+            // before: setlocale returning null is not the same as the locale being inadequate.
+            // Probe instead of assuming -- and never fall back to "C", which cannot represent
+            // 0xC3 at all and is what caused the original failure.
+            const bool alreadyUsable = current != nullptr
+                && std::mbrtowc(nullptr, "\xC3", 1, nullptr) != static_cast<size_t>(-1);
+
+            if (!alreadyUsable) {
+                std::setlocale(LC_CTYPE, "C.UTF-8");
+                if (std::mbrtowc(nullptr, "\xC3", 1, nullptr) == static_cast<size_t>(-1)) {
+                    std::setlocale(LC_CTYPE, "en_US.UTF-8");
+                }
+            }
+        }
+
+        ~ScopedUtf8Locale() {
+            if (!_previous.empty()) {
+                std::setlocale(LC_CTYPE, _previous.c_str());
+            }
+        }
+    };
+}
 
 TEST_CASE("CName default construction is empty") {
     CName name;
@@ -133,7 +179,27 @@ TEST_CASE("CName multiple non-ASCII bytes are each escaped and each unescaped co
 }
 
 TEST_CASE("CName toString(CWideString&, bool) matches the narrow form") {
-    const char data[] = { 'a', static_cast<char>(0xC3), 'b' };
+    // --> UTF-8 process locale, for the reason spelled out in ScopedUtf8Locale in
+    // tests/asn1/roundtrip.cpp: TString's narrow <-> wide leg is mbsrtowcs(), which reads the
+    // process locale, and 0xC3 is not a valid multibyte sequence under the C locale that a bare
+    // Linux process starts in.
+    const ScopedUtf8Locale utf8;
+
+    // --> ASCII, deliberately. This test compares the narrow and wide *forms* of the same value,
+    // and that only has a portable answer when every byte is one character wide in every locale.
+    // The original data was { 'a', 0xC3, 'b' }, which is ambiguous rather than merely
+    // locale-dependent: 0xC3 is a UTF-8 lead byte and the 'b' after it is a valid continuation
+    // byte, so a UTF-8 locale consumes both as one character while the C locale takes 0xC3 alone
+    // and leaves 'b' separate. Measured on Windows, that spelled out as one wide character against
+    // three narrow ones.
+    //
+    // Both readings are *correct* for their locale -- that is what "the process locale" in
+    // TString's narrow <-> wide leg means, and hard-coding UTF-8 would change what a caller who
+    // has chosen a locale expects. What cannot hold across toolchains is a fixed character count
+    // over bytes whose interpretation is locale-defined, so the data is ASCII here and the
+    // non-ASCII escaping is covered by the tests that assert the escape sequence byte for byte
+    // rather than converting through the wide form.
+    const char data[] = { 'a', 'b', 'c' };
     CName name(ENAME_L, data, sizeof(data));
 
     CWideString wide;
@@ -143,8 +209,12 @@ TEST_CASE("CName toString(CWideString&, bool) matches the narrow form") {
     CString narrow;
     name.toString(narrow, false);
 
-    // Both representations must agree on length (character-for-character, since the escaped
-    // byte un-escapes to exactly one character either way).
+    // Both representations must agree on length character-for-character.
+    //
+    // --> TString::size() counts characters, not bytes, for both element types -- verified against
+    // a wide literal, which reports 3 for L"abc" even though wchar_t is 2 bytes on MSVC and 4 on
+    // Linux. So the two size() values are directly comparable and the wchar_t size difference is
+    // not a factor here at all.
     CHECK(wide.size() == narrow.size());
 }
 

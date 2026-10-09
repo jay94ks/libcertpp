@@ -64,7 +64,12 @@ bool exampleEDecoderStatus(IStreamPtr source, CBuffer& sofar, size_t& filled) {
             return false;
         }
 
-        const size_t got = source->read(SByteSpan(sofar.toPtr() + filled, sofar.size() - filled));
+        // --> Named rather than a temporary, because IStream::read() takes its SByteSpan by
+        // non-const reference, and C++ will not bind a non-const lvalue reference to a
+        // temporary. MSVC accepts that; GCC and Clang reject it, so the example built on one
+        // toolchain and not the other.
+        SByteSpan chunk(sofar.toPtr() + filled, sofar.size() - filled);
+        const size_t got = source->read(chunk);
         if (got == 0) {
             return false;       // the source ended mid-value: truncated for good
         }
