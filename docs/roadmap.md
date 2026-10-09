@@ -125,22 +125,55 @@ Sequenced by what the measurements actually support, not by how easy each item
 looks. Each names how it would be verified, because on this machine a change
 smaller than ~20% is not a change.
 
-**P0 -- Close the measurement gaps.** Three things the plan needs and the
-harness does not produce: ML-KEM-768 *key generation*, which `benchKem()` calls
-once for setup and never times (which is why that cell in `README.md`'s table is
-empty); the 64 B `seal()` fixed cost, quoted below at ~420 ns against a 150 ns
-target but measured by nothing in `examples/05_benchmark.cpp`; and any
-per-function profile at all. Everything after this is being planned against
-whole-operation numbers. Cheap, and it keeps two later items from being
-unverifiable.
+**P0 -- Close the measurement gaps.** *Done.* `examples/05_benchmark.cpp` now
+times ML-KEM-768 key generation, which `benchKem()` previously called once for
+setup and never measured, and a new `benchSmallRecord()` reports the 64 B
+`seal()` that the small-record target below is written in but nothing measured.
+`perf` covered the third gap. Two results came out of it worth more than the
+gaps they closed:
 
-**P1 -- Find where RSA's time actually goes.** The accelerated multiply is not
-it (measured above) and the prime curves are already faster on GCC, so the
-candidate left is the Montgomery reduction. Profile `CMontgomery` against
-`modPow` before changing either: the first question is whether the accumulator
-is wide enough to avoid a conditional subtract per step. This is the only item
-whose outcome is genuinely unknown, which is why it leads the optimization work
-rather than the portable items above it.
+- **ML-KEM-768 key generation is 0.193 ms** on MSVC and 0.142 ms on GCC, both
+  slower than either encapsulate or decapsulate.
+- **AES-256-GCM is the faster AEAD at 64 B and the slower one at 64 KiB** --
+  225 ns against ChaCha20-Poly1305's 410 ns per record on MSVC (180 against 332
+  on GCC), then 370 against 578 MiB/s in bulk. AES-GCM runs one block where
+  ChaCha runs two, the extra being the Poly1305 one-time key at counter 0.
+  That confirms where the small-record cost comes from, and it splits P3 into
+  two changes that do not overlap.
+
+**P1 -- Put RSA on Montgomery, which it never was.** *Answered, and the answer
+inverts what this item assumed.* Profiling the WSL Release build with `perf`
+put **36.7% of all cycles in `CBigNum::divMod()`**, reached as
+`RsaContext::sign` -> `CBigNum::modExp` -> `CBigNum::mulMod` -> `CBigNum::mod`
+-> `CBigNum::divMod`. Reading the source confirms what that tree says:
+
+- `CBigNum::modExp()` (`bignum.cpp:913`) is an ordinary integer
+  exponentiation, and `CBigNum::mulMod()` (`bignum.cpp:763`) is still `mul()`
+  then `mod()`.
+- `CMontgomery::modExp()` (`montgomery.cpp:444`) exists and is Montgomery, but
+  the profile contains no call to it. Its callers are the prime curves
+  (`eccurve.cpp:747`) and Ed448 (`ed448.cpp:65`). **RSA is not among them.**
+
+So every modular multiplication in an RSA-2048 private-key operation is a
+schoolbook long division. That is a structural omission, not a tuning gap, and
+it is larger than the cross-toolchain question it was filed under -- which is
+probably why the 2.4x reads as a codegen curiosity. Two toolchains cannot
+disagree about a path only one of them takes.
+
+This corrects the diagnosis an earlier revision of this section gave, which
+nominated the Montgomery reduction's *shape* as the candidate. The shape is
+irrelevant here: RSA never reaches it. The fix is to route `rsa.cpp`'s
+`CBigNum::modExp` calls (`rsa.cpp:433`, `:434`, `:444`, `:463`, `:518`, `:627`,
+`:677`) through `CMontgomery`, which is why this is now the first optimization
+item rather than the investigation that preceded it.
+
+Scope is wider than it looks. It touches the CRT blinding and its
+fault-attack countermeasures at `rsa.cpp:417--444`, so it needs its own plan
+and its own verification rather than being folded into a throughput pass:
+`tests/` must prove the CRT result still agrees with a full re-encrypt, and
+the constants (`dp`, `dq`, `qInv`) are derived mod a *different* modulus than
+`n`, so the CRT halves need their own two Montgomery contexts rather than
+sharing one.
 
 **P2 -- Bring AES-256-GCM level with ChaCha20-Poly1305.** Its 7x path is already
 in place, so the remaining gap to ChaCha (370 against 578 MiB/s on MSVC, 475
@@ -150,11 +183,23 @@ already vectorized, and a caller reaching for AES-GCM on x86 currently gets
 less than one reaching for ChaCha20. Verify in the harness's AEAD block, both
 toolchains.
 
-**P3 -- ChaCha20-Poly1305 toward 1.5 GiB/s.** AVX2 eight-block keystream, then
-Poly1305 in SIMD. The keystream is the cheaper half: SSE2 four-block buys
-1.6--1.7x today, so AVX2 eight-block is that argument one level up. Poly1305
-needs precomputed powers of `r`, not wider limbs -- the negative result is
-recorded in the item below and should not be re-tried.
+**P3 -- ChaCha20-Poly1305, as two separate changes.** P0's 64 B measurement
+split this into a bulk half and a per-record half that want opposite work, and
+doing only one leaves the other where it is.
+
+*Bulk (the 1.5 GiB/s target):* AVX2 eight-block keystream, then Poly1305 in
+SIMD. The keystream is the cheaper half -- SSE2 four-block buys 1.6--1.7x
+today, so AVX2 eight-block is that argument one level up. Poly1305 needs
+precomputed powers of `r`, not wider limbs; the negative result is recorded in
+the item below and should not be re-tried.
+
+*Per-record (the 150 ns target):* generate counters 0--3 in one four-wide SSE2
+pass, which covers the one-time key and 192 bytes of payload together. This is
+the half that closes the 410 ns, and it is worth doing **before** the bulk work,
+not after: it is one pass against an entire AVX2 rewrite, it helps every record
+sized caller rather than only bulk ones, and P0 measured that AES-GCM is
+currently 1.8x faster at exactly this size. Bulk throughput is a data-center
+concern; per-record cost is what a TLS handshake pays.
 
 **P4 -- `Fe25519` onto a 2^51 radix.** 25 limb products where there are 100
 now, plus a dedicated `square` for roughly another 30%. Target 100 us each way;
@@ -162,10 +207,15 @@ currently 280/140 us on GCC and 333/164 us on MSVC. This covers X25519 and
 Ed25519 only.
 
 **P5 -- A field for the prime curves.** Twenty-nine curves and no per-curve
-field is a plan, so this is the one item here whose scope is genuinely open,
-and it is blocked on P1 reporting: if the Montgomery reduction generalizes,
-the prime curves may get a large part of P1's answer for free. Do not start it
-before P1 does.
+field is a plan, so this is the one item here whose scope is genuinely open.
+P1 has since reported, and it does not unblock this the way the earlier
+revision assumed: the prime curves were *already* on Montgomery
+(`eccurve.cpp:747`), so RSA's omission says nothing about whether a field
+generalizes to twenty-nine different primes. What P1 does contribute is the
+counter-example -- a whole number type sitting outside the modulus abstraction
+while its siblings use it, and nobody noticing, because the numbers still
+validate. Whether that warrants a shared field type for the curves is a
+separate decision, not a consequence of P1.
 
 **P6 -- Ed448 and P-521.** The remaining signature outliers, neither of which
 has had a dedicated pass.
@@ -299,14 +349,13 @@ with the items above.
      `mulMod()` dominates enough for a codegen difference to become the whole
      result.
 
-     **Since measured, and the second candidate is now out.** The
-     `CERTPP_DISABLE_HWACCEL_SIMD` runs above leave the ratio essentially
-     unchanged -- 2.37x accelerated, 2.23x without. So the gap does not live in
-     `mulAccelerated()`'s MULX/ADCX loops, and GCC is not losing a register
-     allocation across its Step A / Step B boundary. Combined with that
-     path being worth nothing measurable even on MSVC, the bottleneck is above
-     the multiply rather than in it, which leaves the Montgomery reduction as
-     the candidate. That is P1 below, and it is still unprofiled.
+     **Since measured, the second candidate is out, and the first was the wrong
+question.** The `CERTPP_DISABLE_HWACCEL_SIMD` runs above leave the ratio
+essentially unchanged -- 2.37x accelerated, 2.23x without. So the gap does not
+live in `mulAccelerated()`'s MULX/ADCX loops, and GCC is not losing a register
+allocation across its Step A / Step B boundary. Combined with that path being
+worth nothing measurable even on MSVC, the bottleneck is above the multiply.
+What is above it is where this entry stopped being right: see P1.
 
   2. **MD5 is 23% slower on GCC** (455 against 593 MiB/s) while every other
      hash is equal or faster -- one routine, one direction, so a much smaller

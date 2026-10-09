@@ -205,7 +205,7 @@ GCC 13.3으로 측정했습니다. 각 수치는 반복 20회 배치 3개 중 �
 | 키 합의 / KEM | MSVC 키 생성 | GCC 키 생성 | MSVC 연산 | GCC 연산 |
 |---|---|---|---|---|
 | X25519 | 0.33 ms | 0.280 ms | 0.164 ms derive | 0.140 ms derive |
-| ML-KEM-768 | — | — | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
+| ML-KEM-768 | 0.193 ms | 0.142 ms | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
 | ECDH P-256 | 3.15 ms | 2.98 ms | 1.40 ms derive | 1.39 ms derive |
 
 해시와 AEAD seal, 64 KiB:
@@ -224,6 +224,27 @@ GCC 13.3으로 측정했습니다. 각 수치는 반복 20회 배치 3개 중 �
 | ChaCha20-Poly1305 | 578 MiB/s | **650 MiB/s** |
 | XChaCha20-Poly1305 | 577 MiB/s | 648 MiB/s |
 | AES-256-GCM | 370 MiB/s | 475 MiB/s |
+
+위 64 KiB 행들은 AES-256-GCM을 마지막에 놓습니다. 64바이트에서는 셋 중 가장
+빠르고, 그 역전은 두 툴체인 모두에서 재현됩니다.
+
+| AEAD seal, 64 B | MSVC | GCC |
+|---|---|---|
+| ChaCha20-Poly1305 | 410 ns | 332 ns |
+| XChaCha20-Poly1305 | 545 ns | 449 ns |
+| AES-256-GCM | **225 ns** | **179 ns** |
+
+이 역전은 우연한 것이 아니라 구조적입니다. AES-GCM은 블록 하나를 암호화하는데
+ChaCha20은 두 개를 암호화하고, 추가된 하나가 counter 0에서 Poly1305 one-time
+key를 유도하는 블록입니다(RFC 8439 2.6). AES-GCM이 치르지 않는 비용이고,
+작은 레코드에서는 페이로드로 상각할 수 없는 비용입니다. 양쪽 방향 모두
+의미가 있습니다. 대용량을 보내는 쪽은 KiB 표를 보고, 한 번에 레코드 하나씩
+seal하는 호출자는 AES-NI가 ChaCha의 더 단순한 setup보다 얻는 것이 적은 이
+표를 보십시오.
+
+이 나노초 수치는 이 절에서 가장 시끄러운 값입니다 — MSVC 실행 간 편차가 이
+구간에서 24%, KiB 구간에서 2%입니다 — 여기도 나머지처럼 best-of-three이지만,
+두 AEAD 사이에서 ~30% 미만인 격차는 미정으로 보십시오.
 
 ### WSL2, 그리고 GCC 열이 *아닌* 것
 

@@ -3655,3 +3655,88 @@ the code changed to account for that, which is the useful part of it: it
 measures the conditions, not the library. So the tables now state those
 conditions and the spread explicitly, and treat a difference smaller than
 20--30% as not being a result.
+
+## Profiling: RSA was never on Montgomery, and the small-record cost is two blocks
+
+Following the roadmap's P0 and P1. Both changed the plan rather than merely
+executing it, which is why they are recorded here at length.
+
+### P0 -- two measurement gaps, and what came out of closing them
+
+`examples/05_benchmark.cpp` now times ML-KEM-768 key generation, which
+`benchKem()` previously called once for setup and never measured -- the reason
+`README.md`'s table carried a dash in that cell -- and a new
+`benchSmallRecord()` reports the 64 B `seal()` that the small-record target is
+written in and that nothing measured. Both toolchains were re-measured three
+times rather than from the single run that would have filled the cells.
+
+Reusing one key and nonce in that loop is not flattering the number, and worth
+being explicit about: `CChaCha20Poly1305::seal()` re-derives the one-time key
+through `ChaCha20Core::block()` on every call and constructs a fresh
+`CPoly1305` for the tag, so there is no cross-call state for the loop to warm.
+What the loop does hold constant is the key.
+
+The result inverts an ordering the tables implied. **AES-256-GCM is the fastest
+of the three AEADs at 64 B and the slowest at 64 KiB**, on both toolchains:
+
+| | MSVC | GCC |
+|---|---|---|
+| ChaCha20-Poly1305, 64 B | 410 ns | 332 ns |
+| XChaCha20-Poly1305, 64 B | 545 ns | 449 ns |
+| AES-256-GCM, 64 B | **225 ns** | **179 ns** |
+| ChaCha20-Poly1305, 64 KiB | 578 MiB/s | 650 MiB/s |
+| AES-256-GCM, 64 KiB | 370 MiB/s | 475 MiB/s |
+
+AES-GCM encrypts one block where ChaCha20 encrypts two, the second being the
+block deriving the Poly1305 one-time key at counter 0 (RFC 8439 2.6). A bulk
+sender and a per-record caller are looking at different winners, so the
+roadmap's ChaCha20-Poly1305 item -- one target, 1.5 GiB/s bulk against a 150 ns
+per-record cost -- has been split into two changes that do not overlap. The
+per-record half is now sequenced first: folding the key derivation into a single
+four-wide SSE2 pass is one pass against an entire AVX2 rewrite, and it helps
+every record-sized caller rather than only bulk ones.
+
+ML-KEM-768 key generation measured 0.193 ms on MSVC and 0.142 ms on GCC, slower
+than either encapsulate or decapsulate.
+
+### P1 -- the RSA bottleneck, and a correction
+
+Profiling the WSL Release build with `perf` put **36.7% of all cycles in
+`CBigNum::divMod()`**, reached as `RsaContext::sign` -> `CBigNum::modExp` ->
+`CBigNum::mulMod` -> `CBigNum::mod` -> `CBigNum::divMod`. The source agrees:
+
+- `CBigNum::modExp()` (`bignum.cpp:913`) is an ordinary integer exponentiation
+  and `CBigNum::mulMod()` (`bignum.cpp:763`) is still `mul()` then `mod()`.
+- `CMontgomery::modExp()` (`montgomery.cpp:444`) exists, is Montgomery, and does
+  not appear in the profile at all. Its callers are the prime curves
+  (`eccurve.cpp:747`) and Ed448 (`ed448.cpp:65`).
+
+So RSA performs a schoolbook long division for every modular multiplication in
+a private-key operation, while code paths next to it use Montgomery. That
+corrects a diagnosis the roadmap gave two commits earlier, which nominated the
+Montgomery reduction's *shape* -- whether the accumulator was wide enough to
+avoid a conditional subtract per step. The shape is not the question here: RSA
+never reaches that code. It also reframes the cross-toolchain gap recorded
+above. A 2.4x gap there reads as a codegen curiosity; more likely it is a shared
+inefficiency both toolchains pay, differing only in degree. Two compilers do not
+disagree by 2.4x about a division, but they do disagree about how expensive it is
+once both are paying it.
+
+The fix is to route `rsa.cpp`'s `CBigNum::modExp` calls (`rsa.cpp:433`, `:434`,
+`:444`, `:463`, `:518`, `:627`, `:677`) through `CMontgomery`, and it is not a
+small one. It touches the CRT blinding and its fault-attack countermeasures
+(`rsa.cpp:417--444`), and the CRT constants `dp`, `dq` and `qInv` are derived
+modulo *different* primes than `n`, so each half needs its own Montgomery
+context rather than sharing one. `tests/` must go on proving that the CRT result
+agrees with a full re-encrypt, which is the countermeasure that makes CRT worth
+doing at all.
+
+### How the profile was taken, and what it does not show
+
+`perf record` over the whole harness rather than a purpose-built RSA-only
+workload. RSA dominates wall clock in that run, so it dominates the profile, but
+the 36.7% is a share of the entire process rather than of RSA signing alone. The
+absence of `CMontgomery::modExp` from the profile is the load-bearing evidence;
+the percentage is corroboration. A dedicated profile isolating
+`RsaContext::sign` would give a sharper number, and should be the first thing
+done when that work starts.

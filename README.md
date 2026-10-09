@@ -205,7 +205,7 @@ Bold is the fastest entry in its column.
 | Key agreement / KEM | MSVC keygen | GCC keygen | MSVC operation | GCC operation |
 |---|---|---|---|---|
 | X25519 | 0.33 ms | 0.280 ms | 0.164 ms derive | 0.140 ms derive |
-| ML-KEM-768 | — | — | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
+| ML-KEM-768 | 0.193 ms | 0.142 ms | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
 | ECDH P-256 | 3.15 ms | 2.98 ms | 1.40 ms derive | 1.39 ms derive |
 
 Hashing and AEAD sealing, 64 KiB:
@@ -224,6 +224,28 @@ Hashing and AEAD sealing, 64 KiB:
 | ChaCha20-Poly1305 | 578 MiB/s | **650 MiB/s** |
 | XChaCha20-Poly1305 | 577 MiB/s | 648 MiB/s |
 | AES-256-GCM | 370 MiB/s | 475 MiB/s |
+
+The 64 KiB rows above rank AES-256-GCM last. At 64 bytes it is the fastest of
+the three, on both toolchains:
+
+| AEAD seal, 64 B | MSVC | GCC |
+|---|---|---|
+| ChaCha20-Poly1305 | 410 ns | 332 ns |
+| XChaCha20-Poly1305 | 545 ns | 449 ns |
+| AES-256-GCM | **225 ns** | **179 ns** |
+
+That inversion is structural rather than incidental. AES-GCM encrypts one
+block where ChaCha20 encrypts two, the second being the block that derives the
+Poly1305 one-time key at counter 0 (RFC 8439 2.6) -- a cost AES-GCM does not
+pay, and one that a small record cannot amortize over payload. Both directions
+matter: a bulk sender should read the KiB table, and a caller sealing one
+record at a time should read this one, where AES-NI buys less than ChaCha's
+simpler setup does.
+
+These nanosecond figures are the noisiest in the section -- the MSVC runs
+spread 24% on this block against 2% on the KiB one -- so they are best-of-three
+like everything else here, but treat a gap under ~30% between two AEADs as
+unsettled.
 
 ### WSL2, and what the GCC column is not
 
