@@ -389,10 +389,48 @@ attempts vectorised something that was not the limit. The one that worked
 cipher was half the AEAD -- and even that only paid because eight lanes of
 keystream are eight real blocks, not eight lanes for one.
 
-**P4 -- `Fe25519` onto a 2^51 radix.** 25 limb products where there are 100
-now, plus a dedicated `square` for roughly another 30%. Target 100 us each way;
-currently 280/140 us on GCC and 333/164 us on MSVC. This covers X25519 and
-Ed25519 only.
+**P4 -- `Fe25519`: the dedicated `square` half was attempted and is a
+measured negative result; the 2^51 radix half is not started.** Target 100 us
+each way; currently 280/140 us on GCC and 333/164 us on MSVC. This covers
+X25519 and Ed25519 only.
+
+*The dedicated `square` half.* A squaring halves the partial products, because
+every off-diagonal term appears twice and can be computed once and doubled: 100
+products become 55. Measured at about **12% of X25519**, which is the smaller
+half of this item and the one with the more subtle arithmetic.
+
+Two attempts to derive the merged form were made and both were wrong, and the
+reason is worth recording because it is not the obvious one. The 2^25.5 radix
+applies its corrections **asymmetrically**: the odd-index doubling belongs to
+the first operand and the 19-fold to the second. So the product matrix is
+symmetric in value but not in correction, and the merged factor for a pair is
+the *sum* of the two single-term factors, not twice one of them. Getting that
+sum right requires tracking which operand position each correction belongs to
+through the merge.
+
+The failure mode is exactly the one this class exists to prevent: a `square()`
+that agrees with itself and with nothing else. The library's tests caught it
+immediately, which is what they are for. The safe route is to leave `square()`
+calling `mul(a, a)` until the merged factors can be derived by a tool that
+checks them against `mul()` mechanically rather than by hand. The performance
+cost is known and bounded: about 12% of X25519, i.e. well under 1% of a TLS
+handshake.
+
+*The 2^51 radix half.* Not started, and the measurement that would justify it
+is less favourable than the roadmap assumed. The claim was 25 limb products
+where there are 100, but the products are not free: at 2^51 each needs a
+64x64->128 multiply, and measured against the current 26x26 those are
+**2.5--3.1x slower each**. So 25 wide products cost about as much as 78 narrow
+ones -- a 22% reduction in multiply work, not the 75% the limb count suggests.
+The field is 53% of X25519, so the ceiling for this change is roughly 12% of
+the operation, the same as the dedicated square and for the same reason: the
+multiply count is not the only thing that changes.
+
+The header's stated reason for the current radix -- that MSVC has no
+`__int128` -- is also narrower than it looks. MSVC x64 has `_umul128`, which
+produces the same 128-bit product, so a 2^51 radix is possible on both
+toolchains. What it cannot do is work on a 32-bit or non-x64 target, which is
+the part that would need a gate.
 
 **P5 -- A field for the prime curves.** Twenty-nine curves and no per-curve
 field is a plan, so this is the one item here whose scope is genuinely open.

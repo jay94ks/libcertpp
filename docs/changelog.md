@@ -2571,6 +2571,37 @@ squaring, and the 2^51-radix layout that MSVC's missing `__int128` currently
 rules out), a dedicated doubling formula, and a cheaper cofactor check — all
 separate items, none of them this one.
 
+### P4: the dedicated `square` was attempted and reverted
+
+Measured first, as the P3 lesson requires: the field is **53% of X25519**
+(255 ladder iterations, 4 squares and 4 multiplies each, at 38.71 ns per
+`mul` and 36.16 ns per `square` against a 143 µs operation). A dedicated
+squaring halves the partial products — 100 becomes 55, since every
+off-diagonal term appears twice — which is worth about **12% of X25519**.
+
+Two attempts to derive the merged form were made and both were wrong. The
+reason is worth recording because it is not the obvious one: the 2^25.5 radix
+applies its corrections **asymmetrically**, with the odd-index doubling on the
+first operand and the 19-fold on the second. So the product matrix is symmetric
+in value but not in correction, and the merged factor for a pair is the *sum*
+of the two single-term factors, not twice one of them. Getting that sum right
+requires tracking which operand position each correction belongs to through the
+merge.
+
+The failure mode is exactly the one this class exists to prevent: a `square()`
+that agrees with itself and with nothing else. The library's tests caught it
+immediately. Reverted to `mul(a, a)`, which is correct and costs a known,
+bounded 12% of X25519 — well under 1% of a TLS handshake. Left until the merged
+factors can be derived by a tool that checks them against `mul()` mechanically.
+
+The 2^51-radix half was not started, and the measurement that would justify
+it is less favourable than assumed: at 2^51 each product needs a 64x64->128
+multiply, measured at **2.5–3.1x slower** than the current 26x26, so 25 wide
+products cost about as much as 78 narrow ones — a 22% reduction in multiply
+work, not the 75% the limb count suggests. The header's stated blocker (MSVC
+has no `__int128`) is also narrower than it looks: MSVC x64 has `_umul128`,
+which produces the same 128-bit product.
+
 ## Post-quantum: ML-DSA itself (FIPS 204), and the first real PQ certificate verified
 
 The layers underneath this were already in and already validated — the ring, the
