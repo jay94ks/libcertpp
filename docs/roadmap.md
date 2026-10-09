@@ -332,36 +332,62 @@ the budget for cipher and MAC together is 40.7 us, of which the cipher now takes
 24.6, leaving 16.1 us for a MAC that currently needs 48.2. **Poly1305 would have
 to be 3x faster**, which puts the remaining work squarely in the second half.
 
-*Bulk -- the Poly1305 half, and what it actually needs.* Wider scalar limbs are
-already a recorded negative result: three 44-bit limbs with nine 64x64->128
-products per block measured no faster than the portable five-limb 26-bit path,
-and slower again once the carries went through `_addcarry_u64`. So this needs
-SIMD with precomputed powers of `r`, not better scalar arithmetic. The 26-bit
-path's products are fully independent and it propagates no carries at all during
-accumulation, which is exactly what a SIMD version can exploit and what a carry
-chain cannot. This CPU has AVX2 and VPCLMULQDQ, so the instructions exist; what
-is missing is the code.
+*Bulk -- the Poly1305 half, and why it is closed rather than open.* This was
+attempted and measured, and it does not pay on this CPU.
 
-At 3.92 GHz the 1.5 GiB/s target is 2.43 cycles/byte for cipher and MAC
-together, which is worth stating in cycles/byte so it can be judged against other
-hardware. For calibration, the AVX2 keystream just landed at 1.44 cycles/byte,
-so the MAC's 48.2 us is 3.6 cycles/byte and would have to reach 1.0.
+The scalar routine is **throughput-bound, not latency-bound**, which is the thing
+that has to be true for any parallel approach to help. Running two, three and
+four independent accumulators over the same data costs 0.51x, 0.67x and 0.75x of
+a single stream's *rate* rather than less per stream, so there is no idle
+dependency chain to overlap -- the multiply throughput is what is already
+saturating.
 
-One caveat on the negative result above: the machine was under load for those
-runs. The `_addcarry_u64` version measured 40% down across three consecutive
-runs, which is well outside this machine's noise, but the first version's "no
-faster" was a much smaller margin and deserves re-measuring on a quiet machine
-before the conclusion is leaned on.
+Two floors were measured. The 25 multiply-accumulates of a 5x5 schoolbook, with
+no adds, carries or reduction, cost **24.1 cycles/block**; the real
+`absorbBlock()` costs **45.7 cycles/block**. And the vector form is worse than
+the scalar one: 25 scalar multiplies take 24.1 cycles/block against **26.3 for
+13 `vpmuludq`**, a 1.06--1.09x *loss* reproducible across three runs.
+
+That loss is the same trap the ChaCha20 attempts fell into, in a different place.
+AVX2 has no 64x64->128 multiply -- that arrived with AVX512IFMA -- so a 26x26
+product is one `vpmuludq` either way, and packing two into an instruction only
+saves an instruction if the two operands are already in the lanes `vpmuludq`
+reads. They are not: they have to be shuffled into place first, and that costs
+more than the multiply it saves. The remaining costs, the adds, the carry chain
+and the reduction, are all still owed on top.
+
+So the ceiling for Poly1305 here is the scalar floor plus about 21 cycles of
+adds and carries, and the only way below it is fewer multiplies rather than
+cheaper ones -- which needs 64x64->128 or the precomputed powers of `r` the
+roadmap already names, and neither exists as a usable instruction path for this
+recurrence on this CPU. **This item is closed as a measured negative result
+rather than left open.** For calibration, the landed AVX2 keystream runs at 1.47
+cycles/byte, the MAC at 2.88, and the 1.5 GiB/s target is 2.43 for the two
+together -- so the target is missed by roughly 0.45 cycles/byte on the MAC side
+alone, and no vectorisation of the multiply closes that.
+
+The wider scalar experiments remain recorded below and are not disturbed by this
+result: three 44-bit limbs with nine 64x64->128 products per block measured no
+faster than the portable five-limb 26-bit path, and slower again once the
+carries went through `_addcarry_u64`.
 
 The lesson worth carrying to the next pass on this file, and it has two halves.
-Six changes were implemented here on the reasoning that fewer instructions would
-mean less work, and five of the six cost more, every time because they widened a
+Seven changes were implemented here on the reasoning that fewer instructions would
+mean less work, and six of the seven cost more, every time because they widened a
 computation to fill SIMD lanes that the input did not fill. Measure the
 decomposition before proposing the change, not after. The other half: the
 original diagnosis was also wrong in the *opposite* direction, in that it claimed
 the per-record cost was removable when it is not -- it is a floor. A measurement
 that contradicts the plan is worth as much as one that confirms it, and this
 section was wrong twice in one session.
+
+There is a third thing, which is the generalisable form of the second. The first
+question to ask of any SIMD proposal here is not "does it compute the same thing"
+but **"is the thing I am vectorising actually the bottleneck."** Six of the seven
+attempts vectorised something that was not the limit. The one that worked
+(AVX2 keystream) worked because a cost split was measured first and showed the
+cipher was half the AEAD -- and even that only paid because eight lanes of
+keystream are eight real blocks, not eight lanes for one.
 
 **P4 -- `Fe25519` onto a 2^51 radix.** 25 limb products where there are 100
 now, plus a dedicated `square` for roughly another 30%. Target 100 us each way;
@@ -392,11 +418,11 @@ with the items above.
 - **ChaCha20-Poly1305 throughput.** Target 1.5 GiB/s per core at 16--64 KiB.
   A four-block SSE2 keystream took a 64 KiB `seal()` from 331 to roughly
   560 MiB/s, and the AVX2 eight-block keystream now in `chacha20core.cpp` takes
-  it to 736 MiB/s on MSVC and 835 on GCC. **What remains is Poly1305 alone**,
-  and it is the whole of the remaining gap: the two halves of a 64 KiB AEAD
-  measure 48.0 us and 48.2 us, so the MAC is half the cost and would have to be
-  3x faster for the target to be met at all. P3 records what it needs and why
-  the scalar alternative is a dead end.
+  it to 736 MiB/s on MSVC and 835 on GCC. **This is closed.** The remaining gap
+  is entirely Poly1305, and P3 records the measurement that closes it: the scalar
+  form is multiply-throughput-bound at 45.7 cycles/block against a 24.1 floor,
+  and vectorising the multiply is 1.06--1.09x *slower* because AVX2 has no
+  64x64->128 and the operand shuffle costs more than the multiply it saves.
 - **Small-record cost.** The 150 ns target is **withdrawn**: a `seal()` with an
   empty payload already costs 180--210 ns, so 150 ns is not reachable at any
   payload size without removing the one-time key derivation itself. Below 256 B

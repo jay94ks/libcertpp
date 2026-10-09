@@ -3790,13 +3790,58 @@ the 64 KiB AEAD shows the two halves are equal -- 48.0 us of keystream against
 48.2 us of Poly1305 -- so the MAC is 50% of the cost and no keystream
 improvement alone can reach the target. At the measured AVX2 keystream the budget
 for cipher and MAC together is 40.7 us, of which the cipher now takes 24.6,
-leaving 16.1 us for a MAC that currently needs 48.2. **Poly1305 would have to be
-3x faster.** Wider scalar limbs are already a recorded negative result (three
-44-bit limbs with nine 64x64->128 products per block measured no faster than the
-portable five-limb 26-bit path, and slower again through `_addcarry_u64`), so
-the remaining work needs SIMD with precomputed powers of `r`. For calibration
-the new keystream runs at 1.44 cycles/byte, so the MAC's 48.2 us is 3.6
-cycles/byte and would have to reach 1.0.
+leaving 16.1 us for a MAC that currently needs 48.2.
+
+### P3 -- Poly1305, and why the target is closed rather than open
+
+Attempted, measured, and it does not pay on this CPU. Two things had to be
+established before concluding that, and the first one is the one that mattered.
+
+**The scalar routine is throughput-bound, not latency-bound.** That distinction
+decides whether any parallel approach can help: if a serial dependency chain were
+the cost, overlapping independent accumulators would recover it. Running two,
+three and four independent accumulators over the same data instead costs 0.51x,
+0.67x and 0.75x of a *single stream's rate*, so the multiply throughput is
+already what saturates and there is no idle chain to fill.
+
+**The vector form is slower than the scalar one.** Two floors, measured
+(min of 5x60 over three runs, GCC):
+
+| | cycles/block |
+|---|---|
+| 25 scalar multiplies, no adds or carries | 24.1 |
+| **`absorbBlock()` as it ships** | **45.7** |
+| 13 `vpmuludq` packing those same 25 products | 26.3 |
+
+So vectorising the multiply costs 1.06--1.09x, reproducibly. This is the same
+trap the ChaCha20 attempts fell into in a different place: AVX2 has no
+64x64->128 multiply -- that is AVX512IFMA -- so a 26x26 product is one
+`vpmuludq` either way, and putting two in an instruction only saves one if the
+operands already sit in the lanes `vpmuludq` reads. They do not; they have to be
+shuffled into place first, and that costs more than the multiply it saves. The
+adds, the carry chain and the reduction are all still owed on top.
+
+The only route below the scalar floor is *fewer* multiplies rather than cheaper
+ones, which needs 64x64->128 or the precomputed powers of `r` this roadmap
+already names -- and neither has a usable instruction path for this recurrence on
+this CPU. **The ChaCha20-Poly1305 throughput target is therefore closed as a
+measured negative result.** In cycles/byte, which is how it should be judged
+against other hardware: the landed AVX2 keystream is 1.47, the MAC is 2.88, and
+the 1.5 GiB/s target is 2.43 for the two together -- missed by roughly 0.45
+cycles/byte on the MAC side, which no multiplication-side vectorisation closes.
+
+The wider scalar experiments stand and are not disturbed by this: three 44-bit
+limbs with nine 64x64->128 products per block measured no faster than the
+portable five-limb 26-bit path, and slower again once the carries went through
+`_addcarry_u64`.
+
+One methodological note, because it nearly produced a wrong conclusion here. A
+first run of the multiply-floor probe reported 15% overhead and a later one 67%,
+which was not measurement drift: the probe had failed to compile (a missing
+`<immintrin.h>`) and the run script executed the stale binary left over from an
+earlier edit. Every benchmark script used from here on removes its output binary
+before compiling and exits if the build failed, because a benchmark that measures
+a different program than the one edited is worse than no benchmark.
 
 ### P1 -- the RSA bottleneck, and a correction
 
