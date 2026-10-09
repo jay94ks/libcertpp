@@ -9,6 +9,19 @@
 #if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && (defined(_M_X64) || defined(__x86_64__))
 #define CERTPP_CHACHA20_SSE2 1
 #include <emmintrin.h>
+#include <immintrin.h>
+
+#if defined(__GNUC__) || defined(__clang__)
+#include <cpuid.h>
+#elif defined(_M_X64) || defined(_M_AMD64)
+#include <intrin.h>
+#endif
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define CERTPP_TARGET_AVX2 __attribute__((target("avx2")))
+#else
+#define CERTPP_TARGET_AVX2
 #endif
 
 namespace certpp {
@@ -176,6 +189,160 @@ namespace crypto {
             }
         }
 
+        /* AVX2 eight-block path. Unlike SSE2 this is not part of the x86-64 ABI, so the
+         * functions carry a target attribute and the caller gates on a runtime check rather
+         * than on the architecture alone. `hasAvx2()` caches the answer in a function-local
+         * static: the CPUID read is a serialising instruction, and paying it per call would
+         * cost more than the branch saves.
+         *
+         * The rounding wins bulk throughput and loses everywhere else, which is why it is
+         * gated on size as well as on CPU: eight lanes computed and six discarded is a loss
+         * for a short payload, so the caller only reaches this at 512 bytes and above. */
+        bool hasAvx2() {
+            static const bool detected = [] {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx2") != 0;
+#elif defined(_M_X64) || defined(_M_AMD64)
+                int regs[4] = { 0, 0, 0, 0 };
+                __cpuid(regs, 0);
+                if (regs[0] < 7) {
+                    return false;
+                }
+                __cpuidex(regs, 7, 0);
+                return (regs[1] & (1 << 5)) != 0;   // AVX2 is EBX bit 5 of leaf 7
+#else
+                return false;
+#endif
+            }();
+            return detected;
+        }
+
+        CERTPP_TARGET_AVX2
+        inline __m256i rotl32x8(__m256i x, int n) {
+            return _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - n));
+        }
+
+        CERTPP_TARGET_AVX2
+        inline void quarterRoundX8(__m256i& a, __m256i& b, __m256i& c, __m256i& d) {
+            a = _mm256_add_epi32(a, b); d = _mm256_xor_si256(d, a); d = rotl32x8(d, 16);
+            c = _mm256_add_epi32(c, d); b = _mm256_xor_si256(b, c); b = rotl32x8(b, 12);
+            a = _mm256_add_epi32(a, b); d = _mm256_xor_si256(d, a); d = rotl32x8(d, 8);
+            c = _mm256_add_epi32(c, d); b = _mm256_xor_si256(b, c); b = rotl32x8(b, 7);
+        }
+
+        /* An 8x8 32-bit transpose: eight vectors each holding one state word across eight
+         * blocks, into eight vectors each holding eight consecutive words of one block.
+         *
+         * The last stage is a vpermd per 128-bit half rather than the shuffle-based sequence
+         * the four-block path uses, and that is not a preference. _mm256_shuffle_epi32 and the
+         * unpack family operate within each 128-bit lane independently, so after stage 2 each
+         * vector holds two rows interleaved lane by lane and no half-select can separate them.
+         * Reading all eight lanes is what finishing the transpose requires.
+         *
+         * Which lane holds which value was derived by transposing an identity matrix and
+         * reading the result, not reasoned out: column k's rows 0..3 sit in u[k/2] and its
+         * rows 4..7 in u[k/2 + 4], even k reading lanes {0,1,4,5} and odd k {2,3,6,7}. */
+        CERTPP_TARGET_AVX2
+        inline void transpose8(__m256i* r) {
+            const __m256i t0 = _mm256_unpacklo_epi32(r[0], r[1]);
+            const __m256i t1 = _mm256_unpackhi_epi32(r[0], r[1]);
+            const __m256i t2 = _mm256_unpacklo_epi32(r[2], r[3]);
+            const __m256i t3 = _mm256_unpackhi_epi32(r[2], r[3]);
+            const __m256i t4 = _mm256_unpacklo_epi32(r[4], r[5]);
+            const __m256i t5 = _mm256_unpackhi_epi32(r[4], r[5]);
+            const __m256i t6 = _mm256_unpacklo_epi32(r[6], r[7]);
+            const __m256i t7 = _mm256_unpackhi_epi32(r[6], r[7]);
+
+            __m256i u[8];
+            u[0] = _mm256_permute2x128_si256(t0, t2, 0x20);
+            u[1] = _mm256_permute2x128_si256(t1, t3, 0x20);
+            u[2] = _mm256_permute2x128_si256(t0, t2, 0x31);
+            u[3] = _mm256_permute2x128_si256(t1, t3, 0x31);
+            u[4] = _mm256_permute2x128_si256(t4, t6, 0x20);
+            u[5] = _mm256_permute2x128_si256(t5, t7, 0x20);
+            u[6] = _mm256_permute2x128_si256(t4, t6, 0x31);
+            u[7] = _mm256_permute2x128_si256(t5, t7, 0x31);
+
+            const __m256i idxEven = _mm256_setr_epi32(0, 1, 4, 5, 0, 1, 4, 5);
+            const __m256i idxOdd  = _mm256_setr_epi32(2, 3, 6, 7, 2, 3, 6, 7);
+
+            for (size_t k = 0; k < 8; ++k) {
+                const __m256i idx = (k % 2 == 0) ? idxEven : idxOdd;
+                const __m256i lo = _mm256_permutevar8x32_epi32(u[k / 2], idx);
+                const __m256i hi = _mm256_permutevar8x32_epi32(u[k / 2 + 4], idx);
+                r[k] = _mm256_blend_epi32(lo, hi, 0xF0);
+            }
+        }
+
+        /* Eight blocks per pass, the same contract as xorStream4() with twice the width: one
+         * pass of the rounds produces 512 bytes of keystream.
+         *
+         * The two 8x8 transposes cover words 0..7 and words 8..15 of the sixteen-word state,
+         * so after them the low half of each vector is one block's first 32 bytes and the
+         * high half its last 32. */
+        CERTPP_TARGET_AVX2
+        void xorStream8(
+            const ChaCha20Core::SState& state, uint32_t counter,
+            const uint8_t* in, uint8_t* out, size_t blocks
+        ) {
+            __m256i original[16];
+            for (size_t i = 0; i < 16; ++i) {
+                original[i] = _mm256_set1_epi32(int(state.words[i]));
+            }
+
+            for (size_t blockIndex = 0; blockIndex < blocks; blockIndex += 8) {
+                const uint32_t base = counter + uint32_t(blockIndex);
+                const __m256i counters = _mm256_setr_epi32(
+                    int(base), int(base + 1), int(base + 2), int(base + 3),
+                    int(base + 4), int(base + 5), int(base + 6), int(base + 7));
+
+                __m256i v[16];
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = original[i];
+                }
+                v[12] = counters;
+
+                for (int round = 0; round < 10; ++round) {
+                    quarterRoundX8(v[0], v[4], v[8], v[12]);
+                    quarterRoundX8(v[1], v[5], v[9], v[13]);
+                    quarterRoundX8(v[2], v[6], v[10], v[14]);
+                    quarterRoundX8(v[3], v[7], v[11], v[15]);
+
+                    quarterRoundX8(v[0], v[5], v[10], v[15]);
+                    quarterRoundX8(v[1], v[6], v[11], v[12]);
+                    quarterRoundX8(v[2], v[7], v[8], v[13]);
+                    quarterRoundX8(v[3], v[4], v[9], v[14]);
+                }
+
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = _mm256_add_epi32(v[i], (i == 12) ? counters : original[i]);
+                }
+
+                __m256i lo[8], hi[8];
+                for (size_t i = 0; i < 8; ++i) {
+                    lo[i] = v[i];
+                    hi[i] = v[i + 8];
+                }
+                transpose8(lo);
+                transpose8(hi);
+
+                for (size_t block = 0; block < 8; ++block) {
+                    const size_t offset = (blockIndex + block) * 64;
+
+                    const __m256i a = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i*>(in + offset));
+                    const __m256i b = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i*>(in + offset + 32));
+
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + offset),
+                                        _mm256_xor_si256(a, lo[block]));
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + offset + 32),
+                                        _mm256_xor_si256(b, hi[block]));
+                }
+            }
+        }
+
 #endif
     } // namespace
 
@@ -219,10 +386,24 @@ namespace crypto {
         size_t offset = 0;
 
 #if defined(CERTPP_CHACHA20_SSE2)
-        // Four-block groups go through SSE2; the remainder falls through to the scalar loop
-        // below, which also serves every non-x86-64 target and a build with the option off.
+        // Whole eight-block groups go through AVX2 where the CPU has it, then whole four-block
+        // groups through SSE2, then whatever is left through the scalar loop -- which also
+        // serves every non-x86-64 target and a build with the option off.
         const size_t wholeBlocks = (length - offset) / BLOCK_BYTES;
-        const size_t vectorBlocks = wholeBlocks & ~size_t(3);
+
+        // Only at 512 bytes and up. Computing eight lanes and discarding six is a loss for a
+        // short payload, which is the same mistake the four-block path makes below 256 B and
+        // the reason it does not simply lower its own threshold.
+        const size_t avx2Blocks = (wholeBlocks >= 8 && hasAvx2()) ? wholeBlocks & ~size_t(7) : 0;
+
+        if (avx2Blocks != 0) {
+            xorStream8(state, counter, in + offset, out + offset, avx2Blocks);
+
+            offset += avx2Blocks * BLOCK_BYTES;
+            counter += uint32_t(avx2Blocks);
+        }
+
+        const size_t vectorBlocks = ((length - offset) / BLOCK_BYTES) & ~size_t(3);
 
         if (vectorBlocks != 0) {
             xorStream4(state, counter, in + offset, out + offset, vectorBlocks);
