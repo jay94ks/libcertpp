@@ -224,24 +224,33 @@ Hashing and AEAD sealing, 64 KiB:
 | XChaCha20-Poly1305 | 577 MiB/s | 648 MiB/s |
 | AES-256-GCM | 370 MiB/s | 475 MiB/s |
 
-Two caveats bound how far the GCC column travels. It was measured **under
-WSL2**, which is a VM and not bare metal: the harness is single-threaded
-CPU-bound cryptography, so the hypervisor's share of each measurement ought to
-be small, but that is an argument that it ought to be and not a measurement
-showing that it is. Read the column as "this toolchain in this setup" rather
-than as Linux performance in general. And "both Release" is not "the same
-settings": CMake's Release defaults are `/O2` for MSVC and `-O3` for GCC, so
-what is compared here is toolchain *plus* optimization level, not toolchain
-alone.
+### WSL2, and what the GCC column is not
 
-The MSVC column replaces an earlier set published for the same CPU, whose own
-text described it as measured under load. Every row here came in equal or
-faster, most by 10--20%; the largest movement is ECDSA P-256 verify, 3.53 ms
-to 2.44 ms, just outside the spread quoted above -- which is why the conditions
-are stated here rather than left implied.
+The GCC figures were measured **under WSL2** -- a real Linux kernel inside a
+VM, not a bare-metal Linux install on this CPU -- and that warrants a record of
+its own rather than a clause in the conditions above. The harness is
+single-threaded, CPU-bound cryptography, so the hypervisor's share of each
+measurement ought to be small. But that is an argument that it ought to be, not
+a measurement showing that it is: this run did not quantify the overhead in
+either direction.
 
-Five things in there are worth explaining, because each is a property of the
-implementation rather than noise:
+The column therefore reads as *this toolchain in this setup*, not as Linux
+performance in general. The entry this matters most for is the RSA gap below,
+the one difference here large enough to read as a compiler defect rather than
+as measurement noise -- which is exactly why it should not be called one before
+it has been re-measured on bare metal.
+
+Two smaller limits apply to both columns. "Release" is not one setting:
+CMake's defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and
+optimization level are varied together. And the MSVC column replaces an earlier
+set published for this CPU, whose own text described it as measured under
+load. Re-measured, every row came in equal or faster, most by 10--20% -- the
+largest movement is ECDSA P-256 verify, 3.53 ms to 2.44 ms, just outside the
+spread quoted above -- with no code change to account for any of it.
+
+### Five things in there are worth explaining
+
+Each is a property of the implementation rather than noise:
 
 - **Ed25519 is an order of magnitude off an optimized implementation** (which
   verifies in 50--100 µs), and everything else is further off than that. It is
