@@ -291,10 +291,27 @@ Vectorising a *run* of blocks, rather than one, is the same mistake and was trie
 first: also slower, at 24%.
 
 What survives is therefore not the proposed change but the problem it was aimed
-at. Two things follow from the measurement that were not in this item before:
-lowering the four-block threshold to one block, if the discarded-lane cost can
-actually be brought below the scalar loop's; and the ~200 ns floor, which is
-independent of payload size and is the largest single term in a 64 B record.
+at, and the threshold question has now been answered rather than left open:
+**lowering the four-block threshold to one is also a regression.** Measured in
+situ, reproducing the scalar loop's shape from `chacha20core.cpp:235` against a
+one-block SSE2 pass over the same buffer, one block runs 142.9--151.4 ns scalar
+against 177.8--212.7 ns vectorised -- **1.17--1.49x slower**. The isolated
+`blockVectorized` figure understated it, and for a reason worth recording: the
+scalar loop never materialises a keystream block at all, it XORs straight into
+the caller's buffer word by word, so the vector path's extra stores are on top of
+a scalar path that is already leaner than the benchmark's baseline.
+
+The serial path has no slack either. `twentyRounds()` compiles to **zero xmm
+registers** -- 32 `rol`, 32 `xor`, 31 `add`, no auto-vectorisation -- and a full
+`block()` costs 100.5 ns, which at 3.92 GHz is **6.2 cycles/byte**, squarely in
+the normal published range for scalar ChaCha20 on x86-64. There is no compiler
+accident inflating the comparison and no easy win on the serial side to offset a
+vector path that loses.
+
+So both halves of the per-record problem are now closed as measurements rather
+than assumptions: the ~200 ns floor is real and irreducible without removing the
+one-time key derivation, and the scalar-to-vector transition below 256 B cannot be
+reversed in the vector path's favour.
 
 *Bulk (the 1.5 GiB/s target):* AVX2 eight-block keystream, then Poly1305 in
 SIMD. The keystream is the cheaper half -- SSE2 four-block buys 1.6--1.7x
@@ -304,8 +321,8 @@ in the item below and should not be re-tried. This CPU has both AVX2 and
 VPCLMULQDQ, so the instructions exist; what is missing is the code.
 
 The lesson worth carrying to the next pass on this file, and it has two halves.
-Four changes were implemented here on the reasoning that fewer instructions would
-mean less work, and all four cost more, in every case because they widened a
+Five changes were implemented here on the reasoning that fewer instructions would
+mean less work, and all five cost more, in every case because they widened a
 computation to fill SIMD lanes that the input did not fill. Measure the
 decomposition before proposing the change, not after. The other half: the
 original diagnosis was also wrong in the *opposite* direction, in that it claimed
