@@ -138,8 +138,9 @@ gaps they closed:
   225 ns against ChaCha20-Poly1305's 410 ns per record on MSVC (180 against 332
   on GCC), then 370 against 578 MiB/s in bulk. AES-GCM runs one block where
   ChaCha runs two, the extra being the Poly1305 one-time key at counter 0.
-  That confirms where the small-record cost comes from, and it splits P3 into
-  two changes that do not overlap.
+  That is real, but it does not mean what this section previously said it meant
+  -- see P3, where measuring where the 410 ns actually goes overturned the
+  conclusion drawn from it.
 
 **P1 -- Put RSA on Montgomery, which it never was.** *Answered, and the answer
 inverts what this item assumed.* Profiling the WSL Release build with `perf`
@@ -218,32 +219,99 @@ toolchains.
 
 Still first among the remaining items, but the margin is narrower than it was
 when the plan was written: P1 removed a 42--71% gap here, and this one is 36%.
-Two things sharpen what the work actually is. The
-`CERTPP_DISABLE_HWACCEL_SIMD` runs above put the GF(2^m)/GHASH path at 7x
-while the ChaCha20 SSE2 path is only 1.6--1.7x, so GHASH's vectorization is
-already paying and the real question is how much of it is left -- measure that
-before assuming the cipher needs AVX2. And P0's 64 B numbers give the
-direction this item is missing: AES-GCM is *already* the faster AEAD at 64 B,
-so a throughput pass that ignored small records would optimize the case where
-AES-GCM already wins least.
 
-**P3 -- ChaCha20-Poly1305, as two separate changes.** P0's 64 B measurement
-split this into a bulk half and a per-record half that want opposite work, and
-doing only one leaves the other where it is.
+**The obvious fix for this was tried and is a regression, so do not try it
+again.** GHASH multiplies one block at a time (`ghash.cpp:232`), which makes
+every block's multiply depend on the previous result, and the standard remedy is
+to fold four blocks against precomputed powers of H so the chain is a quarter
+as long. Implemented and measured, it came out **9--16% slower**: four blocks
+cost seven PCLMULQDQ multiplies against the four the recurrence needs, because
+X_1..X_4 carry *descending* powers (H^4, H^3, H^2, H) and cannot be folded
+against one power the way the first attempt assumed. Verified against
+`multiplyPortable()` block for block, so the arithmetic was right and the shape
+was wrong.
+
+So GHASH is not waiting for better chaining; it is waiting for fewer or cheaper
+multiplies, which on this CPU means VPCLMULQDQ rather than PCLMULQDQ. The
+`CERTPP_DISABLE_HWACCEL_SIMD` runs above put the GF(2^m)/GHASH path at 7x,
+which is what vectorization is worth here, and the remaining 36% is inside
+CLMUL itself. Measure that before assuming anything about the cipher -- the
+ChaCha20 SSE2 path, by comparison, is only 1.6--1.7x.
+
+One thing that was measured and is worth keeping: hoisting `H`'s bit reversal
+out of the per-block path is worth 4.6% and produces identical output. That is
+below this machine's noise floor for a reported change and is **not** recorded
+as done, but it is the only GHASH change tried here that was not a regression.
+
+**P3 -- ChaCha20-Poly1305: the per-record cost is real, and its cause is a
+threshold rather than the lane-counting problem this item assumed.** The 410 ns
+per record is real, but the reason it is 410 is not what this section said.
+
+*Where the 410 ns actually goes.* Measured through `seal()` across a sweep of
+sizes rather than by adding up its parts, because an earlier single-pair
+measurement of this got it wrong. The curve is not a line, and it has a step in
+it:
+
+| payload | blocks | keystream path | `seal()` |
+|---|---|---|---|
+| 0 B | 0 | -- | **180--210 ns** |
+| 64 B | 1 | scalar | 340--352 ns |
+| 128 B | 2 | scalar | 485--488 ns |
+| 192 B | 3 | scalar | 634--639 ns |
+| **256 B** | 4 | **SSE2** | **568--575 ns** |
+
+Min of 5x20000 over two runs, GCC. Two things fall out, and they point in
+opposite directions from how this section used to describe the problem.
+
+**There is a fixed cost, and it is about 200 ns** -- read directly from the 0 B
+row, not extrapolated. That is the one-time key block plus Poly1305 over the AAD
+and length blocks, and it is roughly half of a 64 B record. An earlier reading of
+this item fit a straight line to 64 B against 192 B and reported the intercept as
+zero; the fit was wrong, because 192 B is not "two blocks more" than 64 B in any
+sense the curve respects, and a straight line cannot represent the step below.
+Two of the four points that fit most badly are the ones either side of it.
+
+**Below 256 B, every payload block is scalar, and that is where the rest goes.**
+`xorStream()` routes only whole four-block groups to SSE2 --
+`vectorBlocks = wholeBlocks & ~size_t(3)` (`chacha20core.cpp:225`) -- so 64, 128
+and 192 B all take the scalar loop and pay ~130--155 ns per block, while 256 B
+drops to ~143 ns *for four blocks*. Hence 192 B costing more than 256 B, which
+reproduces in both runs. The small-record cost is a **threshold**, not a
+lane-counting problem: records under 256 B never reach the vectorised path at
+all.
+
+That also kills the per-record fix this item proposed, and for a structural
+reason rather than a discouraging one: it was to generate counters 0--3 in one
+SSE2 pass, so the one-time key and the first blocks came out of the same lanes.
+SSE2 is 128-bit and fixed, so a two-block need computes four and discards two.
+Measured, that is **1.43x slower** -- `blockVectorized()`, which produces
+byte-identical output (verified over 4456 cases), loses to the scalar path
+because the discarded lanes still pay for SIMD shuffles and register pressure.
+Vectorising a *run* of blocks, rather than one, is the same mistake and was tried
+first: also slower, at 24%.
+
+What survives is therefore not the proposed change but the problem it was aimed
+at. Two things follow from the measurement that were not in this item before:
+lowering the four-block threshold to one block, if the discarded-lane cost can
+actually be brought below the scalar loop's; and the ~200 ns floor, which is
+independent of payload size and is the largest single term in a 64 B record.
 
 *Bulk (the 1.5 GiB/s target):* AVX2 eight-block keystream, then Poly1305 in
 SIMD. The keystream is the cheaper half -- SSE2 four-block buys 1.6--1.7x
 today, so AVX2 eight-block is that argument one level up. Poly1305 needs
-precomputed powers of `r`, not wider limbs; the negative result is recorded in
-the item below and should not be re-tried.
+precomputed powers of `r`, not wider limbs; that negative result is recorded
+in the item below and should not be re-tried. This CPU has both AVX2 and
+VPCLMULQDQ, so the instructions exist; what is missing is the code.
 
-*Per-record (the 150 ns target):* generate counters 0--3 in one four-wide SSE2
-pass, which covers the one-time key and 192 bytes of payload together. This is
-the half that closes the 410 ns, and it is worth doing **before** the bulk work,
-not after: it is one pass against an entire AVX2 rewrite, it helps every record
-sized caller rather than only bulk ones, and P0 measured that AES-GCM is
-currently 1.8x faster at exactly this size. Bulk throughput is a data-center
-concern; per-record cost is what a TLS handshake pays.
+The lesson worth carrying to the next pass on this file, and it has two halves.
+Four changes were implemented here on the reasoning that fewer instructions would
+mean less work, and all four cost more, in every case because they widened a
+computation to fill SIMD lanes that the input did not fill. Measure the
+decomposition before proposing the change, not after. The other half: the
+original diagnosis was also wrong in the *opposite* direction, in that it claimed
+the per-record cost was removable when it is not -- it is a floor. A measurement
+that contradicts the plan is worth as much as one that confirms it, and this
+section was wrong twice in one session.
 
 **P4 -- `Fe25519` onto a 2^51 radix.** 25 limb products where there are 100
 now, plus a dedicated `square` for roughly another 30%. Target 100 us each way;
@@ -292,12 +360,13 @@ with the items above.
   consecutive runs, which is well outside this machine's noise, but the
   first version's "no faster" was a much smaller margin and deserves
   re-measuring on a quiet machine before the conclusion is leaned on.
-- **Small-record fixed cost.** Target 150 ns for a 64 B `seal()`, currently
-  around 420 ns. Most of it is two scalar ChaCha20 block functions: one for
-  the Poly1305 one-time key at counter 0, one for the payload. Generating
-  counters 0--3 in a single four-wide SSE2 pass would cover the one-time
-  key and 192 bytes of payload in one go, which is the structural fix for
-  records at or below 192 bytes.
+- **Small-record cost.** The 150 ns target is **withdrawn**: a `seal()` with an
+  empty payload already costs 180--210 ns, so 150 ns is not reachable at any
+  payload size without removing the one-time key derivation itself. Below 256 B
+  the cost is also stuck on the scalar keystream path, because `xorStream()`
+  only vectorises whole four-block groups (`chacha20core.cpp:225`), which is why
+  192 B costs more than 256 B. Both terms are structural rather than tuning
+  gaps. P3 records the sweep and the one change that could move the threshold.
 - **X25519 speed.** Target 100 us each way; currently around 333 us for
   key generation and 167 us for the shared secret. Constant-time is
   **done** (a Montgomery ladder with masked conditional swaps over
