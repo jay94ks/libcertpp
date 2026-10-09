@@ -184,7 +184,8 @@ the published vectors could not.
 Measured by [`examples/05_benchmark.cpp`](examples/05_benchmark.cpp), so these
 are reproducible rather than claimed: build it and run it on your own hardware.
 Two toolchains, both Release, both measured in one session on a single
-4-core i7-11370H @ 3.30 GHz: MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3
+4-core i7-11370H (3.30 GHz base, around 3.92 GHz sustained under this load):
+MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3
 on Ubuntu 24.04 **under WSL2**. Each figure is the fastest of three batches of
 20 iterations, best of three runs, and the two were run one after the other
 rather than at once so neither could end up measuring the other's compiler.

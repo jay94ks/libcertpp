@@ -73,10 +73,109 @@ would go stale on the next thing that lands.
 ## Constant-time and performance
 
 Carried over from the downstream performance report, with what has been
-done and what is left. Figures are from a 4-core i7-11370H measured at
-3.92 GHz sustained, min-of-N; this machine's run-to-run spread is wide
-enough (11--25%, worse under load) that only large differences mean
-anything.
+done and what is left.
+
+Figures are min-of-N on a 4-core i7-11370H running at 3.92 GHz sustained under
+this load; the machine's run-to-run spread is wide enough (11--25%, worse under
+load) that only large differences mean anything. Three sets are reasoned from
+below and all come off that same machine: the historical MSVC figures, the
+cross-toolchain pair in the last item (GCC 13.3 on Ubuntu 24.04 under WSL2
+alongside MSVC 19.36 on Windows), and the `CERTPP_DISABLE_HWACCEL_SIMD` runs
+immediately after. The GCC side is a VM rather than bare metal, and CMake's
+Release defaults differ between the two (`/O2` against `-O3`), so it reads as
+toolchain plus optimization level.
+
+### What the accelerated paths are actually worth
+
+Rebuilding both toolchains with `-DCERTPP_DISABLE_HWACCEL_SIMD` compiles out
+four accelerations at once -- `CBigNum::mulAccelerated()`'s MULX/ADCX,
+`CGf2m`'s word-level reduction, GHASH, and ChaCha20's SSE2 keystream -- so the
+ratio between on and off attributes each. Same machine, same session, min of
+3x20 over three runs:
+
+| | MSVC on | MSVC off | GCC on | GCC off |
+|---|---|---|---|---|
+| AES-256-GCM, 64 KiB | 370 MiB/s | **53 MiB/s** | 475 MiB/s | **64 MiB/s** |
+| ChaCha20-Poly1305, 64 KiB | 578 MiB/s | 346 MiB/s | 650 MiB/s | 408 MiB/s |
+| XChaCha20-Poly1305, 64 KiB | 577 MiB/s | 353 MiB/s | 648 MiB/s | 409 MiB/s |
+| RSA-2048 sign | 8.06 ms | 8.85 ms | 19.1 ms | 19.7 ms |
+| RSA-2048 verify | 0.145 ms | 0.171 ms | 0.392 ms | 0.408 ms |
+| ECDSA P-256 sign | 0.916 ms | 0.884 ms | 0.862 ms | 0.832 ms |
+
+Two things fall out of that, and both matter more than any single number in it.
+
+**The GF(2^m)/GHASH path is worth about 7x, and nothing else is close.**
+AES-GCM without it runs at 53--64 MiB/s against ChaCha20-Poly1305's 346--408.
+That is the measurement behind `README.md`'s claim that GHASH rather than the
+cipher is AES-GCM's bottleneck, and why AES-GCM still lands *below*
+ChaCha20-Poly1305 after acceleration rather than above it.
+
+**`CBigNum::mulAccelerated()` is worth nothing measurable.** Every big-number
+row moves by less than the machine's own 11--25% spread, so the honest reading
+is that turning the MULX/ADCX path on changes RSA and prime-curve timings by an
+amount indistinguishable from noise. The prime-curve rows moved the other way
+-- marginally faster with acceleration off, on both toolchains -- which is the
+opposite sign and the same noise-sized magnitude, so neither direction is a
+result either. This is the most useful single fact in the section, and it cuts
+against the obvious plan: there is nothing to win by improving that function.
+
+### Ordered plan
+
+Sequenced by what the measurements actually support, not by how easy each item
+looks. Each names how it would be verified, because on this machine a change
+smaller than ~20% is not a change.
+
+**P0 -- Close the measurement gaps.** Three things the plan needs and the
+harness does not produce: ML-KEM-768 *key generation*, which `benchKem()` calls
+once for setup and never times (which is why that cell in `README.md`'s table is
+empty); the 64 B `seal()` fixed cost, quoted below at ~420 ns against a 150 ns
+target but measured by nothing in `examples/05_benchmark.cpp`; and any
+per-function profile at all. Everything after this is being planned against
+whole-operation numbers. Cheap, and it keeps two later items from being
+unverifiable.
+
+**P1 -- Find where RSA's time actually goes.** The accelerated multiply is not
+it (measured above) and the prime curves are already faster on GCC, so the
+candidate left is the Montgomery reduction. Profile `CMontgomery` against
+`modPow` before changing either: the first question is whether the accumulator
+is wide enough to avoid a conditional subtract per step. This is the only item
+whose outcome is genuinely unknown, which is why it leads the optimization work
+rather than the portable items above it.
+
+**P2 -- Bring AES-256-GCM level with ChaCha20-Poly1305.** Its 7x path is already
+in place, so the remaining gap to ChaCha (370 against 578 MiB/s on MSVC, 475
+against 650 on GCC) is whatever GHASH still costs above the cipher. Best ratio
+of value to work on the list: a pure throughput gap on a routine that is
+already vectorized, and a caller reaching for AES-GCM on x86 currently gets
+less than one reaching for ChaCha20. Verify in the harness's AEAD block, both
+toolchains.
+
+**P3 -- ChaCha20-Poly1305 toward 1.5 GiB/s.** AVX2 eight-block keystream, then
+Poly1305 in SIMD. The keystream is the cheaper half: SSE2 four-block buys
+1.6--1.7x today, so AVX2 eight-block is that argument one level up. Poly1305
+needs precomputed powers of `r`, not wider limbs -- the negative result is
+recorded in the item below and should not be re-tried.
+
+**P4 -- `Fe25519` onto a 2^51 radix.** 25 limb products where there are 100
+now, plus a dedicated `square` for roughly another 30%. Target 100 us each way;
+currently 280/140 us on GCC and 333/164 us on MSVC. This covers X25519 and
+Ed25519 only.
+
+**P5 -- A field for the prime curves.** Twenty-nine curves and no per-curve
+field is a plan, so this is the one item here whose scope is genuinely open,
+and it is blocked on P1 reporting: if the Montgomery reduction generalizes,
+the prime curves may get a large part of P1's answer for free. Do not start it
+before P1 does.
+
+**P6 -- Ed448 and P-521.** The remaining signature outliers, neither of which
+has had a dedicated pass.
+
+**P7 -- MD5 on GCC.** 455 against 593 MiB/s: one scalar routine, no
+acceleration involved, independent of everything above. Small and isolated.
+
+Deliberately last: the constant-time items below. They are correctness and
+security work rather than throughput, and their schedule should not compete
+with the items above.
 
 - **ChaCha20-Poly1305 throughput.** Target 1.5 GiB/s per core at
   16--64 KiB. A four-block SSE2 keystream took a 64 KiB `seal()` from 331
@@ -198,11 +297,16 @@ anything.
      multiply being taken by accident. The prime curves also running *faster*
      on GCC argues the backend is not slow in general; RSA is simply where
      `mulMod()` dominates enough for a codegen difference to become the whole
-     result. What that difference is has not been profiled. The two things
-     worth measuring before anything is changed: whether the Montgomery
-     reduction's shape costs GCC more than it costs MSVC, and whether GCC keeps
-     `row[]`/`r64[]` resident across mulAccelerated()'s Step A / Step B
-     boundary. Nothing here has been diagnosed beyond those exclusions.
+     result.
+
+     **Since measured, and the second candidate is now out.** The
+     `CERTPP_DISABLE_HWACCEL_SIMD` runs above leave the ratio essentially
+     unchanged -- 2.37x accelerated, 2.23x without. So the gap does not live in
+     `mulAccelerated()`'s MULX/ADCX loops, and GCC is not losing a register
+     allocation across its Step A / Step B boundary. Combined with that
+     path being worth nothing measurable even on MSVC, the bottleneck is above
+     the multiply rather than in it, which leaves the Montgomery reduction as
+     the candidate. That is P1 below, and it is still unprofiled.
 
   2. **MD5 is 23% slower on GCC** (455 against 593 MiB/s) while every other
      hash is equal or faster -- one routine, one direction, so a much smaller
