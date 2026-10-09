@@ -11,8 +11,7 @@ arbitrary-precision integer, `CGf2m` a binary-field (GF(2^m)) element, and
 `CJson` JSON parsing/serialization),
 an `io` layer (spans, a growable array, a resizable working byte buffer
 (`CBuffer`), a fixed-size owning one (`COctet`), and a stream
-abstraction), a `net` module (IPv4/IPv6/Unix-domain socket addresses and
-`CSocket` operations, with native errors translated to `ERetCode`), an
+abstraction), an
 `asn1` module (tag encode/decode, a TLV decoder/encoder,
 sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 `INTEGER`/`SEQUENCE` DER helpers), a `crypto` module, an `x509` module, and a
@@ -960,12 +959,6 @@ CMakeLists.txt              # builds certpp (+ tests, if CERTPP_BUILD_TESTS=ON) 
   [coding-conventions.md](coding-conventions.md#internal-implementation-headers)
   for why it lives there and how its header guard/include differ from a
   public header.
-- **`net/sockaddr.hpp` / `src/net/sockaddr.cpp`** define `SSocketAddress`
-  for IPv4, IPv6, and Unix-domain addresses, including numeric/hostname
-  resolution. **`net/socket.hpp` / `src/net/socket.cpp`** define the owning
-  `CSocket` wrapper for stream/datagram sockets; native system errors are
-  translated to `ERetCode`. The module does not provide TLS or certificate
-  path validation.
 - **`asn1/tag.hpp` / `src/asn1/tag.cpp`** define `CTag`, an ASN.1 tag
   (class + constructed flag + tag number), with `decode()`/`encode()`
   to/from a `TReadOnlySpan<uint8_t>`/`TSpan<uint8_t>`, plus `ETagClass` and

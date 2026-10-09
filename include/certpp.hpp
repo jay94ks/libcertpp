@@ -24,9 +24,6 @@
 #include <certpp/io/octet.hpp>
 #include <certpp/io/stream.hpp>
 
-#include <certpp/net/sockaddr.hpp>
-#include <certpp/net/socket.hpp>
-
 #include <certpp/asn1/tag.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/asn1/encoder.hpp>

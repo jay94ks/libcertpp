@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/un.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>

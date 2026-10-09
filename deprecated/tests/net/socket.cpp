@@ -95,6 +95,36 @@ TEST_CASE("CSocket recv returns ERET_AGAIN on a nonblocking empty socket") {
     CHECK(read == 0);
 }
 
+TEST_CASE("CSocket poll reports readiness, timeouts and invalid sockets") {
+    CSocket empty;
+    CHECK(empty.poll(EPOLL_RCV, STimeSpan(0)) == ERET_INVAL);
+
+    CSocket receiver;
+    CSocket sender;
+    REQUIRE(receiver.create(EAF_INET, ESOCK_DGRAM, EPROT_UDP) == ERET_OK);
+    REQUIRE(sender.create(EAF_INET, ESOCK_DGRAM, EPROT_UDP) == ERET_OK);
+    SSocketAddress address;
+    REQUIRE(SSocketAddress::loopback(address, 0, EAF_INET) == ERET_OK);
+    REQUIRE(receiver.bind(address) == ERET_OK);
+    REQUIRE(receiver.localAddress(address) == ERET_OK);
+
+    EPollHow ready = EPOLL_ANY;
+    CHECK(receiver.poll(EPOLL_RCV, STimeSpan(20), &ready) == ERET_TIMEOUT);
+    CHECK(ready == 0);
+
+    CHECK(receiver.poll(EPOLL_SND, STimeSpan(0), &ready) == ERET_OK);
+    CHECK((ready & EPOLL_SND) != 0);
+    CHECK((ready & EPOLL_RCV) == 0);
+
+    const char byte = 'x';
+    size_t written = 0;
+    REQUIRE(sender.sendTo(address, &byte, 1, written) == ERET_OK);
+    CHECK(receiver.poll(EPOLL_RCV, STimeSpan(2000), &ready) == ERET_OK);
+    CHECK((ready & EPOLL_RCV) != 0);
+    CHECK(receiver.poll(EPOLL_RCV | EPOLL_SND, STimeSpan(-1), &ready) == ERET_OK);
+    CHECK(ready == (EPOLL_RCV | EPOLL_SND));
+}
+
 TEST_CASE("CSocket sends and receives UDP datagrams with actual address lengths") {
     CSocket receiver;
     CSocket sender;

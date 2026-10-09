@@ -28,6 +28,39 @@ namespace net {
     };
 
     /**
+     * Enumeration representing different shutdown modes for a socket.
+     */
+    enum EShut {
+        ESHUT_RD = 0,
+        ESHUT_WR,
+        ESHUT_RDWR
+    };
+
+    /**
+     * Flags describing the readiness conditions CSocket::poll() waits for or reports.
+     */
+    enum EPollHow {
+        EPOLL_RCV = 0x01,   /**< Data (or EOF / a pending connection) can be received. */
+        EPOLL_SND = 0x02,   /**< Data can be sent without blocking. */
+        EPOLL_ERR = 0x04,   /**< An error or hang-up condition; always reported, never needs requesting. */
+        EPOLL_ANY = EPOLL_RCV | EPOLL_SND | EPOLL_ERR
+    };
+
+    /**
+     * Combines two EPollHow flag sets.
+     */
+    inline EPollHow operator|(EPollHow a, EPollHow b) {
+        return static_cast<EPollHow>(static_cast<int>(a) | static_cast<int>(b));
+    }
+
+    /**
+     * Intersects two EPollHow flag sets.
+     */
+    inline EPollHow operator&(EPollHow a, EPollHow b) {
+        return static_cast<EPollHow>(static_cast<int>(a) & static_cast<int>(b));
+    }
+
+    /**
      * Represents a network socket.
      */
     class CERTPP_API CSocket {
@@ -319,7 +352,38 @@ namespace net {
          */
         ERetCode recvFrom(SSocketAddress& addr, void* buffer, size_t size, size_t& read);
 
+        /**
+         * Waits until the socket is ready for the requested operations.
+         * This is how a caller waits out ERET_AGAIN instead of spinning on it.
+         * @param how The conditions to wait for (EPOLL_RCV, EPOLL_SND, ...); EPOLL_ERR is always reported.
+         * @param timeout How long to wait; a negative span waits indefinitely and zero only checks.
+         * @param ready Optional; receives the conditions that are actually met.
+         * @return ERET_OK when at least one condition is met, ERET_TIMEOUT when the timeout
+         *         expired first, ERET_AGAIN if interrupted (call again), or a translated native error.
+         */
+        ERetCode poll(EPollHow how, const STimeSpan& timeout, EPollHow* ready = nullptr);
+
+        /**
+         * Shuts down the socket for reading, writing, or both.
+         * @param how The shutdown mode (EShut).
+         * @return An ERetCode indicating the result of the operation.
+         */
+        ERetCode shutdown(EShut how);
     };
+
+    /**
+     * A shared pointer to a CSocket instance.
+     */
+    using CSocketPtr = std::shared_ptr<CSocket>;
+
+    /**
+     * Converts a CSocket instance to a shared pointer.
+     * This clears the original CSocket instance by moving it into the shared pointer.
+     *
+     * @param socket The CSocket instance to convert.
+     * @return A shared pointer to the CSocket instance.
+     */
+    CERTPP_API CSocketPtr toShared(CSocket& socket);
 
 } // namespace net
 } // namespace certpp

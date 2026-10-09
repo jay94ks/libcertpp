@@ -42,6 +42,11 @@ namespace certpp {
         using SizeType = uint64_t;
         using OffsetType = int64_t;
 
+        /**
+         * The maximum size of the stream.
+         */
+        static constexpr SizeType MAX_SIZE = static_cast<SizeType>(-1);
+        
     public:
         /**
          * Create a memory-based stream with the specified initial capacity.

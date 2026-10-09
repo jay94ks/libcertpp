@@ -701,5 +701,94 @@ namespace net {
         return ERET_OK;
     }
 
+    /* Waits until the socket is ready for the requested operations. */
+    ERetCode CSocket::poll(EPollHow how, const STimeSpan& timeout, EPollHow* ready) {
+        if (ready) {
+            *ready = static_cast<EPollHow>(0);
+        }
+        if (_raw < 0) {
+            return ERET_INVAL;
+        }
+
+        int timeoutMs = -1;
+        if (timeout.milliseconds >= 0) {
+            timeoutMs = timeout.milliseconds > static_cast<int64_t>(INT_MAX)
+                ? INT_MAX : static_cast<int>(timeout.milliseconds);
+        }
+
+        struct pollfd pfd;
+        std::memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = static_cast<decltype(pfd.fd)>(_raw);
+        if ((how & EPOLL_RCV) != 0) {
+            pfd.events |= POLLIN;
+        }
+        if ((how & EPOLL_SND) != 0) {
+            pfd.events |= POLLOUT;
+        }
+
+#if defined(_WIN32) || defined(_WIN64)
+        const int result = ::WSAPoll(&pfd, 1, timeoutMs);
+#else
+        const int result = ::poll(&pfd, 1, timeoutMs);
+#endif
+        if (result < 0) {
+            return lastError();
+        }
+        if (result == 0) {
+            return ERET_TIMEOUT;
+        }
+
+        if (ready) {
+            EPollHow got = static_cast<EPollHow>(0);
+            if ((pfd.revents & POLLIN) != 0) {
+                got = got | EPOLL_RCV;
+            }
+            if ((pfd.revents & POLLOUT) != 0) {
+                got = got | EPOLL_SND;
+            }
+            if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                got = got | EPOLL_ERR;
+            }
+            *ready = got;
+        }
+        return ERET_OK;
+    }
+
+    /**
+     * Shuts down the socket for reading, writing, or both.
+     * @param how The shutdown mode (EShut).
+     * @return An ERetCode indicating the result of the operation.
+     */
+    ERetCode CSocket::shutdown(EShut how) {
+        if (_raw < 0) {
+            return ERET_INVAL;
+        }
+
+#if defined(_WIN32) || defined(_WIN64)
+        int result = ::shutdown(_raw, static_cast<int>(how));
+        if (result < 0) {
+            return lastError();
+        }
+#else
+        int result = ::shutdown(_raw, static_cast<int>(how));
+        if (result < 0) {
+            return lastError();
+        }
+#endif
+
+        return ERET_OK;
+    }
+
+    /**
+     * Converts a CSocket instance to a shared pointer.
+     * @param socket The CSocket instance to convert.
+     * @return A shared pointer to the CSocket instance.
+     */
+    CSocketPtr toShared(CSocket& socket) {
+        return std::make_shared<CSocket>(
+            static_cast<CSocket&&>(socket)
+        );
+    }
+
 } // namespace net
 } // namespace certpp
