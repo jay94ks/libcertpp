@@ -296,6 +296,7 @@ namespace crypto {
         ESYM_DES,       /**< Data Encryption Standard */
         ESYM_3DES,      /**< Triple Data Encryption Standard */
         ESYM_CHACHA20,  /**< ChaCha20 stream cipher */
+        ESYM_ARIA,      /**< ARIA (RFC 5794 / KS X 1213:2004) */
 
         ESYM_MAX,       /**< Maximum value for the enumeration */
         ESYM_UNKNOWN = 0xffffu, /**< Unknown algorithm */

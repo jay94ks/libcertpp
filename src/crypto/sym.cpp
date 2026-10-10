@@ -1,5 +1,6 @@
 #include <certpp/crypto/sym.hpp>
 #include <certpp/crypto/syms/aes.hpp>
+#include <certpp/crypto/syms/aria.hpp>
 #include <certpp/crypto/syms/des.hpp>
 #include <certpp/crypto/syms/des3.hpp>
 #include <certpp/crypto/syms/chacha20.hpp>
@@ -20,6 +21,9 @@ namespace crypto {
 
             case ESYM_CHACHA20:
                 return std::make_shared<ChaCha20>();
+
+            case ESYM_ARIA:
+                return std::make_shared<ARIA>();
 
             default:
                 return nullptr;
