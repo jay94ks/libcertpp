@@ -624,6 +624,47 @@ TEST_CASE("TArray::markFixed is a no-op on a still-EARRAY_NONE array") {
     CHECK(a.type() == EARRAY_NONE); // markFixed() explicitly skips EARRAY_NONE arrays
 }
 
+TEST_CASE("TArray: a fixed array still gives back the buffer it owns") {
+    // --> The destructor used to call trimExcess(), which returns false immediately on
+    // EARRAY_FIXED -- before reaching its delete[]. So an array that had grown onto the heap
+    // and was then marked fixed never released that buffer. An ASan leak check is the only
+    // thing that sees it: the array's own observable state is entirely correct, so every
+    // assertion an ordinary test could make passed while the memory leaked.
+    //
+    // Nothing here can assert the absence of a leak directly, so this test asserts the
+    // behaviour the fix rests on -- that ownership is released regardless of the fixed flag --
+    // and the leak checker covers the rest. It is worth keeping as an executable statement of
+    // the intent even on a build without a leak checker.
+    {
+        TArray<int> a;
+        a.add(1);
+        a.add(2);
+        REQUIRE((a.type() & EARRAY_TYPE_MASK) == EARRAY_DYNAMIC); // it owns heap memory
+
+        a.markFixed();
+        REQUIRE((a.type() & EARRAY_DYNAMIC_FIXED) == EARRAY_DYNAMIC_FIXED);
+    } // destroyed here -- must not leak
+
+    // --> Same for the static-fixed case, where the array does NOT own the buffer: wrapping a
+    // fixed array over a caller-owned one must not free the caller's memory, and must still
+    // give back whatever it owned before the wrap.
+    int callerOwned[4] = { 1, 2, 3, 4 };
+    {
+        TArray<int> a;
+        a.add(9);
+        a.add(8);
+        a.markFixed();
+
+        TArray<int>::wrap(a, callerOwned, 4, /*fixed=*/true);
+        CHECK(a.size() == 4);
+        CHECK(a.type() == EARRAY_STATIC_FIXED);
+    }
+
+    // --> Still intact: wrap() must not have freed a buffer the array never owned.
+    CHECK(callerOwned[0] == 1);
+    CHECK(callerOwned[3] == 4);
+}
+
 TEST_CASE("TArray element lifetimes stay balanced across a mixed sequence of operations") {
     TrackerGuard guard;
     {

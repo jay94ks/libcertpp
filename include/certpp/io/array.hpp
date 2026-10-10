@@ -133,12 +133,40 @@ namespace certpp {
         }
 
         /**
+         * Gives back whatever buffer this array owns, without regard for EARRAY_FIXED.
+         *
+         * This is what the destructor and wrap() need, and it is deliberately not
+         * trimExcess(). EARRAY_FIXED means "refuse to reallocate", which is a statement about
+         * the array while it is in use -- but a destructor is not in use, and neither is a wrap()
+         * that is about to replace the buffer outright. Routing both through trimExcess() meant
+         * that an array marked fixed leaked its heap buffer: trimExcess() returns false
+         * immediately on EARRAY_FIXED, before reaching the delete[].
+         *
+         * Callers clear() first, so no elements are live here. The ownership test is the same
+         * one reserve()/trimExcess() use: EARRAY_STATIC aliases a caller's buffer and must not be
+         * freed, anything else is ours.
+         */
+        inline void releaseOwnedBuffer() {
+            if (_data && (_type & EARRAY_TYPE_MASK) != EARRAY_STATIC) {
+                delete[] ((uint8_t*)_data);
+            }
+
+            _type = EARRAY_NONE;
+            _data = nullptr;
+            _cap = 0;
+            _size = 0;
+        }
+
+        /**
          * Destructor for the array.
-         * Clears the array and trims excess capacity.
+         *
+         * Releases whatever buffer this array owns. Deliberately releaseOwnedBuffer() rather
+         * than clear() + trimExcess(): trimExcess() declines to act on an array marked fixed, and
+         * that made every fixed array that owned heap memory leak it.
          */
         ~TArray() {
             clear();
-            trimExcess();
+            releaseOwnedBuffer();
         }
 
         /**
@@ -216,7 +244,12 @@ namespace certpp {
          */
         static void wrap(SelfType& array, T* p, size_t size, bool fixed = false) {
             array.clear();
-            array.trimExcess();
+
+            // --> releaseOwnedBuffer(), not trimExcess(). The buffer is about to be replaced
+            // wholesale, so there is nothing to trim it *to*; and trimExcess() declines to act
+            // on an array marked fixed, which leaked this array's old buffer whenever wrap()
+            // was used to re-wrap a fixed one.
+            array.releaseOwnedBuffer();
 
             array._data = p;
             array._size = size;
