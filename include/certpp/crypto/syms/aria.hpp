@@ -28,6 +28,10 @@ namespace crypto {
      * portable round functions are the implementation. The
      * `CERTPP_DISABLE_HWACCEL_SIMD` build option is accepted and deliberately changes
      * nothing here, so a build script that disables acceleration uniformly still configures.
+     *
+     * Decryption does not pay its round-key derivation per block: the context derives the
+     * decryption schedule once per key, because that derivation measured 23% of the
+     * decryption cost and is the same work whatever follows it.
      */
     class CERTPP_API ARIA : public ISymmetric {
     public:

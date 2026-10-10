@@ -415,45 +415,61 @@ namespace crypto {
         std::memcpy(out, d, 16);
     }
 
-    void AriaCore::decryptBlock(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
-        uint8_t d[16];
-        std::memcpy(d, in, 16);
+    bool AriaCore::decryptRoundKeys(const uint8_t* roundKeys, uint32_t nr, uint8_t* decryptKeys) {
+        if (!roundKeys || !decryptKeys || nr == 0 || nr > 16) {
+            return false;
+        }
 
-        // Decryption is encryption with the round keys replaced by dk1..dk{n+1}, where
-        // dk1 = ek{n+1}, dk{n+1} = ek1, and every interior dk{i} is A(ek{n+2-i}). A is an
-        // involution, so no inverse of it is needed -- which is what makes this cheap.
-        //
-        // Indexed from 0: dk[0] = ek[n], dk[n] = ek[0], and dk[i] = A(ek[n-i]) for
-        // 1 <= i <= n-1.
-        uint8_t dk[AriaCore::MAX_ROUND_KEY_BYTES];
-        std::memcpy(dk, roundKeys + nr * 16, 16);
-        std::memcpy(dk + nr * 16, roundKeys, 16);
+        // dk1 = ek{n+1}, dk{n+1} = ek1 -- the two ends simply swap.
+        std::memcpy(decryptKeys, roundKeys + nr * 16, 16);
+        std::memcpy(decryptKeys + nr * 16, roundKeys, 16);
 
+        // Every interior key is A applied to the encryption key from the other end:
+        // dk{i} = A(ek{n+2-i}), for i in [1, n).
         for (uint32_t i = 1; i < nr; ++i) {
             uint8_t t[16];
             std::memcpy(t, roundKeys + (nr - i) * 16, 16);
             diffusionLayer(t);
-            std::memcpy(dk + i * 16, t, 16);
+            std::memcpy(decryptKeys + i * 16, t, 16);
         }
 
-        // Rounds 1..n-1, then the final round's extra key addition layer.
+        return true;
+    }
+
+    void AriaCore::decryptBlock(
+        const uint8_t in[16], uint8_t out[16], const uint8_t* decryptKeys, uint32_t nr
+    ) {
+        uint8_t d[16];
+        std::memcpy(d, in, 16);
+
+        // Decryption is encryption with the round keys replaced by the dk set.
         for (uint32_t r = 0; r + 1 < nr; ++r) {
             if ((r % 2) == 0) {
-                roundOdd(d, dk + r * 16);
+                roundOdd(d, decryptKeys + r * 16);
             } else {
-                roundEven(d, dk + r * 16);
+                roundEven(d, decryptKeys + r * 16);
             }
         }
 
         for (size_t i = 0; i < 16; ++i) {
-            d[i] ^= dk[(nr - 1) * 16 + i];
+            d[i] ^= decryptKeys[(nr - 1) * 16 + i];
         }
         substitutionLayer2(d);
         for (size_t i = 0; i < 16; ++i) {
-            d[i] ^= dk[nr * 16 + i];
+            d[i] ^= decryptKeys[nr * 16 + i];
         }
 
         std::memcpy(out, d, 16);
+    }
+
+    void AriaCore::decryptBlockFromEncKeys(
+        const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr
+    ) {
+        uint8_t dk[AriaCore::MAX_ROUND_KEY_BYTES];
+        if (!decryptRoundKeys(roundKeys, nr, dk)) {
+            return;
+        }
+        decryptBlock(in, out, dk, nr);
     }
 
 } // namespace crypto
