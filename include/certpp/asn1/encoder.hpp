@@ -70,6 +70,12 @@ namespace asn1 {
          */
         static bool encodeBase128(TSpan<uint8_t> destination, uint32_t value, size_t& bytesWritten);
 
+        /* --> parseOidArcs() is public because SRawOid::parse() builds on it: the parser it
+         * needs is already here and already tested, and keeping it private would force a
+         * second copy of the leading-zero and arc-width rules into oid.cpp where the two could
+         * drift apart silently. encodeBase128() above stays private -- nothing outside this
+         * translation unit has any business emitting bare subidentifiers. */
+    public:
         /* Maximum arc count encodeOidString()/encodedOidStringSize() work with, bounding
          * parseOidArcs()'s fixed-size stack buffer -- generous for any realistic OID (X.509
          * OIDs rarely exceed a dozen arcs). Mirrors CDecoder::MAX_OID_TEXT_ARCS. */
@@ -307,6 +313,22 @@ namespace asn1 {
         static bool encodeOid(TSpan<uint8_t> destination, TReadOnlySpan<uint32_t> arcs, size_t& bytesWritten);
 
         /**
+         * Computes the number of content octets required to encode an SRawOid.
+         * @param oid The OID to measure; must satisfy encodedOidSize()'s constraints on its arcs.
+         * @return The number of octets required, or 0 if the OID is not a valid arc sequence.
+         */
+        static size_t encodedOidSize(const SRawOid& oid);
+
+        /**
+         * Encodes an OBJECT IDENTIFIER's content octets from an SRawOid.
+         * @param destination The destination span to write into.
+         * @param oid The OID to encode (see encodedOidSize() for the constraints on its arcs).
+         * @param bytesWritten The number of bytes written to the destination span.
+         * @return True if the OID was valid and destination had enough room; otherwise, false.
+         */
+        static bool encodeOid(TSpan<uint8_t> destination, const SRawOid& oid, size_t& bytesWritten);
+
+        /**
          * Computes the number of content octets required to encode a dotted-decimal OID string
          * via encodeOidString().
          * @tparam TChar The source TString's character type (char or wchar_t).
@@ -316,20 +338,30 @@ namespace asn1 {
          */
         template<typename TChar>
         static size_t encodedOidStringSize(const TString<TChar>& text) {
-            uint32_t arcs[MAX_OID_TEXT_ARCS];
-            size_t arcCount = 0;
+            // --> Through SRawOid::parse() for the same reason encodeOidString() does: the size
+            // this reports is the size encodeOidString() will write, and two parses with
+            // different rules would eventually disagree by an octet on some OID, producing a
+            // buffer sized wrong in a way that only shows up on that one input.
+            CString narrow;
+            narrow.append(text);
 
-            if (!parseOidArcs(text, TSpan<uint32_t>(arcs, MAX_OID_TEXT_ARCS), arcCount)) {
+            SRawOid oid;
+            if (SRawOid::parse(oid, narrow) != ERET_OK) {
                 return 0;
             }
 
-            return encodedOidSize(TReadOnlySpan<uint32_t>(arcs, arcCount));
+            return encodedOidSize(oid);
         }
 
         /**
          * Encodes an OBJECT IDENTIFIER's content octets from its dotted-decimal text form (e.g.
-         * "1.2.840.113549.1.1.1"), the inverse of CDecoder::decodeOidString(). Parses text via
-         * parseOidArcs(), then encodes the resulting arc values exactly like encodeOid().
+         * "1.2.840.113549.1.1.1"), the inverse of CDecoder::decodeOidString().
+         *
+         * Parses through SRawOid::parse(), the same entry point COid and every known-OID
+         * constant use, rather than calling parseOidArcs() directly. A string that becomes a
+         * COid and the same string being encoded here therefore go through one set of
+         * validation rules -- so an OID the library will refuse to construct is also an OID it
+         * will refuse to encode, rather than the two disagreeing about where the boundary is.
          * @tparam TChar The source TString's character type (char or wchar_t).
          * @param destination The destination span to write into.
          * @param text The dotted-decimal OID text to encode.
@@ -341,14 +373,15 @@ namespace asn1 {
         static bool encodeOidString(TSpan<uint8_t> destination, const TString<TChar>& text, size_t& bytesWritten) {
             bytesWritten = 0;
 
-            uint32_t arcs[MAX_OID_TEXT_ARCS];
-            size_t arcCount = 0;
+            CString narrow;
+            narrow.append(text);
 
-            if (!parseOidArcs(text, TSpan<uint32_t>(arcs, MAX_OID_TEXT_ARCS), arcCount)) {
+            SRawOid oid;
+            if (SRawOid::parse(oid, narrow) != ERET_OK) {
                 return false;
             }
 
-            return encodeOid(destination, TReadOnlySpan<uint32_t>(arcs, arcCount), bytesWritten);
+            return encodeOid(destination, oid, bytesWritten);
         }
 
         /**

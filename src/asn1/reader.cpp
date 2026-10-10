@@ -169,6 +169,13 @@ namespace asn1 {
         });
     }
 
+    /* Reads the next element expecting an OBJECT IDENTIFIER, into an SRawOid. */
+    bool CReader::readOid(SRawOid& outOid) {
+        return tryReadPrimitive(CTag::OBJ_ID, [&](SReadOnlyByteSpan content) {
+            return CDecoder::decodeOid(content, outOid);
+        });
+    }
+
     /* Reads the next element expecting the given character string kind. */
     bool CReader::readText(EUniversalTags kind, SReadOnlyByteSpan& outText) {
         CTag expected(kind, false);

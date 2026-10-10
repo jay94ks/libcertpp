@@ -63,7 +63,12 @@ namespace certpp {
         {  4, { 2, 5, 4, 4  } },                                    // ENAME_SURNAME   -- surname
         {  4, { 2, 5, 4, 65 } },                                    // ENAME_PSEUDONYM -- pseudonym
         {  4, { 2, 5, 4, 46 } },                                    // ENAME_DNQ       -- dnQualifier
-        { 10, { 0, 9, 2342, 19200300, 100, 1, 25, 0, 0, 0 } },      // ENAME_DC        -- domainComponent
+        /* --> domainComponent is 0.9.2342.19200300.100.1.25, which is 7 arcs. An earlier
+         * version of this table claimed 10 and padded the end with zeros, so a DC encoded
+         * here did not match the same DC decoded from a certificate, and a certificate's DC
+         * would not have round-tripped through CName. The 7 is checked against the true OID
+         * by tests/oid.cpp, which compares every DN entry this table holds. */
+        {  7, { 0, 9, 2342, 19200300, 100, 1, 25 } },               // ENAME_DC        -- domainComponent
     };
 
     /* Retrieves the DN attribute-type OID arcs corresponding to a given name type. */

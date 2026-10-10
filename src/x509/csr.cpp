@@ -34,10 +34,15 @@ namespace x509 {
                 return false;
             }
 
-            CString attrOid;
-            if (!attrSeq.readOidString(attrOid)) {
+            SRawOid rawOid;
+            if (!attrSeq.readOid(rawOid)) {
                 return false;
             }
+
+            // --> Into a COid rather than the OID's text. An attribute type is compared
+            // against a known OID below, so formatting it to dotted-decimal only to compare
+            // against another dotted-decimal is a round trip that decides nothing.
+            const COid attrOid(rawOid);
 
             // values SET OF ANY -- kept as the SET's own content octets, not unwrapped further
             // (see SCertRequestAttribute::values' own comment on why).
@@ -54,12 +59,12 @@ namespace x509 {
             // bug that lets a second extensionRequest smuggle past a policy check made against
             // the first. RFC 2986 gives no meaning to a repeat either.
             for (const SCertRequestAttribute& existing : outAttributes) {
-                if (existing.oid.compare(attrOid) == 0) {
+                if (existing.oid == attrOid) {
                     return false;
                 }
             }
 
-            bool isExtensionRequest = (attrOid.compare(OID_EXTENSION_REQUEST) == 0);
+            const bool isExtensionRequest = (attrOid == COid(OID_EXTENSION_REQUEST));
 
             if (!outAttributes.add(SCertRequestAttribute(attrOid, valuesContent))) {
                 return false;
@@ -187,10 +192,15 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString sigAlgoOid;
-        if (!sigAlgoSeq.readOidString(sigAlgoOid)) {
+        SRawOid rawSigAlgoOid;
+        if (!sigAlgoSeq.readOid(rawSigAlgoOid)) {
             return ERET_BADREQ;
         }
+
+        // --> Kept as a COid: it is compared against id-RSASSA-PSS below and handed to
+        // resolveSigAlgo(), and both want the arcs. The text form would have to be parsed back
+        // into arcs at each of them.
+        const COid sigAlgoOid(rawSigAlgoOid);
 
         CCert::resolveSigAlgo(sigAlgoOid, sigAlgoHash, signAlgoName);
 
@@ -202,7 +212,7 @@ namespace x509 {
         bool sigIsRsaPss = false;
         SRsaPssParams sigPssParams;
 
-        if (sigAlgoOid.compare("1.2.840.113549.1.1.10") == 0) {
+        if (sigAlgoOid == COid(COid::RSASSA_PSS)) {
             CReader pssParams;
 
             if (sigAlgoSeq.atEnd()) {
@@ -423,8 +433,34 @@ namespace x509 {
             return ERET_INVAL;
         }
 
+        // --> Parsed once here, then compared on the arcs against every attribute. The
+        // alternative -- comparing this one string against each attribute's text -- re-parses
+        // nothing but formats every attribute on the way past, and the answer is identical
+        // either way because an OID has one spelling in this library.
+        const COid target(oid);
+        if (!target) {
+            return ERET_INVAL;
+        }
+
         for (const SCertRequestAttribute& attr : _attributes) {
-            if (attr.oid.compare(oid) == 0) {
+            if (attr.oid == target) {
+                out = attr.values;
+                return ERET_OK;
+            }
+        }
+
+        return ERET_INVAL;
+    }
+
+    /* Looks up one attribute by one of the library's known OIDs. */
+    ERetCode CCertRequest::attributeOf(const SKnownOid& oid, COctet& out) const {
+        const COid target(oid);
+        if (!target) {
+            return ERET_INVAL;
+        }
+
+        for (const SCertRequestAttribute& attr : _attributes) {
+            if (attr.oid == target) {
                 out = attr.values;
                 return ERET_OK;
             }
@@ -440,8 +476,30 @@ namespace x509 {
             return ERET_INVAL;
         }
 
+        const COid target(oid);
+        if (!target) {
+            return ERET_INVAL;
+        }
+
         for (const IExtensionPtr& ext : _extensions) {
-            if (ext && ext->oid().compare(oid) == 0) {
+            if (ext && ext->oid() == target) {
+                out = ext;
+                return ERET_OK;
+            }
+        }
+
+        return ERET_INVAL;
+    }
+
+    /* Looks up one requested extension by one of the library's known OIDs. */
+    ERetCode CCertRequest::extensionOf(const SKnownOid& oid, IExtensionPtr& out) const {
+        const COid target(oid);
+        if (!target) {
+            return ERET_INVAL;
+        }
+
+        for (const IExtensionPtr& ext : _extensions) {
+            if (ext && ext->oid() == target) {
                 out = ext;
                 return ERET_OK;
             }
@@ -548,7 +606,7 @@ namespace x509 {
 
         crypto::EAsymmetrics which = subjectKeyPair.privateKey->algorithm();
 
-        CString sigOid;
+        COid sigOid;
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         COctet sigAlgoParams;
         if (!CCert::resolveSigAlgoForSigning(which, digestAlgo, rsaPss, sigOid, sigHash, sigAlgoParams)) {
@@ -589,15 +647,19 @@ namespace x509 {
         {
             TArray<COctet> attrTlvs;
 
-            auto appendAttribute = [&attrTlvs](const CString& oid, SReadOnlyByteSpan valuesContent) -> bool {
-                size_t needed = CEncoder::encodedOidStringSize(oid);
+            auto appendAttribute = [&attrTlvs](const COid& oid, SReadOnlyByteSpan valuesContent) -> bool {
+                // --> Encoded from the arcs. Every attribute handed to this builder already holds
+                // a COid -- either parsed from the request it came from or named by a constant --
+                // so going through dotted-decimal text here would be a round trip that decides
+                // nothing.
+                size_t needed = CEncoder::encodedOidSize(oid.raw());
                 if (!needed) {
                     return false;
                 }
 
                 CBuffer oidContent;
                 size_t written = 0;
-                if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), oid, written)) {
+                if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), oid.raw(), written)) {
                     return false;
                 }
 
@@ -619,7 +681,7 @@ namespace x509 {
 
             if (!extensions.empty()) {
                 for (const SCertRequestAttribute& attr : attributes) {
-                    if (attr.oid.compare(CCertRequest::OID_EXTENSION_REQUEST) == 0) {
+                    if (attr.oid == COid(CCertRequest::OID_EXTENSION_REQUEST)) {
                         // --> Two extensionRequest attributes would be two different answers to
                         // "what is being asked for", and importDer() rejects the repeat anyway.
                         return ERET_INVAL;
@@ -634,7 +696,7 @@ namespace x509 {
 
                 // extensionRequest's values SET holds exactly one element: the whole Extensions
                 // SEQUENCE (RFC 2985 5.4.2).
-                if (!appendAttribute(CString(CCertRequest::OID_EXTENSION_REQUEST), extListSeq.toSpan())) {
+                if (!appendAttribute(COid(CCertRequest::OID_EXTENSION_REQUEST), extListSeq.toSpan())) {
                     return ERET_UNKNOWN;
                 }
             }

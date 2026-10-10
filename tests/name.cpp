@@ -698,11 +698,20 @@ TEST_CASE("CName::attributeOid / attributeTypeOf round-trip for every recognized
 
         if (type == ENAME_DC) {
             // domainComponent is the one recognized attribute outside the X.520 arc: it lives
-            // under RFC 4519's 0.9.2342.19200300.100.1.25, which is 10 arcs rather than 4.
-            REQUIRE(arcCount == 10);
+            // under RFC 4519's 0.9.2342.19200300.100.1.25, which is 7 arcs rather than 4.
+            // --> The 7 is the true OID's arc count, and it was once 10 here, with three zero
+            // arcs padded onto the end of the table to fill it. A DC encoded from that table
+            // did not match the same DC decoded out of a certificate, because the encoder
+            // wrote the zeros as real subidentifiers. Checked against COid::DN_DOMAIN_COMPONENT
+            // in tests/oid.cpp as well, so the two tables cannot drift apart again unnoticed.
+            REQUIRE(arcCount == 7);
             CHECK(arcs[0] == 0);
             CHECK(arcs[1] == 9);
             CHECK(arcs[2] == 2342);
+            CHECK(arcs[3] == 19200300);
+            CHECK(arcs[4] == 100);
+            CHECK(arcs[5] == 1);
+            CHECK(arcs[6] == 25);
         }
         else {
             // Every X.520 DN attribute OID is under the joint-iso-ccitt.ds.attributeType arc.
@@ -765,15 +774,18 @@ TEST_CASE("CName::attributeOid known values match X.520") {
     REQUIRE(CName::attributeOid(ENAME_DNQ, TSpan<uint32_t>(arcs, 4), arcCount));
     CHECK((arcs[0] == 2 && arcs[1] == 5 && arcs[2] == 4 && arcs[3] == 46)); // 2.5.4.46
 
-    // domainComponent needs all 10 arcs, so a 4-arc span is genuinely too small for it.
+    // domainComponent's OID is 7 arcs, so a 4-arc span is genuinely too small for it.
     CHECK_FALSE(CName::attributeOid(ENAME_DC, TSpan<uint32_t>(arcs, 4), arcCount));
 
     uint32_t dcArcs[CName::MAX_OID_ARCS] = {};
     REQUIRE(CName::attributeOid(ENAME_DC, TSpan<uint32_t>(dcArcs, CName::MAX_OID_ARCS), arcCount));
-    REQUIRE(arcCount == 10);
+    REQUIRE(arcCount == 7);
 
-    const uint32_t expectedDc[10] = { 0, 9, 2342, 19200300, 100, 1, 25, 0, 0, 0 };
-    for (size_t i = 0; i < 10; ++i) {
+    // --> 0.9.2342.19200300.100.1.25 -- the true domainComponent, with no zero arcs padded on
+    // the end. It was once checked as ten arcs with three zeros, which is not the OID RFC
+    // 4519 defines and would not have matched the same DC decoded from a certificate.
+    const uint32_t expectedDc[7] = { 0, 9, 2342, 19200300, 100, 1, 25 };
+    for (size_t i = 0; i < 7; ++i) {
         CAPTURE(i);
         CHECK(dcArcs[i] == expectedDc[i]);
     }

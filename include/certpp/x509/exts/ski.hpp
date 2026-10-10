@@ -13,7 +13,7 @@ namespace x509 {
      */
     class CERTPP_API CSkiExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.14"; // --> id-ce-subjectKeyIdentifier
+        static constexpr SKnownOid OID = COid::EXT_SUBJECT_KEY_IDENTIFIER; // --> id-ce-subjectKeyIdentifier
 
     private:
         COctet _keyIdentifier;

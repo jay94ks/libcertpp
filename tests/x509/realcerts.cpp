@@ -175,9 +175,9 @@ TEST_CASE("CCert (real-world): github.com leaf certificate's SAN/EKU/AIA/Certifi
     auto aia = cert.extension<CAiaExtension>();
     REQUIRE(aia);
     REQUIRE(aia->descriptions().size() == 2);
-    CHECK(aia->descriptions()[0].accessMethod() == CString(CAiaExtension::OID_CA_ISSUERS_METHOD));
+    CHECK(aia->descriptions()[0].accessMethod() == COid(CAiaExtension::OID_CA_ISSUERS_METHOD));
     CHECK(aia->descriptions()[0].accessLocation().text() == CString("http://crt.sectigo.com/SectigoPublicServerAuthenticationCADVE36.crt"));
-    CHECK(aia->descriptions()[1].accessMethod() == CString(CAiaExtension::OID_OCSP_METHOD));
+    CHECK(aia->descriptions()[1].accessMethod() == COid(CAiaExtension::OID_OCSP_METHOD));
     CHECK(aia->descriptions()[1].accessLocation().text() == CString("http://ocsp.sectigo.com"));
 
     auto cp = cert.extension<CPoliciesExtension>();
@@ -250,9 +250,9 @@ TEST_CASE("CCert (real-world): amazon.com leaf certificate's SAN/CDP/AIA/Certifi
     auto aia = cert.extension<CAiaExtension>();
     REQUIRE(aia);
     REQUIRE(aia->descriptions().size() == 2);
-    CHECK(aia->descriptions()[0].accessMethod() == CString(CAiaExtension::OID_OCSP_METHOD));
+    CHECK(aia->descriptions()[0].accessMethod() == COid(CAiaExtension::OID_OCSP_METHOD));
     CHECK(aia->descriptions()[0].accessLocation().text() == CString("http://status.geotrust.com"));
-    CHECK(aia->descriptions()[1].accessMethod() == CString(CAiaExtension::OID_CA_ISSUERS_METHOD));
+    CHECK(aia->descriptions()[1].accessMethod() == COid(CAiaExtension::OID_CA_ISSUERS_METHOD));
     CHECK(aia->descriptions()[1].accessLocation().text() == CString("http://cacerts.geotrust.com/GeoTrustTLSRSACAG1.crt"));
 
     auto cp = cert.extension<CPoliciesExtension>();
@@ -327,7 +327,7 @@ TEST_CASE("CCert (real-world): sourceforge.net leaf certificate's SAN/CDP/AIA/Ce
     auto aia = cert.extension<CAiaExtension>();
     REQUIRE(aia);
     REQUIRE(aia->descriptions().size() == 1);
-    CHECK(aia->descriptions()[0].accessMethod() == CString(CAiaExtension::OID_CA_ISSUERS_METHOD));
+    CHECK(aia->descriptions()[0].accessMethod() == COid(CAiaExtension::OID_CA_ISSUERS_METHOD));
     CHECK(aia->descriptions()[0].accessLocation().text() == CString("http://ye2.i.lencr.org/"));
 
     auto cp = cert.extension<CPoliciesExtension>();
@@ -445,7 +445,7 @@ TEST_CASE("CCert (real-world): QuoVadis/DigiCert RSASSA-PSS timestamping CA (RSA
     auto eku = cert.extension<CEkuExtension>();
     REQUIRE(eku);
     REQUIRE(eku->purposes().size() == 1);
-    CHECK(eku->purposes()[0] == CString(CEkuExtension::OID_TIME_STAMPING));
+    CHECK(eku->purposes()[0] == COid(CEkuExtension::OID_TIME_STAMPING));
 
     auto ski = cert.extension<CSkiExtension>();
     REQUIRE(ski);

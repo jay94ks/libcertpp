@@ -63,11 +63,11 @@ namespace x509 {
      * depends on the namedCurve OID carried in the AlgorithmIdentifier's parameters) and handled
      * separately via EC_CURVES below. */
     const CCert::SKeyAlgo CCert::KEY_ALGOS[] = {
-        { "1.2.840.113549.1.1.1", "RSA",     crypto::EASYM_RSA },
-        { "1.2.840.10040.4.1",    "DSA",     crypto::EASYM_DSA },
-        { "1.3.101.110",          "X25519",  crypto::EASYM_X25519 },
-        { "1.3.101.112",          "Ed25519", crypto::EASYM_ED25519 },
-        { "1.3.101.113",          "Ed448",   crypto::EASYM_ED448 },
+        { COid::RSA, "RSA",     crypto::EASYM_RSA },
+        { COid::DSA,    "DSA",     crypto::EASYM_DSA },
+        { COid::X25519,          "X25519",  crypto::EASYM_X25519 },
+        { COid::ED25519,          "Ed25519", crypto::EASYM_ED25519 },
+        { COid::ED448,          "Ed448",   crypto::EASYM_ED448 },
 
         // NIST CSOR's ML-DSA arc, as RFC 9881 2 profiles it for X.509. The three OIDs run 17/18/
         // 19 for ML-DSA-44/65/87 -- consecutive, so an off-by-one here resolves a certificate to
@@ -75,42 +75,42 @@ namespace x509 {
         // length that shows up as createPublicKey() refusing the key rather than as a wrong
         // answer. The IdenTrust pilot root in tests/x509/certs/implemented/ carries .19, and its
         // 2592-byte key and 4627-byte signature are ML-DSA-87's own sizes.
-        { "2.16.840.1.101.3.4.3.17", "ML-DSA-44", crypto::EASYM_MLDSA44 },
-        { "2.16.840.1.101.3.4.3.18", "ML-DSA-65", crypto::EASYM_MLDSA65 },
-        { "2.16.840.1.101.3.4.3.19", "ML-DSA-87", crypto::EASYM_MLDSA87 },
+        { COid::MLDSA44, "ML-DSA-44", crypto::EASYM_MLDSA44 },
+        { COid::MLDSA65, "ML-DSA-65", crypto::EASYM_MLDSA65 },
+        { COid::MLDSA87, "ML-DSA-87", crypto::EASYM_MLDSA87 },
     };
 
     const CCert::SKeyAlgo CCert::EC_CURVES[] = {
-        { "1.2.840.10045.3.1.1", "P-192",       crypto::EASYM_P192 },
-        { "1.3.132.0.33",        "P-224",       crypto::EASYM_P224 },
-        { "1.2.840.10045.3.1.7", "P-256",       crypto::EASYM_P256 },
-        { "1.3.132.0.34",        "P-384",       crypto::EASYM_P384 },
-        { "1.3.132.0.35",        "P-521",       crypto::EASYM_P521 },
-        { "1.3.132.0.10",        "secp256k1",   crypto::EASYM_SECP256K1 },
-        { "1.3.36.3.3.2.8.1.1.1",  "brainpoolP160r1", crypto::EASYM_BPOOL160R1 },
-        { "1.3.36.3.3.2.8.1.1.2",  "brainpoolP160t1", crypto::EASYM_BPOOL160T1 },
-        { "1.3.36.3.3.2.8.1.1.3",  "brainpoolP192r1", crypto::EASYM_BPOOL192R1 },
-        { "1.3.36.3.3.2.8.1.1.4",  "brainpoolP192t1", crypto::EASYM_BPOOL192T1 },
-        { "1.3.36.3.3.2.8.1.1.5",  "brainpoolP224r1", crypto::EASYM_BPOOL224R1 },
-        { "1.3.36.3.3.2.8.1.1.6",  "brainpoolP224t1", crypto::EASYM_BPOOL224T1 },
-        { "1.3.36.3.3.2.8.1.1.7",  "brainpoolP256r1", crypto::EASYM_BPOOL256R1 },
-        { "1.3.36.3.3.2.8.1.1.8",  "brainpoolP256t1", crypto::EASYM_BPOOL256T1 },
-        { "1.3.36.3.3.2.8.1.1.9",  "brainpoolP320r1", crypto::EASYM_BPOOL320R1 },
-        { "1.3.36.3.3.2.8.1.1.10", "brainpoolP320t1", crypto::EASYM_BPOOL320T1 },
-        { "1.3.36.3.3.2.8.1.1.11", "brainpoolP384r1", crypto::EASYM_BPOOL384R1 },
-        { "1.3.36.3.3.2.8.1.1.12", "brainpoolP384t1", crypto::EASYM_BPOOL384T1 },
-        { "1.3.36.3.3.2.8.1.1.13", "brainpoolP512r1", crypto::EASYM_BPOOL512R1 },
-        { "1.3.36.3.3.2.8.1.1.14", "brainpoolP512t1", crypto::EASYM_BPOOL512T1 },
-        { "1.3.132.0.1",  "K-163", crypto::EASYM_K163 },
-        { "1.3.132.0.15", "B-163", crypto::EASYM_B163 },
-        { "1.3.132.0.26", "K-233", crypto::EASYM_K233 },
-        { "1.3.132.0.27", "B-233", crypto::EASYM_B233 },
-        { "1.3.132.0.16", "K-283", crypto::EASYM_K283 },
-        { "1.3.132.0.17", "B-283", crypto::EASYM_B283 },
-        { "1.3.132.0.36", "K-409", crypto::EASYM_K409 },
-        { "1.3.132.0.37", "B-409", crypto::EASYM_B409 },
-        { "1.3.132.0.38", "K-571", crypto::EASYM_K571 },
-        { "1.3.132.0.39", "B-571", crypto::EASYM_B571 },
+        { COid::CURVE_P192, "P-192",       crypto::EASYM_P192 },
+        { COid::CURVE_P224,        "P-224",       crypto::EASYM_P224 },
+        { COid::CURVE_P256, "P-256",       crypto::EASYM_P256 },
+        { COid::CURVE_P384,        "P-384",       crypto::EASYM_P384 },
+        { COid::CURVE_P521,        "P-521",       crypto::EASYM_P521 },
+        { COid::CURVE_SECP256K1,        "secp256k1",   crypto::EASYM_SECP256K1 },
+        { COid::CURVE_BRAINPOOL_P160R1,  "brainpoolP160r1", crypto::EASYM_BPOOL160R1 },
+        { COid::CURVE_BRAINPOOL_P160T1,  "brainpoolP160t1", crypto::EASYM_BPOOL160T1 },
+        { COid::CURVE_BRAINPOOL_P192R1,  "brainpoolP192r1", crypto::EASYM_BPOOL192R1 },
+        { COid::CURVE_BRAINPOOL_P192T1,  "brainpoolP192t1", crypto::EASYM_BPOOL192T1 },
+        { COid::CURVE_BRAINPOOL_P224R1,  "brainpoolP224r1", crypto::EASYM_BPOOL224R1 },
+        { COid::CURVE_BRAINPOOL_P224T1,  "brainpoolP224t1", crypto::EASYM_BPOOL224T1 },
+        { COid::CURVE_BRAINPOOL_P256R1,  "brainpoolP256r1", crypto::EASYM_BPOOL256R1 },
+        { COid::CURVE_BRAINPOOL_P256T1,  "brainpoolP256t1", crypto::EASYM_BPOOL256T1 },
+        { COid::CURVE_BRAINPOOL_P320R1,  "brainpoolP320r1", crypto::EASYM_BPOOL320R1 },
+        { COid::CURVE_BRAINPOOL_P320T1, "brainpoolP320t1", crypto::EASYM_BPOOL320T1 },
+        { COid::CURVE_BRAINPOOL_P384R1, "brainpoolP384r1", crypto::EASYM_BPOOL384R1 },
+        { COid::CURVE_BRAINPOOL_P384T1, "brainpoolP384t1", crypto::EASYM_BPOOL384T1 },
+        { COid::CURVE_BRAINPOOL_P512R1, "brainpoolP512r1", crypto::EASYM_BPOOL512R1 },
+        { COid::CURVE_BRAINPOOL_P512T1, "brainpoolP512t1", crypto::EASYM_BPOOL512T1 },
+        { COid::CURVE_K163,  "K-163", crypto::EASYM_K163 },
+        { COid::CURVE_B163, "B-163", crypto::EASYM_B163 },
+        { COid::CURVE_K233, "K-233", crypto::EASYM_K233 },
+        { COid::CURVE_B233, "B-233", crypto::EASYM_B233 },
+        { COid::CURVE_K283, "K-283", crypto::EASYM_K283 },
+        { COid::CURVE_B283, "B-283", crypto::EASYM_B283 },
+        { COid::CURVE_K409, "K-409", crypto::EASYM_K409 },
+        { COid::CURVE_B409, "B-409", crypto::EASYM_B409 },
+        { COid::CURVE_K571, "K-571", crypto::EASYM_K571 },
+        { COid::CURVE_B571, "B-571", crypto::EASYM_B571 },
     };
 
     /* Signature algorithm OIDs. EBASYM isn't recorded here -- unlike the public-key algorithm
@@ -118,27 +118,27 @@ namespace x509 {
      * can use it), so the signature's own asymmetric family is never needed separately from
      * keyAlgo()'s. */
     const CCert::SSigAlgo CCert::SIG_ALGOS[] = {
-        { "1.2.840.113549.1.1.4",   "md5WithRSAEncryption",    crypto::EHASH_MD5 },
-        { "1.2.840.113549.1.1.5",   "sha1WithRSAEncryption",   crypto::EHASH_SHA1 },
-        { "1.2.840.113549.1.1.14",  "sha224WithRSAEncryption", crypto::EHASH_SHA224 },
-        { "1.2.840.113549.1.1.11",  "sha256WithRSAEncryption", crypto::EHASH_SHA256 },
-        { "1.2.840.113549.1.1.12",  "sha384WithRSAEncryption", crypto::EHASH_SHA384 },
-        { "1.2.840.113549.1.1.13",  "sha512WithRSAEncryption", crypto::EHASH_SHA512 },
-        { "1.2.840.10040.4.3",      "dsa-with-sha1",           crypto::EHASH_SHA1 },
-        { "2.16.840.1.101.3.4.3.1", "dsa-with-sha224",         crypto::EHASH_SHA224 },
-        { "2.16.840.1.101.3.4.3.2", "dsa-with-sha256",         crypto::EHASH_SHA256 },
-        { "1.2.840.10045.4.1",      "ecdsa-with-SHA1",         crypto::EHASH_SHA1 },
-        { "1.2.840.10045.4.3.1",    "ecdsa-with-SHA224",       crypto::EHASH_SHA224 },
-        { "1.2.840.10045.4.3.2",    "ecdsa-with-SHA256",       crypto::EHASH_SHA256 },
-        { "1.2.840.10045.4.3.3",    "ecdsa-with-SHA384",       crypto::EHASH_SHA384 },
-        { "1.2.840.10045.4.3.4",    "ecdsa-with-SHA512",       crypto::EHASH_SHA512 },
-        { "1.3.101.112",            "Ed25519",                 crypto::EHASH_UNKNOWN },
-        { "1.3.101.113",            "Ed448",                   crypto::EHASH_UNKNOWN },
+        { COid::MD5_RSA,   "md5WithRSAEncryption",    crypto::EHASH_MD5 },
+        { COid::SHA1_RSA,   "sha1WithRSAEncryption",   crypto::EHASH_SHA1 },
+        { COid::SHA224_RSA,  "sha224WithRSAEncryption", crypto::EHASH_SHA224 },
+        { COid::SHA256_RSA,  "sha256WithRSAEncryption", crypto::EHASH_SHA256 },
+        { COid::SHA384_RSA,  "sha384WithRSAEncryption", crypto::EHASH_SHA384 },
+        { COid::SHA512_RSA,  "sha512WithRSAEncryption", crypto::EHASH_SHA512 },
+        { COid::SHA1_DSA,      "dsa-with-sha1",           crypto::EHASH_SHA1 },
+        { COid::SHA224_DSA, "dsa-with-sha224",         crypto::EHASH_SHA224 },
+        { COid::SHA256_DSA, "dsa-with-sha256",         crypto::EHASH_SHA256 },
+        { COid::SHA1_ECDSA,      "ecdsa-with-SHA1",         crypto::EHASH_SHA1 },
+        { COid::SHA224_ECDSA,    "ecdsa-with-SHA224",       crypto::EHASH_SHA224 },
+        { COid::SHA256_ECDSA,    "ecdsa-with-SHA256",       crypto::EHASH_SHA256 },
+        { COid::SHA384_ECDSA,    "ecdsa-with-SHA384",       crypto::EHASH_SHA384 },
+        { COid::SHA512_ECDSA,    "ecdsa-with-SHA512",       crypto::EHASH_SHA512 },
+        { COid::ED25519,            "Ed25519",                 crypto::EHASH_UNKNOWN },
+        { COid::ED448,            "Ed448",                   crypto::EHASH_UNKNOWN },
         // --> id-RSASSA-PSS (RFC 4055) names no digest of its own: the hash lives in the
         // AlgorithmIdentifier's parameters, which importDer() reads separately via
         // parseRsaPssParams() and then uses to set _sigHashAlgo. EHASH_UNKNOWN here keeps
         // resolveSigAlgo() from claiming a digest this OID genuinely doesn't carry.
-        { "1.2.840.113549.1.1.10",  "rsassaPss",               crypto::EHASH_UNKNOWN },
+        { COid::RSASSA_PSS,  "rsassaPss",               crypto::EHASH_UNKNOWN },
 
         // --> The same three OIDs as KEY_ALGOS above, which is correct and not a copy/paste
         // slip: RFC 9881 uses one identifier for both the key type and the signature, the way
@@ -146,9 +146,9 @@ namespace x509 {
         // separate digest -- see signsMessageDirectly(), which is what verifyBy() actually
         // branches on; EHASH_UNKNOWN here is ambiguous with "OID not in this table at all" and
         // must never be read as "self-hashing" on its own.
-        { "2.16.840.1.101.3.4.3.17", "ML-DSA-44",              crypto::EHASH_UNKNOWN },
-        { "2.16.840.1.101.3.4.3.18", "ML-DSA-65",              crypto::EHASH_UNKNOWN },
-        { "2.16.840.1.101.3.4.3.19", "ML-DSA-87",              crypto::EHASH_UNKNOWN },
+        { COid::MLDSA44, "ML-DSA-44",              crypto::EHASH_UNKNOWN },
+        { COid::MLDSA65, "ML-DSA-65",              crypto::EHASH_UNKNOWN },
+        { COid::MLDSA87, "ML-DSA-87",              crypto::EHASH_UNKNOWN },
     };
 
     /* Whether an algorithm signs the message itself rather than a caller-supplied digest. */
@@ -277,13 +277,14 @@ namespace x509 {
      * IDENTIFIER's own content octets, not including its tag/length) to the specific curve
      * EAsymmetrics this library implements it as. */
     bool CCert::resolveEcCurve(SReadOnlyByteSpan namedCurveContent, crypto::EAsymmetrics& outWhich) {
-        CString oidText;
-        if (!CDecoder::decodeOidString(namedCurveContent, oidText)) {
+        SRawOid curveOid;
+        if (!CDecoder::decodeOid(namedCurveContent, curveOid)) {
             return false;
         }
 
+        const COid oid(curveOid);
         for (const SKeyAlgo& entry : EC_CURVES) {
-            if (oidText.compare(entry.oid) == 0) {
+            if (oid == COid(entry.oid)) {
                 outWhich = entry.which;
                 return true;
             }
@@ -297,25 +298,28 @@ namespace x509 {
      * Always sets outName (falling back to the OID's own dotted-decimal text when unrecognized);
      * returns whether outWhich was actually set. */
     bool CCert::resolveKeyAlgo(
-        const CString& oid,
+        const COid& oid,
         const COctet& params,
         crypto::EAsymmetrics& outWhich,
         CString& outName
     ) {
         for (const SKeyAlgo& entry : KEY_ALGOS) {
-            if (oid.compare(entry.oid) == 0) {
+            if (oid == COid(entry.oid)) {
                 outWhich = entry.which;
                 outName = entry.name;
                 return true;
             }
         }
 
-        if (oid.compare(OID_EC_PUBLIC_KEY) == 0) {
+        if (oid == COid(OID_EC_PUBLIC_KEY)) {
             outName = "EC";
             return resolveEcCurve(params.toSpan(), outWhich);
         }
 
-        outName = oid;
+        // --> The unrecognized case hands back the OID's own text as the display name, which is
+        // why this returns a COid rather than keeping the text around: the text is only wanted
+        // here, at the point where the library admits it has no name for this OID.
+        outName = oid.toString();
         return false;
     }
 
@@ -323,10 +327,10 @@ namespace x509 {
      * CCertBuilder::build() needs -- the inverse of resolveKeyAlgo(), built from the same tables. */
     bool CCert::resolveKeyAlgoForBuild(
         crypto::EAsymmetrics which,
-        CString& outOid,
+        COid& outOid,
         bool& outIsDsa,
         bool& outIsEc,
-        CString& outEcCurveOid
+        COid& outEcCurveOid
     ) {
         outIsDsa = false;
         outIsEc = false;
@@ -355,9 +359,9 @@ namespace x509 {
      * scheme (everything but EdDSA), the digest algorithm it signs (left at outHash's
      * caller-supplied default -- EHASH_UNKNOWN -- for EdDSA or an unrecognized OID). Always
      * sets outName, falling back to the OID's own dotted-decimal text when unrecognized. */
-    void CCert::resolveSigAlgo(const CString& oid, crypto::EHashers& outHash, CString& outName) {
+    void CCert::resolveSigAlgo(const COid& oid, crypto::EHashers& outHash, CString& outName) {
         for (const SSigAlgo& entry : SIG_ALGOS) {
-            if (oid.compare(entry.oid) == 0) {
+            if (oid == COid(entry.oid)) {
                 outName = entry.name;
                 if (entry.which != crypto::EHASH_UNKNOWN) {
                     outHash = entry.which;
@@ -366,34 +370,36 @@ namespace x509 {
             }
         }
 
-        outName = oid;
+        // --> Unrecognized: the OID's own text becomes the display name, formatted only here
+        // where the library is admitting it has no better one.
+        outName = oid.toString();
     }
 
     const CCert::SSigHashOid CCert::RSA_SIG_OIDS[] = {
-        { crypto::EHASH_MD5,    "1.2.840.113549.1.1.4" },  // md5WithRSAEncryption
-        { crypto::EHASH_SHA1,   "1.2.840.113549.1.1.5" },  // sha1WithRSAEncryption
-        { crypto::EHASH_SHA224, "1.2.840.113549.1.1.14" }, // sha224WithRSAEncryption
-        { crypto::EHASH_SHA256, "1.2.840.113549.1.1.11" }, // sha256WithRSAEncryption
-        { crypto::EHASH_SHA384, "1.2.840.113549.1.1.12" }, // sha384WithRSAEncryption
-        { crypto::EHASH_SHA512, "1.2.840.113549.1.1.13" }, // sha512WithRSAEncryption
+        { crypto::EHASH_MD5,    COid::MD5_RSA    }, // md5WithRSAEncryption
+        { crypto::EHASH_SHA1,   COid::SHA1_RSA   }, // sha1WithRSAEncryption
+        { crypto::EHASH_SHA224, COid::SHA224_RSA }, // sha224WithRSAEncryption
+        { crypto::EHASH_SHA256, COid::SHA256_RSA }, // sha256WithRSAEncryption
+        { crypto::EHASH_SHA384, COid::SHA384_RSA }, // sha384WithRSAEncryption
+        { crypto::EHASH_SHA512, COid::SHA512_RSA }, // sha512WithRSAEncryption
     };
 
     const CCert::SSigHashOid CCert::DSA_SIG_OIDS[] = {
-        { crypto::EHASH_SHA1,   "1.2.840.10040.4.3" },      // dsa-with-sha1
-        { crypto::EHASH_SHA224, "2.16.840.1.101.3.4.3.1" }, // dsa-with-sha224
-        { crypto::EHASH_SHA256, "2.16.840.1.101.3.4.3.2" }, // dsa-with-sha256
+        { crypto::EHASH_SHA1,   COid::SHA1_DSA   }, // dsa-with-sha1
+        { crypto::EHASH_SHA224, COid::SHA224_DSA }, // dsa-with-sha224
+        { crypto::EHASH_SHA256, COid::SHA256_DSA }, // dsa-with-sha256
     };
 
     const CCert::SSigHashOid CCert::ECDSA_SIG_OIDS[] = {
-        { crypto::EHASH_SHA1,   "1.2.840.10045.4.1" },   // ecdsa-with-SHA1
-        { crypto::EHASH_SHA224, "1.2.840.10045.4.3.1" }, // ecdsa-with-SHA224
-        { crypto::EHASH_SHA256, "1.2.840.10045.4.3.2" }, // ecdsa-with-SHA256
-        { crypto::EHASH_SHA384, "1.2.840.10045.4.3.3" }, // ecdsa-with-SHA384
-        { crypto::EHASH_SHA512, "1.2.840.10045.4.3.4" }, // ecdsa-with-SHA512
+        { crypto::EHASH_SHA1,   COid::SHA1_ECDSA   }, // ecdsa-with-SHA1
+        { crypto::EHASH_SHA224, COid::SHA224_ECDSA }, // ecdsa-with-SHA224
+        { crypto::EHASH_SHA256, COid::SHA256_ECDSA }, // ecdsa-with-SHA256
+        { crypto::EHASH_SHA384, COid::SHA384_ECDSA }, // ecdsa-with-SHA384
+        { crypto::EHASH_SHA512, COid::SHA512_ECDSA }, // ecdsa-with-SHA512
     };
 
     /* Linear lookup of hash within one of the *_SIG_OIDS tables above. */
-    bool CCert::lookupSigOid(const SSigHashOid* table, size_t count, crypto::EHashers hash, CString& outOid) {
+    bool CCert::lookupSigOid(const SSigHashOid* table, size_t count, crypto::EHashers hash, COid& outOid) {
         for (size_t i = 0; i < count; ++i) {
             if (table[i].hash == hash) {
                 outOid = table[i].oid;
@@ -405,13 +411,13 @@ namespace x509 {
 
     /* Builds RSASSA-PSS-params (RFC 8017 A.2.3) -- see its own doc comment in cert.hpp. */
     bool CCert::buildRsaPssParams(crypto::EHashers hash, COctet& outParams) {
-        const char* hashOid = nullptr;
+        const SKnownOid* hashOid = nullptr;
         switch (hash) {
-            case crypto::EHASH_SHA1:   hashOid = "1.3.14.3.2.26";          break;
-            case crypto::EHASH_SHA224: hashOid = "2.16.840.1.101.3.4.2.4"; break;
-            case crypto::EHASH_SHA256: hashOid = "2.16.840.1.101.3.4.2.1"; break;
-            case crypto::EHASH_SHA384: hashOid = "2.16.840.1.101.3.4.2.2"; break;
-            case crypto::EHASH_SHA512: hashOid = "2.16.840.1.101.3.4.2.3"; break;
+            case crypto::EHASH_SHA1:   hashOid = &COid::SHA1;   break;
+            case crypto::EHASH_SHA224: hashOid = &COid::SHA224; break;
+            case crypto::EHASH_SHA256: hashOid = &COid::SHA256; break;
+            case crypto::EHASH_SHA384: hashOid = &COid::SHA384; break;
+            case crypto::EHASH_SHA512: hashOid = &COid::SHA512; break;
             default: return false; // --> MD5/SHAKE256/UNKNOWN: no defined RSASSA-PSS mapping.
         }
 
@@ -426,14 +432,15 @@ namespace x509 {
         // (RFC 8017 A.2.3: MGF1's parameters ARE the hash's own AlgorithmIdentifier).
         CBuffer hashAlgIdTlv;
         {
-            size_t needed = CEncoder::encodedOidStringSize(CString(hashOid));
+            const COid hashId(*hashOid);
+            size_t needed = CEncoder::encodedOidSize(hashId.raw());
             if (!needed) {
                 return false;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), CString(hashOid), written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), hashId.raw(), written)) {
                 return false;
             }
 
@@ -449,15 +456,15 @@ namespace x509 {
         // maskGenAlgorithm ::= AlgorithmIdentifier { id-mgf1, parameters HashAlgorithm }.
         CBuffer mgfAlgIdTlv;
         {
-            static const char* MGF1_OID = "1.2.840.113549.1.1.8";
-            size_t needed = CEncoder::encodedOidStringSize(CString(MGF1_OID));
+            const COid mgf1(COid::MGF1);
+            size_t needed = CEncoder::encodedOidSize(mgf1.raw());
             if (!needed) {
                 return false;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), CString(MGF1_OID), written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), mgf1.raw(), written)) {
                 return false;
             }
 
@@ -526,10 +533,14 @@ namespace x509 {
     /* Resolves one of RSASSA-PSS-params' HashAlgorithm AlgorithmIdentifiers to the digest it
      * names -- see its own doc comment in cert.hpp. */
     bool CCert::parsePssHashAlgo(CReader& algo, crypto::EHashers& outHash) {
-        CString oid;
-        if (!algo.readOidString(oid)) {
+        // --> Decoded to a COid, not to the OID's text: every comparison below this function is
+        // against one of the library's own hash OIDs, so the arcs are what is wanted.
+        SRawOid rawOid;
+        if (!algo.readOid(rawOid)) {
             return false;
         }
+
+        const COid oid(rawOid);
 
         // parameters ANY DEFINED BY algorithm OPTIONAL -- NULL or absent for every hash here
         // (RFC 5754 2: SHOULD be absent, but real encoders write both, and this library's own
@@ -542,11 +553,11 @@ namespace x509 {
 
         // --> id-sha1 lives under a different arc (1.3.14.3.2.26) than the id-sha2 family, which
         // is why this isn't a single prefix test.
-        if (oid.compare("1.3.14.3.2.26") == 0)          { outHash = crypto::EHASH_SHA1;   return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.4") == 0) { outHash = crypto::EHASH_SHA224; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.1") == 0) { outHash = crypto::EHASH_SHA256; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.2") == 0) { outHash = crypto::EHASH_SHA384; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.3") == 0) { outHash = crypto::EHASH_SHA512; return true; }
+        if (oid == COid(COid::SHA1))   { outHash = crypto::EHASH_SHA1;   return true; }
+        if (oid == COid(COid::SHA224)) { outHash = crypto::EHASH_SHA224; return true; }
+        if (oid == COid(COid::SHA256)) { outHash = crypto::EHASH_SHA256; return true; }
+        if (oid == COid(COid::SHA384)) { outHash = crypto::EHASH_SHA384; return true; }
+        if (oid == COid(COid::SHA512)) { outHash = crypto::EHASH_SHA512; return true; }
 
         return false;
     }
@@ -589,16 +600,18 @@ namespace x509 {
 
                 case 1: { // maskGenAlgorithm [1] EXPLICIT AlgorithmIdentifier DEFAULT mgf1SHA1
                     CReader mgfAlgo;
-                    CString mgfOid;
-                    if (!field.readSequence(mgfAlgo) || !mgfAlgo.readOidString(mgfOid)) {
+                    SRawOid rawMgfOid;
+                    if (!field.readSequence(mgfAlgo) || !mgfAlgo.readOid(rawMgfOid)) {
                         return false;
                     }
+
+                    const COid mgfOid(rawMgfOid);
 
                     // --> id-mgf1 is the only mask generation function RFC 4055 defines, and its
                     // parameters ARE a HashAlgorithm (RFC 8017 A.2.3) -- not optional here,
                     // since mgf1SHA1's "absent parameters" form is the DEFAULT, which DER would
                     // have encoded by omitting this whole field.
-                    if (mgfOid.compare("1.2.840.113549.1.1.8") != 0) {
+                    if (mgfOid != COid(COid::MGF1)) {
                         return false;
                     }
 
@@ -653,20 +666,20 @@ namespace x509 {
         crypto::EAsymmetrics which,
         crypto::EHashers hash,
         bool rsaPss,
-        CString& outOid,
+        COid& outOid,
         crypto::EHashers& outHash,
         COctet& outParams
     ) {
         outParams = COctet();
 
         if (which == crypto::EASYM_ED25519) {
-            outOid = "1.3.101.112";
+            outOid = COid::ED25519;
             outHash = crypto::EHASH_UNKNOWN; // --> self-hashing: sign() gets the message directly
             return true;
         }
 
         if (which == crypto::EASYM_ED448) {
-            outOid = "1.3.101.113";
+            outOid = COid::ED448;
             outHash = crypto::EHASH_UNKNOWN;
             return true;
         }
@@ -679,10 +692,10 @@ namespace x509 {
             // RFC 9881 2: the signature AlgorithmIdentifier is the same OID as the key's, with
             // `parameters` absent -- so outParams stays empty, exactly as for EdDSA. The
             // requested digest is ignored for the same reason it is for Ed25519.
-            CString oid;
+            COid oid;
             bool unusedIsDsa = false;
             bool unusedIsEc = false;
-            CString unusedCurve;
+            COid unusedCurve;
             if (!resolveKeyAlgoForBuild(which, oid, unusedIsDsa, unusedIsEc, unusedCurve)) {
                 return false;
             }
@@ -702,7 +715,7 @@ namespace x509 {
             if (!buildRsaPssParams(useHash, outParams)) {
                 return false; // --> e.g. useHash is MD5/SHAKE256, which PSS has no OID mapping for.
             }
-            outOid = "1.2.840.113549.1.1.10"; // id-RSASSA-PSS
+            outOid = COid::RSASSA_PSS;
             outHash = useHash;
             return true;
         }
@@ -773,15 +786,18 @@ namespace x509 {
     }
 
     /* Encodes one AlgorithmIdentifier SEQUENCE { algorithm, parameters OPTIONAL }. */
-    bool CCert::encodeAlgorithmIdentifier(const CString& oid, const COctet& params, CBuffer& out) {
-        size_t needed = CEncoder::encodedOidStringSize(oid);
+    bool CCert::encodeAlgorithmIdentifier(const COid& oid, const COctet& params, CBuffer& out) {
+        // --> Straight from the arcs: the OID arrives already parsed as a COid, so formatting it
+        // to dotted-decimal here only to have encodeOidString() parse it straight back would undo
+        // whatever the caller did to get it here.
+        size_t needed = CEncoder::encodedOidSize(oid.raw());
         if (!needed) {
             return false;
         }
 
         CBuffer oidContent;
         size_t written = 0;
-        if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), oid, written)) {
+        if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), oid.raw(), written)) {
             return false;
         }
 
@@ -809,7 +825,7 @@ namespace x509 {
 
         crypto::EAsymmetrics which = key->algorithm();
 
-        CString keyOid, ecCurveOid;
+        COid keyOid, ecCurveOid;
         bool keyIsDsa = false, keyIsEc = false;
         if (!resolveKeyAlgoForBuild(which, keyOid, keyIsDsa, keyIsEc, ecCurveOid)) {
             return ERET_NOTSUP; // --> key's algorithm has no SPKI OID this library knows.
@@ -841,11 +857,11 @@ namespace x509 {
             if (keyIsEc) {
                 // ECParameters ::= CHOICE { namedCurve OBJECT IDENTIFIER, ... } -- the only
                 // alternative this library produces (and effectively the only one in practice).
-                size_t curveNeeded = CEncoder::encodedOidStringSize(ecCurveOid);
+                size_t curveNeeded = CEncoder::encodedOidSize(ecCurveOid.raw());
                 CBuffer curveOidContent;
                 size_t curveWritten = 0;
                 if (!curveNeeded || !curveOidContent.resize(curveNeeded)
-                    || !CEncoder::encodeOidString(curveOidContent.toSpan(), ecCurveOid, curveWritten)
+                    || !CEncoder::encodeOid(curveOidContent.toSpan(), ecCurveOid.raw(), curveWritten)
                     || !CDer::appendTlv(paramsTlv, CTag::OBJ_ID, SReadOnlyByteSpan(curveOidContent.toPtr(), curveWritten)))
                 {
                     return ERET_UNKNOWN;
@@ -894,10 +910,14 @@ namespace x509 {
             return false;
         }
 
-        CString keyAlgoOid;
-        if (!keyAlgoSeq.readOidString(keyAlgoOid)) {
+        // --> As a COid: it is resolved against KEY_ALGOS and EC_CURVES immediately below,
+        // and both of those compare arcs.
+        SRawOid rawKeyAlgoOid;
+        if (!keyAlgoSeq.readOid(rawKeyAlgoOid)) {
             return false;
         }
+
+        const COid keyAlgoOid(rawKeyAlgoOid);
 
         // parameters ANY DEFINED BY algorithm OPTIONAL
         if (!keyAlgoSeq.atEnd()) {
@@ -964,14 +984,14 @@ namespace x509 {
                 return ERET_UNKNOWN;
             }
 
-            size_t needed = CEncoder::encodedOidStringSize(ext->oid());
+            size_t needed = CEncoder::encodedOidSize(ext->oid().raw());
             if (!needed) {
                 return ERET_UNKNOWN;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), ext->oid(), written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), ext->oid().raw(), written)) {
                 return ERET_UNKNOWN;
             }
 
@@ -1181,10 +1201,16 @@ namespace x509 {
                 break;
             }
 
-            CString extnOid;
-            if (!extSeq.readOidString(extnOid)) {
+            // --> As a COid: it is compared against the extensions already parsed and then
+            // handed to IExtension::create(), both of which want the arcs. The duplicate check
+            // below was a CString::compare() against another extension's COid formatted to
+            // text, which is the round trip this whole change exists to remove.
+            SRawOid rawExtnOid;
+            if (!extSeq.readOid(rawExtnOid)) {
                 continue;
             }
+
+            const COid extnOid(rawExtnOid);
 
             bool critical = false;
             extSeq.readBoolean(critical); // OPTIONAL DEFAULT FALSE -- absent leaves it false
@@ -1196,7 +1222,7 @@ namespace x509 {
 
             bool duplicate = false;
             for (const IExtensionPtr& existing : out) {
-                if (existing && existing->oid().compare(extnOid) == 0) {
+                if (existing && existing->oid() == extnOid) {
                     duplicate = true;
                     break;
                 }
@@ -1364,15 +1390,19 @@ namespace x509 {
         // let an unauthenticated field choose the digest used to verify the authenticated ones.
         // Only the OID is compared; the parameters are deliberately not, since a few real-world
         // issuers differ between the two copies on absent-vs-NULL for the same algorithm.
-        CString tbsSigAlgoOid;
+        COid tbsSigAlgoOid;
         {
             CReader tbsSigAlgoSeq;
             if (!tbsSeq.readSequence(tbsSigAlgoSeq)) {
                 return ERET_BADREQ;
             }
-            if (!tbsSigAlgoSeq.readOidString(tbsSigAlgoOid)) {
+
+            SRawOid rawTbsSigAlgoOid;
+            if (!tbsSigAlgoSeq.readOid(rawTbsSigAlgoOid)) {
                 return ERET_BADREQ;
             }
+
+            tbsSigAlgoOid = COid(rawTbsSigAlgoOid);
         }
 
         // issuer Name
@@ -1473,14 +1503,19 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString sigAlgoOid;
-        if (!sigAlgoSeq.readOidString(sigAlgoOid)) {
+        // --> A COid rather than the OID's text. It is compared against id-RSASSA-PSS below
+        // and against tbsSigAlgoOid above, and only this form answers either question: a
+        // CString compared against a COid does not compare the two OIDs at all.
+        SRawOid rawSigAlgoOid;
+        if (!sigAlgoSeq.readOid(rawSigAlgoOid)) {
             return ERET_BADREQ;
         }
 
+        const COid sigAlgoOid(rawSigAlgoOid);
+
         // --> RFC 5280 4.1.1.2: the two copies must name the same algorithm. See the
         // tbsSigAlgoOid read above for why this is a security check and not a formality.
-        if (sigAlgoOid.compare(tbsSigAlgoOid) != 0) {
+        if (sigAlgoOid != tbsSigAlgoOid) {
             return ERET_BADREQ;
         }
 
@@ -1498,7 +1533,7 @@ namespace x509 {
         bool sigIsRsaPss = false;
         SRsaPssParams sigPssParams;
 
-        if (sigAlgoOid.compare("1.2.840.113549.1.1.10") == 0) {
+        if (sigAlgoOid == COid(COid::RSASSA_PSS)) {
             CReader pssParams;
 
             if (sigAlgoSeq.atEnd()) {
@@ -1575,10 +1610,13 @@ namespace x509 {
 
     /* KEY_ALGOS's own OID for a keyAlgo() display name -- the reverse of resolveKeyAlgo()'s
      * lookup. */
-    bool CCert::lookupKeyAlgoOid(const CString& name, CString& outOid) {
+    bool CCert::lookupKeyAlgoOid(const CString& name, COid& outOid) {
         for (const SKeyAlgo& entry : KEY_ALGOS) {
             if (name.compare(entry.name) == 0) {
-                outOid = CString(entry.oid);
+                // --> The table's own SKnownOid, not a re-parse of its text: the row already
+                // names the OID, and copying the constant is what keeps the name-based and
+                // OID-based lookups pointing at one entry.
+                outOid = entry.oid;
                 return true;
             }
         }
@@ -1871,6 +1909,27 @@ namespace x509 {
 
         out = ext->keyIdentifier();
         return ERET_OK;
+    }
+
+    /* Looks up a certificate extension by one of the library's known OIDs.
+     *
+     * Identical to the const char* overload's walk except for the comparison: this one is on
+     * the arcs, so the extension's OID is not formatted to text on every extension in the
+     * certificate to be compared against a string. */
+    ERetCode CCert::extensionOf(const SKnownOid& oid, IExtensionPtr& out) const {
+        const COid target(oid);
+        if (!target) {
+            return ERET_INVAL;
+        }
+
+        for (const IExtensionPtr& ext : _extensions) {
+            if (ext && ext->oid() == target) {
+                out = ext;
+                return ERET_OK;
+            }
+        }
+
+        return ERET_INVAL;
     }
 
     /* Looks up a certificate extension by its OID, from the list importDer() populated. ERET_INVAL
@@ -2226,7 +2285,7 @@ namespace x509 {
             return ERET_NOTSUP;
         }
 
-        CString keyOid, ecCurveOid;
+        COid keyOid, ecCurveOid;
         bool keyIsDsa = false, keyIsEc = false;
         if (!resolveKeyAlgoForBuild(which, keyOid, keyIsDsa, keyIsEc, ecCurveOid)) {
             return ERET_NOTSUP;
@@ -2248,11 +2307,11 @@ namespace x509 {
             // EC: parameters is the namedCurve OID, and the inner blob is a SEC1 ECPrivateKey.
             // The point comes out of the native blob, which embeds it -- there is no certificate
             // here to take rawPublicKey() from.
-            size_t needed = CEncoder::encodedOidStringSize(ecCurveOid);
+            size_t needed = CEncoder::encodedOidSize(ecCurveOid.raw());
             CBuffer oidContent;
             size_t written = 0;
             if (!needed || !oidContent.resize(needed)
-                || !CEncoder::encodeOidString(oidContent.toSpan(), ecCurveOid, written))
+                || !CEncoder::encodeOid(oidContent.toSpan(), ecCurveOid.raw(), written))
             {
                 return ERET_UNKNOWN;
             }
@@ -2335,11 +2394,11 @@ namespace x509 {
 
         // --- PrivateKeyInfo ::= SEQUENCE { version INTEGER 0, privateKeyAlgorithm
         // AlgorithmIdentifier, privateKey OCTET STRING } ---
-        size_t oidNeeded = CEncoder::encodedOidStringSize(keyOid);
+        size_t oidNeeded = CEncoder::encodedOidSize(keyOid.raw());
         CBuffer oidBuf;
         size_t oidWritten = 0;
         if (!oidNeeded || !oidBuf.resize(oidNeeded)
-            || !CEncoder::encodeOidString(oidBuf.toSpan(), keyOid, oidWritten))
+            || !CEncoder::encodeOid(oidBuf.toSpan(), keyOid.raw(), oidWritten))
         {
             return ERET_UNKNOWN;
         }
@@ -2398,10 +2457,16 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString algoOid;
-        if (!algoSeq.readOidString(algoOid)) {
+        SRawOid rawAlgoOid;
+        if (!algoSeq.readOid(rawAlgoOid)) {
             return ERET_BADREQ;
         }
+
+        // --> As a COid, not as the OID's text: what this function does next is compare the OID
+        // against KEY_ALGOS and id-ecPublicKey, and it later stores it as CCert::_keyAlgo. Both
+        // want the arcs, so formatting it to dotted-decimal here would be a round trip
+        // re-parsed by every one of them.
+        const COid algoOid(rawAlgoOid);
 
         // The parameters are read now because EC needs them to resolve the curve before it knows
         // which algorithm it even is. They are OPTIONAL, so an absent one is not an error.
@@ -2420,7 +2485,7 @@ namespace x509 {
         crypto::EAsymmetrics which = crypto::EASYM_RSA;
         bool resolved = false, isEc = false;
 
-        if (algoOid.compare(OID_EC_PUBLIC_KEY) == 0) {
+        if (algoOid == COid(OID_EC_PUBLIC_KEY)) {
             if (!haveParams || paramsTag != CTag::OBJ_ID
                 || !resolveEcCurve(paramsContent, which))
             {
@@ -2431,7 +2496,7 @@ namespace x509 {
             isEc = true;
         } else {
             for (const SKeyAlgo& entry : KEY_ALGOS) {
-                if (algoOid.compare(entry.oid) == 0) {
+                if (algoOid == COid(entry.oid)) {
                     which = entry.which;
                     resolved = true;
                     break;
@@ -2531,7 +2596,7 @@ namespace x509 {
         // OID + digest + AlgorithmIdentifier parameters. ---
         crypto::EAsymmetrics issuerWhich = issuerKeyPair.privateKey->algorithm();
 
-        CString sigOid;
+        COid sigOid;
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         COctet sigAlgoParams;
         if (!CCert::resolveSigAlgoForSigning(issuerWhich, digestAlgo, rsaPss, sigOid, sigHash, sigAlgoParams)) {

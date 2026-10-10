@@ -34,34 +34,18 @@ namespace x509 {
         // PKCS#12 arc (1.2.840.113549.1.12.10.1.x) numbers its bags 1..6 consecutively, so an
         // off-by-one here reads a shrouded key bag as a plain one.
 
-        constexpr const char* OID_PKCS7_DATA           = "1.2.840.113549.1.7.1";
-        constexpr const char* OID_PKCS7_ENCRYPTED_DATA = "1.2.840.113549.1.7.6";
+        // ------------------------------------------------------------------ OIDs
+        //
+        // The OIDs this file names -- PKCS#7, PKCS#12 bags and attributes, PBES2/PBKDF2, the
+        // AES-CBC encryption schemes, the HMAC PRFs and the id-sha2 hashes -- are the library's
+        // own, listed once in certpp/oid.hpp as COid constants. They used to be spelled out here
+        // as text and compared against CStrings, which meant the same OID had two spellings in
+        // the library and a mismatch between them was a wrong answer rather than an error.
+        //
+        // The PKCS#12 arc (1.2.840.113549.1.12.10.1.x) numbers its bags 1..6 consecutively, so an
+        // off-by-one here reads a shrouded key bag as a plain one -- which is why the comparisons
+        // are on the arcs rather than on text.
 
-        constexpr const char* OID_KEY_BAG              = "1.2.840.113549.1.12.10.1.1";
-        constexpr const char* OID_SHROUDED_KEY_BAG     = "1.2.840.113549.1.12.10.1.2";
-        constexpr const char* OID_CERT_BAG             = "1.2.840.113549.1.12.10.1.3";
-        constexpr const char* OID_X509_CERTIFICATE     = "1.2.840.113549.1.9.22.1";
-
-        constexpr const char* OID_FRIENDLY_NAME        = "1.2.840.113549.1.9.20";
-        constexpr const char* OID_LOCAL_KEY_ID         = "1.2.840.113549.1.9.21";
-
-        constexpr const char* OID_PBES2                = "1.2.840.113549.1.5.13";
-        constexpr const char* OID_PBKDF2               = "1.2.840.113549.1.5.12";
-        constexpr const char* OID_AES256_CBC           = "2.16.840.1.101.3.4.1.42";
-        constexpr const char* OID_AES128_CBC           = "2.16.840.1.101.3.4.1.2";
-        constexpr const char* OID_AES192_CBC           = "2.16.840.1.101.3.4.1.22";
-
-        constexpr const char* OID_HMAC_SHA1            = "1.2.840.113549.2.7";
-        constexpr const char* OID_HMAC_SHA224          = "1.2.840.113549.2.8";
-        constexpr const char* OID_HMAC_SHA256          = "1.2.840.113549.2.9";
-        constexpr const char* OID_HMAC_SHA384          = "1.2.840.113549.2.10";
-        constexpr const char* OID_HMAC_SHA512          = "1.2.840.113549.2.11";
-
-        constexpr const char* OID_SHA1                 = "1.3.14.3.2.26";
-        constexpr const char* OID_SHA224               = "2.16.840.1.101.3.4.2.4";
-        constexpr const char* OID_SHA256               = "2.16.840.1.101.3.4.2.1";
-        constexpr const char* OID_SHA384               = "2.16.840.1.101.3.4.2.2";
-        constexpr const char* OID_SHA512               = "2.16.840.1.101.3.4.2.3";
 
         /** The hash `save()` MACs with, and the one its PBKDF2 uses as a PRF. */
         constexpr crypto::EHashers MAC_HASH = crypto::EHASH_SHA256;
@@ -75,31 +59,38 @@ namespace x509 {
 
         /* Encodes a dotted-decimal OID's content octets. Infallible for the constants above, so
          * the callers treat a failure as "this build is broken" rather than as a data error. */
-        bool encodeOid(const char* text, CBuffer& out) {
-            const CString str(text);
-            const size_t needed = CEncoder::encodedOidStringSize(str);
+        bool encodeOid(const SKnownOid& oid, CBuffer& out) {
+            // --> The OID arrives as one of the library's own constants, so it is encoded from
+            // the arcs that constant already carries rather than by parsing its text again.
+            //
+            // Content octets only, not a TLV: that is what the const char* overload below
+            // produces and what appendOid() expects, and a version of this that appended its own
+            // tag and length would have appendOid() wrap the result a second time.
+            const COid id(oid);
+            const size_t needed = CEncoder::encodedOidSize(id.raw());
             if (!needed || !out.resize(needed)) {
                 return false;
             }
 
             size_t written = 0;
-            if (!CEncoder::encodeOidString(out.toSpan(), str, written) || written != needed) {
+            if (!CEncoder::encodeOid(out.toSpan(), id.raw(), written) || written != needed) {
                 return false;
             }
 
             return true;
         }
 
+
         /* Appends a complete OBJECT IDENTIFIER TLV for a dotted-decimal OID. */
-        bool appendOid(CBuffer& out, const char* text) {
+        bool appendOid(CBuffer& out, const SKnownOid& oid) {
             CBuffer content;
-            return encodeOid(text, content) && CDer::appendTlv(out, CTag::OBJ_ID, content.toSpan());
+            return encodeOid(oid, content) && CDer::appendTlv(out, CTag::OBJ_ID, content.toSpan());
         }
 
         /* Appends an AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY OPTIONAL }.
          * An empty `params` means the field is absent, which is a different encoding from an
          * explicit NULL -- PBKDF2's prf wants the NULL, RFC 8410's key algorithms want neither. */
-        bool appendAlgoId(CBuffer& out, const char* oid, SReadOnlyByteSpan params) {
+        bool appendAlgoId(CBuffer& out, const SKnownOid& oid, SReadOnlyByteSpan params) {
             CBuffer content;
             if (!appendOid(content, oid)) {
                 return false;
@@ -355,33 +346,33 @@ namespace x509 {
         };
 
         /* Maps an hmacWith* OID onto the hash it names. */
-        bool resolvePrf(const CString& oid, crypto::EHashers& out) {
-            if (oid.compare(OID_HMAC_SHA256) == 0) { out = crypto::EHASH_SHA256; return true; }
-            if (oid.compare(OID_HMAC_SHA512) == 0) { out = crypto::EHASH_SHA512; return true; }
-            if (oid.compare(OID_HMAC_SHA384) == 0) { out = crypto::EHASH_SHA384; return true; }
-            if (oid.compare(OID_HMAC_SHA224) == 0) { out = crypto::EHASH_SHA224; return true; }
-            if (oid.compare(OID_HMAC_SHA1) == 0)   { out = crypto::EHASH_SHA1;   return true; }
+        bool resolvePrf(const COid& oid, crypto::EHashers& out) {
+            if (oid == COid(COid::HMAC_SHA256)) { out = crypto::EHASH_SHA256; return true; }
+            if (oid == COid(COid::HMAC_SHA512)) { out = crypto::EHASH_SHA512; return true; }
+            if (oid == COid(COid::HMAC_SHA384)) { out = crypto::EHASH_SHA384; return true; }
+            if (oid == COid(COid::HMAC_SHA224)) { out = crypto::EHASH_SHA224; return true; }
+            if (oid == COid(COid::HMAC_SHA1))   { out = crypto::EHASH_SHA1;   return true; }
             return false;
         }
 
         /* Maps a digest OID onto the hash it names, for MacData's DigestInfo. */
-        bool resolveDigest(const CString& oid, crypto::EHashers& out) {
-            if (oid.compare(OID_SHA256) == 0) { out = crypto::EHASH_SHA256; return true; }
-            if (oid.compare(OID_SHA512) == 0) { out = crypto::EHASH_SHA512; return true; }
-            if (oid.compare(OID_SHA384) == 0) { out = crypto::EHASH_SHA384; return true; }
-            if (oid.compare(OID_SHA224) == 0) { out = crypto::EHASH_SHA224; return true; }
-            if (oid.compare(OID_SHA1) == 0)   { out = crypto::EHASH_SHA1;   return true; }
+        bool resolveDigest(const COid& oid, crypto::EHashers& out) {
+            if (oid == COid(COid::SHA256)) { out = crypto::EHASH_SHA256; return true; }
+            if (oid == COid(COid::SHA512)) { out = crypto::EHASH_SHA512; return true; }
+            if (oid == COid(COid::SHA384)) { out = crypto::EHASH_SHA384; return true; }
+            if (oid == COid(COid::SHA224)) { out = crypto::EHASH_SHA224; return true; }
+            if (oid == COid(COid::SHA1))   { out = crypto::EHASH_SHA1;   return true; }
             return false;
         }
 
         /* The OID for a digest, for writing MacData. */
-        const char* digestOidOf(crypto::EHashers which) {
+        const SKnownOid* digestOidOf(crypto::EHashers which) {
             switch (which) {
-                case crypto::EHASH_SHA1:   return OID_SHA1;
-                case crypto::EHASH_SHA224: return OID_SHA224;
-                case crypto::EHASH_SHA256: return OID_SHA256;
-                case crypto::EHASH_SHA384: return OID_SHA384;
-                case crypto::EHASH_SHA512: return OID_SHA512;
+                case crypto::EHASH_SHA1:   return &COid::SHA1;
+                case crypto::EHASH_SHA224: return &COid::SHA224;
+                case crypto::EHASH_SHA256: return &COid::SHA256;
+                case crypto::EHASH_SHA384: return &COid::SHA384;
+                case crypto::EHASH_SHA512: return &COid::SHA512;
                 default: return nullptr;
             }
         }
@@ -401,11 +392,12 @@ namespace x509 {
             CReader seq(params, EAENC_DER);
 
             CReader kdf;
-            CString kdfOid;
-            if (!seq.readSequence(kdf) || !kdf.readOidString(kdfOid)) {
+            SRawOid rawKdfOid;
+            if (!seq.readSequence(kdf) || !kdf.readOid(rawKdfOid)) {
                 return ERET_BADREQ;
             }
-            if (kdfOid.compare(OID_PBKDF2) != 0) {
+            const COid kdfOid(rawKdfOid);
+            if (kdfOid != COid(COid::PBKDF2)) {
                 return ERET_NOTSUP; // e.g. scrypt (RFC 7914), which this library has no KDF for.
             }
 
@@ -449,10 +441,11 @@ namespace x509 {
                     out.keyBytes = value;
                 } else if (tag == CTag::SEQ) {
                     CReader prf(content, EAENC_DER);
-                    CString prfOid;
-                    if (!prf.readOidString(prfOid)) {
+                    SRawOid rawPrfOid;
+                    if (!prf.readOid(rawPrfOid)) {
                         return ERET_BADREQ;
                     }
+                    const COid prfOid(rawPrfOid);
                     if (!resolvePrf(prfOid, out.prf)) {
                         return ERET_NOTSUP;
                     }
@@ -461,15 +454,16 @@ namespace x509 {
 
             // encryptionScheme: AES-CBC only. The parameters are the IV as an OCTET STRING.
             CReader scheme;
-            CString schemeOid;
-            if (!seq.readSequence(scheme) || !scheme.readOidString(schemeOid)) {
+            SRawOid rawSchemeOid;
+            if (!seq.readSequence(scheme) || !scheme.readOid(rawSchemeOid)) {
                 return ERET_BADREQ;
             }
 
             size_t cipherKeyBytes = 0;
-            if (schemeOid.compare(OID_AES256_CBC) == 0)      { cipherKeyBytes = 32; }
-            else if (schemeOid.compare(OID_AES192_CBC) == 0) { cipherKeyBytes = 24; }
-            else if (schemeOid.compare(OID_AES128_CBC) == 0) { cipherKeyBytes = 16; }
+            const COid schemeOid(rawSchemeOid);
+            if (schemeOid == COid(COid::AES256_CBC))      { cipherKeyBytes = 32; }
+            else if (schemeOid == COid(COid::AES192_CBC)) { cipherKeyBytes = 24; }
+            else if (schemeOid == COid(COid::AES128_CBC)) { cipherKeyBytes = 16; }
             else { return ERET_NOTSUP; }
 
             SReadOnlyByteSpan iv;
@@ -496,11 +490,11 @@ namespace x509 {
         /* Writes a PBES2 AlgorithmIdentifier for `spec`, as the contentEncryptionAlgorithm of an
          * EncryptedContentInfo or the encryptionAlgorithm of an EncryptedPrivateKeyInfo. */
         bool appendPbes2AlgoId(CBuffer& out, const SPbes2& spec) {
-            const char* prfOid = nullptr;
+            const SKnownOid* prfOid = nullptr;
             switch (spec.prf) {
-                case crypto::EHASH_SHA256: prfOid = OID_HMAC_SHA256; break;
-                case crypto::EHASH_SHA512: prfOid = OID_HMAC_SHA512; break;
-                case crypto::EHASH_SHA384: prfOid = OID_HMAC_SHA384; break;
+                case crypto::EHASH_SHA256: prfOid = &COid::HMAC_SHA256; break;
+                case crypto::EHASH_SHA512: prfOid = &COid::HMAC_SHA512; break;
+                case crypto::EHASH_SHA384: prfOid = &COid::HMAC_SHA384; break;
                 default: return false;
             }
 
@@ -512,7 +506,7 @@ namespace x509 {
             CBuffer kdfParams;
             if (!CDer::appendTlv(kdfParams, CTag::STRING_OCTET, spec.salt.toSpan())
                 || !appendInteger(kdfParams, spec.iterations)
-                || !appendAlgoId(kdfParams, prfOid, prfNull.toSpan()))
+                || !appendAlgoId(kdfParams, *prfOid, prfNull.toSpan()))
             {
                 return false;
             }
@@ -528,8 +522,8 @@ namespace x509 {
             }
 
             CBuffer pbes2Params;
-            if (!appendAlgoId(pbes2Params, OID_PBKDF2, kdfParamsSeq.toSpan())
-                || !appendAlgoId(pbes2Params, OID_AES256_CBC, schemeIv.toSpan()))
+            if (!appendAlgoId(pbes2Params, COid::PBKDF2, kdfParamsSeq.toSpan())
+                || !appendAlgoId(pbes2Params, COid::AES256_CBC, schemeIv.toSpan()))
             {
                 return false;
             }
@@ -539,7 +533,7 @@ namespace x509 {
                 return false;
             }
 
-            return appendAlgoId(out, OID_PBES2, pbes2ParamsSeq.toSpan());
+            return appendAlgoId(out, COid::PBES2, pbes2ParamsSeq.toSpan());
         }
 
         /* Runs AES-CBC over `input` in one shot, into `out`.
@@ -664,7 +658,7 @@ namespace x509 {
          * addresses survive. Depending on that is the part worth avoiding; the copy costs a few
          * hundred bytes per bag and depends on nothing.) */
         struct SBag {
-            CString bagId;
+            COid bagId;
             COctet bagValue;
             CString friendlyName;
             COctet localKeyId;
@@ -686,8 +680,8 @@ namespace x509 {
         bool readAttributes(CReader& set, SBag& out) {
             while (!set.atEnd()) {
                 CReader attr;
-                CString oid;
-                if (!set.readSequence(attr) || !attr.readOidString(oid)) {
+                SRawOid rawAttrOid;
+                if (!set.readSequence(attr) || !attr.readOid(rawAttrOid)) {
                     return false;
                 }
 
@@ -702,9 +696,10 @@ namespace x509 {
                     continue; // an attribute with no values at all; nothing to take.
                 }
 
-                if (oid.compare(OID_LOCAL_KEY_ID) == 0 && tag == CTag::STRING_OCTET) {
+                const COid oid(rawAttrOid);
+                if (oid == COid(COid::LOCAL_KEY_ID) && tag == CTag::STRING_OCTET) {
                     out.localKeyId = COctet(content);
-                } else if (oid.compare(OID_FRIENDLY_NAME) == 0
+                } else if (oid == COid(COid::FRIENDLY_NAME)
                            && tag.value() == asn1::EAUTAG_STRING_BMP)
                 {
                     // BMPString: UTF-16BE. Converted to UTF-8 here, since CString is a byte
@@ -754,8 +749,17 @@ namespace x509 {
                 }
 
                 SBag parsed;
-                if (!bag.readOidString(parsed.bagId)) {
+                SRawOid rawBagId;
+                if (!bag.readOid(rawBagId)) {
                     return false;
+                }
+
+                // --> The COid the rest of this function dispatches on. Decoding into the raw
+                // form first and converting here means the read validates the arcs once, and
+                // every bagId comparison below is against the arcs rather than against text.
+                parsed.bagId = COid(rawBagId);
+                if (!parsed.bagId) {
+                    return false; // --> an OID that does not decode; nothing below can match it
                 }
 
                 // bagValue [0] EXPLICIT ANY -- a constructed context tag whose single child is
@@ -796,11 +800,12 @@ namespace x509 {
         bool readCertBag(const SReadOnlyByteSpan& bagValue, COctet& out) {
             CReader reader(bagValue, EAENC_DER);
             CReader seq;
-            CString certId;
-            if (!reader.readSequence(seq) || !seq.readOidString(certId)) {
+            SRawOid rawCertId;
+            if (!reader.readSequence(seq) || !seq.readOid(rawCertId)) {
                 return false;
             }
-            if (certId.compare(OID_X509_CERTIFICATE) != 0) {
+            const COid certId(rawCertId);
+            if (certId != COid(COid::X509_CERTIFICATE)) {
                 return false; // an SDSI certificate, or something newer; not an X.509 one.
             }
 
@@ -832,13 +837,14 @@ namespace x509 {
             CReader reader(bagValue, EAENC_DER);
             CReader seq;
             CReader algo;
-            CString algoOid;
+            SRawOid rawAlgoOid;
             if (!reader.readSequence(seq) || !seq.readSequence(algo)
-                || !algo.readOidString(algoOid))
+                || !algo.readOid(rawAlgoOid))
             {
                 return ERET_BADREQ;
             }
-            if (algoOid.compare(OID_PBES2) != 0) {
+            const COid algoOid(rawAlgoOid);
+            if (algoOid != COid(COid::PBES2)) {
                 return ERET_NOTSUP; // PBES1/pbeWithSHAAnd3-KeyTripleDES-CBC and friends.
             }
 
@@ -877,7 +883,7 @@ namespace x509 {
         // ------------------------------------------------------- writing attributes
 
         /* Appends one Attribute ::= SEQUENCE { attrId OID, attrValues SET OF ANY }. */
-        bool appendAttribute(CBuffer& out, const char* oid, SReadOnlyByteSpan valueTlv) {
+        bool appendAttribute(CBuffer& out, const SKnownOid& oid, SReadOnlyByteSpan valueTlv) {
             CBuffer valueSet;
             if (!CDer::appendTlv(valueSet, CTag::SET_OF, valueTlv)) {
                 return false;
@@ -904,7 +910,7 @@ namespace x509 {
             if (!localKeyId.empty()) {
                 CBuffer value;
                 if (!CDer::appendTlv(value, CTag::STRING_OCTET, localKeyId.toSpan())
-                    || !appendAttribute(attrs, OID_LOCAL_KEY_ID, value.toSpan()))
+                    || !appendAttribute(attrs, COid::LOCAL_KEY_ID, value.toSpan()))
                 {
                     return false;
                 }
@@ -959,7 +965,7 @@ namespace x509 {
                     : SReadOnlyByteSpan(units.begin(), units.size());
 
                 if (!CDer::appendTlv(value, CTag(asn1::EAUTAG_STRING_BMP, false), unitSpan)
-                    || !appendAttribute(attrs, OID_FRIENDLY_NAME, value.toSpan()))
+                    || !appendAttribute(attrs, COid::FRIENDLY_NAME, value.toSpan()))
                 {
                     return false;
                 }
@@ -970,7 +976,7 @@ namespace x509 {
 
         /* Appends a SafeBag ::= SEQUENCE { bagId OID, bagValue [0] EXPLICIT ANY, attrs SET? }. */
         bool appendSafeBag(
-            CBuffer& out, const char* bagOid, SReadOnlyByteSpan bagValueTlv,
+            CBuffer& out, const SKnownOid& bagOid, SReadOnlyByteSpan bagValueTlv,
             const CString& friendlyName, const COctet& localKeyId
         ) {
             CBuffer content;
@@ -1041,11 +1047,12 @@ namespace x509 {
         // password-integrity PFX the type is pkcs7-data and the content is an OCTET STRING whose
         // bytes are the AuthenticatedSafe -- and those exact bytes are what the MAC covers.
         CReader authSafe;
-        CString authSafeType;
-        if (!pfx.readSequence(authSafe) || !authSafe.readOidString(authSafeType)) {
+        SRawOid rawAuthSafeType;
+        if (!pfx.readSequence(authSafe) || !authSafe.readOid(rawAuthSafeType)) {
             return ERET_BADREQ;
         }
-        if (authSafeType.compare(OID_PKCS7_DATA) != 0) {
+        const COid authSafeType(rawAuthSafeType);
+        if (authSafeType != COid(COid::PKCS7_DATA)) {
             // A public-key-integrity PFX wraps signedData here. Not implemented, and saying so is
             // better than reporting the file as malformed.
             return ERET_NOTSUP;
@@ -1084,15 +1091,15 @@ namespace x509 {
             CReader macData;
             CReader digestInfo;
             CReader digestAlgo;
-            CString digestOid;
+            SRawOid rawDigestOid;
             if (!pfx.readSequence(macData) || !macData.readSequence(digestInfo)
-                || !digestInfo.readSequence(digestAlgo) || !digestAlgo.readOidString(digestOid))
+                || !digestInfo.readSequence(digestAlgo) || !digestAlgo.readOid(rawDigestOid))
             {
                 return ERET_BADREQ;
             }
 
             crypto::EHashers macHash = crypto::EHASH_UNKNOWN;
-            if (!resolveDigest(digestOid, macHash)) {
+            if (!resolveDigest(COid(rawDigestOid), macHash)) {
                 return ERET_NOTSUP;
             }
 
@@ -1175,8 +1182,8 @@ namespace x509 {
 
             while (!safes.atEnd()) {
                 CReader info;
-                CString infoType;
-                if (!safes.readSequence(info) || !info.readOidString(infoType)) {
+                SRawOid rawInfoType;
+                if (!safes.readSequence(info) || !info.readOid(rawInfoType)) {
                     return ERET_BADREQ;
                 }
 
@@ -1188,7 +1195,8 @@ namespace x509 {
                     return ERET_BADREQ;
                 }
 
-                if (infoType.compare(OID_PKCS7_DATA) == 0) {
+                const COid infoType(rawInfoType);
+                if (infoType == COid(COid::PKCS7_DATA)) {
                     SReadOnlyByteSpan safeContents;
                     CReader octet(content, EAENC_DER);
                     if (!octet.readOctetString(safeContents)
@@ -1196,26 +1204,27 @@ namespace x509 {
                     {
                         return ERET_BADREQ;
                     }
-                } else if (infoType.compare(OID_PKCS7_ENCRYPTED_DATA) == 0) {
+                } else if (infoType == COid(COid::PKCS7_ENCRYPTED_DATA)) {
                     // EncryptedData ::= SEQUENCE { version INTEGER,
                     //                              encryptedContentInfo EncryptedContentInfo }
                     CReader encrypted;
                     CReader eci;
-                    CString innerType;
+                    SRawOid rawInnerType;
                     int64_t encVersion = 0;
                     CReader algo;
-                    CString algoOid;
+                    SRawOid rawAlgoOid2;
                     {
                         CReader holder(content, EAENC_DER);
                         if (!holder.readSequence(encrypted) || !encrypted.readInteger(encVersion)
-                            || !encrypted.readSequence(eci) || !eci.readOidString(innerType)
-                            || !eci.readSequence(algo) || !algo.readOidString(algoOid))
+                            || !encrypted.readSequence(eci) || !eci.readOid(rawInnerType)
+                            || !eci.readSequence(algo) || !algo.readOid(rawAlgoOid2))
                         {
                             return ERET_BADREQ;
                         }
                     }
 
-                    if (algoOid.compare(OID_PBES2) != 0) {
+                    const COid algoOid(rawAlgoOid2);
+                    if (algoOid != COid(COid::PBES2)) {
                         return ERET_NOTSUP; // the legacy PKCS#12 PBES1 ciphers land here.
                     }
 
@@ -1273,7 +1282,7 @@ namespace x509 {
 
         for (size_t i = 0; i < bags.size() && result == ERET_OK; ++i) {
             const SBag& bag = bags[i];
-            if (bag.bagId.compare(OID_CERT_BAG) != 0) {
+            if (bag.bagId != COid(COid::CERT_BAG)) {
                 continue;
             }
 
@@ -1299,8 +1308,8 @@ namespace x509 {
 
         for (size_t i = 0; i < bags.size() && result == ERET_OK; ++i) {
             const SBag& bag = bags[i];
-            const bool shrouded = bag.bagId.compare(OID_SHROUDED_KEY_BAG) == 0;
-            const bool plain = bag.bagId.compare(OID_KEY_BAG) == 0;
+            const bool shrouded = bag.bagId == COid(COid::SHROUDED_KEY_BAG);
+            const bool plain = bag.bagId == COid(COid::KEY_BAG);
             if (!shrouded && !plain) {
                 continue;
             }
@@ -1436,11 +1445,11 @@ namespace x509 {
             // CertBag ::= SEQUENCE { certId OID, certValue [0] EXPLICIT OCTET STRING }
             CBuffer certValue, certBagBody, certBagSeq;
             if (!CDer::appendTlv(certValue, CTag::STRING_OCTET, der.toSpan())
-                || !appendOid(certBagBody, OID_X509_CERTIFICATE)
+                || !appendOid(certBagBody, COid::X509_CERTIFICATE)
                 || !CDer::appendTlv(certBagBody, CTag(EATAG_CONTEXT_SPECIFIC, 0, true),
                                     certValue.toSpan())
                 || !CDer::appendSequence(certBagSeq, certBagBody.toSpan())
-                || !appendSafeBag(certBags, OID_CERT_BAG, certBagSeq.toSpan(),
+                || !appendSafeBag(certBags, COid::CERT_BAG, certBagSeq.toSpan(),
                                   entry.friendlyName, localKeyId))
             {
                 result = ERET_NOMEM;
@@ -1486,7 +1495,7 @@ namespace x509 {
             if (!appendPbes2AlgoId(epkiBody, spec)
                 || !CDer::appendTlv(epkiBody, CTag::STRING_OCTET, encrypted.toSpan())
                 || !CDer::appendSequence(epkiSeq, epkiBody.toSpan())
-                || !appendSafeBag(keyBags, OID_SHROUDED_KEY_BAG, epkiSeq.toSpan(),
+                || !appendSafeBag(keyBags, COid::SHROUDED_KEY_BAG, epkiSeq.toSpan(),
                                   entry.friendlyName, localKeyId))
             {
                 result = ERET_NOMEM;
@@ -1528,7 +1537,7 @@ namespace x509 {
             // EncryptedContentInfo ::= SEQUENCE { contentType OID,
             //     contentEncryptionAlgorithm AlgId, encryptedContent [0] IMPLICIT OCTET STRING }
             CBuffer eciBody;
-            if (!appendOid(eciBody, OID_PKCS7_DATA)
+            if (!appendOid(eciBody, COid::PKCS7_DATA)
                 || !appendPbes2AlgoId(eciBody, spec)
                 || !CDer::appendTlv(eciBody, CTag(EATAG_CONTEXT_SPECIFIC, 0, false),
                                     encrypted.toSpan()))
@@ -1540,7 +1549,7 @@ namespace x509 {
             if (!appendInteger(edBody, 0)
                 || !CDer::appendSequence(edBody, eciBody.toSpan())
                 || !CDer::appendSequence(edSeq, edBody.toSpan())
-                || !appendOid(infoBody, OID_PKCS7_ENCRYPTED_DATA)
+                || !appendOid(infoBody, COid::PKCS7_ENCRYPTED_DATA)
                 || !CDer::appendTlv(infoBody, CTag(EATAG_CONTEXT_SPECIFIC, 0, true), edSeq.toSpan())
                 || !CDer::appendSequence(authSafeBody, infoBody.toSpan()))
             {
@@ -1552,7 +1561,7 @@ namespace x509 {
             CBuffer keyContents, octet, infoBody;
             if (!CDer::appendSequence(keyContents, keyBags.toSpan())
                 || !CDer::appendTlv(octet, CTag::STRING_OCTET, keyContents.toSpan())
-                || !appendOid(infoBody, OID_PKCS7_DATA)
+                || !appendOid(infoBody, COid::PKCS7_DATA)
                 || !CDer::appendTlv(infoBody, CTag(EATAG_CONTEXT_SPECIFIC, 0, true), octet.toSpan())
                 || !CDer::appendSequence(authSafeBody, infoBody.toSpan()))
             {
@@ -1572,7 +1581,7 @@ namespace x509 {
         }
 
         const size_t macBytes = probe->byteWidth();
-        const char* macOid = digestOidOf(MAC_HASH);
+        const SKnownOid* macOid = digestOidOf(MAC_HASH);
         if (macBytes == 0 || macBytes > MAX_DIGEST_BYTES || !macOid) {
             return ERET_NOTSUP;
         }
@@ -1611,7 +1620,7 @@ namespace x509 {
         CBuffer macAlgoNull, macAlgoId, digestInfoBody, digestInfoSeq, macDataBody;
         bool built =
             CDer::appendTlv(macAlgoNull, CTag::NULL_, SReadOnlyByteSpan(nullptr, 0))
-            && appendAlgoId(macAlgoId, macOid, macAlgoNull.toSpan())
+            && appendAlgoId(macAlgoId, *macOid, macAlgoNull.toSpan())
             && CDer::appendRaw(digestInfoBody, macAlgoId.toSpan())
             && CDer::appendTlv(digestInfoBody, CTag::STRING_OCTET,
                                SReadOnlyByteSpan(mac, macBytes))
@@ -1629,7 +1638,7 @@ namespace x509 {
 
         CBuffer authOctet, authInfoBody, pfxBody;
         if (!CDer::appendTlv(authOctet, CTag::STRING_OCTET, authenticated.toSpan())
-            || !appendOid(authInfoBody, OID_PKCS7_DATA)
+            || !appendOid(authInfoBody, COid::PKCS7_DATA)
             || !CDer::appendTlv(authInfoBody, CTag(EATAG_CONTEXT_SPECIFIC, 0, true),
                                 authOctet.toSpan())
             || !appendInteger(pfxBody, 3)

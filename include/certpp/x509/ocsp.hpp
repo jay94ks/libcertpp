@@ -37,8 +37,8 @@ namespace x509 {
          * RFC 5754's SHOULD-be-absent guidance, matching this library's own RSASSA-PSS
          * hashAlgorithm encoding (CCert::buildRsaPssParams()). Only these five hashers (not MD5
          * or the variable-length SHAKE256) are usable for OCSP hashing. Used by encode()/decode(). */
-        static bool hashAlgoToOid(crypto::EHashers hash, CString& outOid, bool& outNeedsNull);
-        static bool oidToHashAlgo(const CString& oid, crypto::EHashers& outHash);
+        static bool hashAlgoToOid(crypto::EHashers hash, COid& outOid, bool& outNeedsNull);
+        static bool oidToHashAlgo(const COid& oid, crypto::EHashers& outHash);
 
     public:
         /**

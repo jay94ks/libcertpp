@@ -31,7 +31,7 @@ namespace x509 {
      */
     class CERTPP_API CKeyUsagesExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.15"; // --> id-ce-keyUsage
+        static constexpr SKnownOid OID = COid::EXT_KEY_USAGE; // --> id-ce-keyUsage
 
     private:
         uint16_t _bits = EKUSE_NONE;

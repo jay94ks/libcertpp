@@ -37,10 +37,15 @@ namespace x509 {
             }
 
             CReader piSeq(piContent, EAENC_DER);
-            CString policyId;
-            if (!piSeq.readOidString(policyId)) {
+
+            // --> As a COid: CPolicyInformation holds one, and reading it as text only to have
+            // it parsed back at the constructor call would round-trip the OID for nothing.
+            SRawOid rawPolicyId;
+            if (!piSeq.readOid(rawPolicyId)) {
                 continue;
             }
+
+            const COid policyId(rawPolicyId);
 
             COctet qualifiers;
             if (!piSeq.atEnd()) {

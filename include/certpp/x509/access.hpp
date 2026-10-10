@@ -6,6 +6,7 @@
 #include <certpp/io/octet.hpp>
 #include <certpp/io/array.hpp>
 #include <certpp/io/buffer.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/x509/generalname.hpp>
 
 namespace certpp {
@@ -17,7 +18,7 @@ namespace x509 {
      */
     class CERTPP_API CAccessDescription {
     private:
-        CString _accessMethod;
+        COid _accessMethod;
         CGeneralName _accessLocation;
 
     public:
@@ -31,7 +32,7 @@ namespace x509 {
          * @param accessMethod The access method OID's dotted-decimal text.
          * @param accessLocation The decoded access location.
          */
-        CAccessDescription(const CString& accessMethod, const CGeneralName& accessLocation)
+        CAccessDescription(const COid& accessMethod, const CGeneralName& accessLocation)
             : _accessMethod(accessMethod), _accessLocation(accessLocation)
         {
         }
@@ -41,7 +42,7 @@ namespace x509 {
          * CAiaExtension::OID_OCSP_METHOD).
          * @return The access method OID.
          */
-        inline const CString& accessMethod() const { return _accessMethod; }
+        inline const COid& accessMethod() const { return _accessMethod; }
 
         /**
          * @brief Where to reach the service (typically a uniformResourceIdentifier).

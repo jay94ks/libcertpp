@@ -37,10 +37,15 @@ namespace x509 {
             }
 
             CReader adSeq(adContent, EAENC_DER);
-            CString method;
-            if (!adSeq.readOidString(method)) {
+
+            // --> As a COid: CAccessDescription holds one, and reading it as text only to have
+            // it parsed back at the constructor call would round-trip the OID for nothing.
+            SRawOid rawMethod;
+            if (!adSeq.readOid(rawMethod)) {
                 continue;
             }
+
+            const COid method(rawMethod);
 
             CTag locTag;
             SReadOnlyByteSpan locContent;

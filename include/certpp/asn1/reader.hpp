@@ -252,6 +252,18 @@ namespace asn1 {
         bool readOid(TSpan<uint32_t> outArcs, size_t& outArcCount);
 
         /**
+         * Reads the next element expecting an OBJECT IDENTIFIER (universal, primitive) into an
+         * SRawOid; see CDecoder::decodeOid().
+         *
+         * The form to prefer over readOidString() when the OID is being kept rather than shown:
+         * it decodes to the arcs once, and the dotted-decimal text is then available from the
+         * same object if it is ever wanted, instead of being formatted on every read.
+         * @param outOid Receives the decoded OID. Left empty if this returns false.
+         * @return True on success; otherwise, false (cursor unchanged).
+         */
+        bool readOid(SRawOid& outOid);
+
+        /**
          * Reads the next element expecting an OBJECT IDENTIFIER (universal, primitive) directly
          * into its dotted-decimal text form; see CDecoder::decodeOidString().
          * @tparam TChar The destination TString's character type (char or wchar_t).

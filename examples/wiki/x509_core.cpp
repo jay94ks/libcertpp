@@ -124,7 +124,7 @@ void exampleCAccessDescription(const CCert& cert) {
 
     CString ocspUrl;
     for (const CAccessDescription& desc : aia->descriptions()) {
-        if (desc.accessMethod() == CString(CAiaExtension::OID_OCSP_METHOD)
+        if (desc.accessMethod() == COid(CAiaExtension::OID_OCSP_METHOD)
             && desc.accessLocation().type() == EGNAME_URI)
         {
             ocspUrl = desc.accessLocation().text();
@@ -169,7 +169,7 @@ void exampleCPolicyInformation(const CCert& cert, CCertBuilder& issuing) {
     auto policies = cert.extension<CPoliciesExtension>();
     if (policies) {
         for (const CPolicyInformation& policy : policies->policies()) {
-            if (policy.policyIdentifier() == CString(CPoliciesExtension::OID_ANY_POLICY)) {
+            if (policy.policyIdentifier() == COid(CPoliciesExtension::OID_ANY_POLICY)) {
                 // anyPolicy: this certificate asserts no named policy at all
             }
         }
@@ -414,7 +414,7 @@ void exampleCCertRequestBuilder(const SKeyPair& myKeyPair, CCertRequest& out) {
 // read off one request goes straight into a builder for another.
 void exampleSCertRequestAttribute(const CCertRequest& request, CCertRequestBuilder& builder) {
     for (const SCertRequestAttribute& attr : request.attributes()) {
-        if (attr.oid == CString(CCertRequest::OID_EXTENSION_REQUEST)) {
+        if (attr.oid == COid(CCertRequest::OID_EXTENSION_REQUEST)) {
             // builder.extensions writes this attribute itself; a second copy is rejected
             continue;
         }

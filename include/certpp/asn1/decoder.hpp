@@ -4,6 +4,7 @@
 #include <certpp/common.hpp>
 #include <certpp/time.hpp>
 #include <certpp/string.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/name.hpp>
 #include <certpp/io/span.hpp>
 #include <certpp/io/octet.hpp>
@@ -348,54 +349,51 @@ namespace asn1 {
         static bool decodeOid(SReadOnlyByteSpan content, TSpan<uint32_t> outArcs, size_t& outArcCount);
 
         /**
+         * Decodes an OBJECT IDENTIFIER's content octets into an SRawOid.
+         *
+         * This is the form the rest of the library should reach for. SRawOid carries both the
+         * arcs and, on demand, their dotted-decimal text, so a caller that keeps an OID as a
+         * COid can decode straight into it without the text detour that decodeOidString()
+         * forces -- and without a second formatter that could drift from SRawOid::toString().
+         * @param content The content octets.
+         * @param outOid Receives the decoded OID. Left empty if this returns false.
+         * @return True if content was a valid OBJECT IDENTIFIER encoding that fit in
+         * SRawOid::MAX_OID_ARCS arcs; otherwise, false.
+         */
+        static bool decodeOid(SReadOnlyByteSpan content, SRawOid& outOid);
+
+        /**
          * Decodes an OBJECT IDENTIFIER's content octets directly into its dotted-decimal text
          * form (e.g. "1.2.840.113549.1.1.1"), rather than a raw arc array. Only ever produces
          * ASCII digits and '.' separators, so unlike decodeString() this is locale-independent
          * for both TChar=char and TChar=wchar_t -- it never goes through TUtf8Encoding.
+         *
+         * Formatted by SRawOid::toString() rather than by a loop of its own. This used to carry
+         * one, and having two formatters for the same value is exactly how they come to disagree
+         * about the same OID -- which is what happened between CName's DN table and the OID it
+         * was supposed to be describing.
          * @tparam TChar The destination TString's character type (char or wchar_t).
          * @param content The content octets.
          * @param outValue The decoded dotted-decimal text. Left unchanged if this returns false.
          * @return True if content was a valid OBJECT IDENTIFIER encoding with at most
-         * MAX_OID_TEXT_ARCS arcs and was successfully formatted; otherwise, false.
+         * SRawOid::MAX_OID_ARCS arcs and was successfully formatted; otherwise, false.
          */
         template<typename TChar>
         static bool decodeOidString(SReadOnlyByteSpan content, TString<TChar>& outValue) {
-            const size_t arcCount = countOidArcs(content);
-            if (!arcCount || arcCount > MAX_OID_TEXT_ARCS) {
+            SRawOid oid;
+            if (!decodeOid(content, oid)) {
                 return false;
             }
 
-            uint32_t arcs[MAX_OID_TEXT_ARCS];
-            size_t decodedCount = 0;
-            if (!decodeOid(content, TSpan<uint32_t>(arcs, arcCount), decodedCount) || decodedCount != arcCount) {
-                return false;
-            }
+            // --> SRawOid::toString() always produces ASCII digits and '.', so for either
+            // character type the answer is the narrow string widened if necessary -- and going
+            // through the one formatter is the point, since this used to carry a second copy of
+            // the digit loop that could disagree with it about the same OID.
+            CString narrow;
+            oid.toString(narrow);
 
-            TString<TChar> result;
-            for (size_t i = 0; i < decodedCount; ++i) {
-                if (i) {
-                    result.append(TChar('.'));
-                }
-
-                uint32_t value = arcs[i];
-                TChar digits[10]; // uint32_t: at most 10 decimal digits
-                size_t digitCount = 0;
-
-                if (value == 0) {
-                    digits[digitCount++] = TChar('0');
-                } else {
-                    while (value) {
-                        digits[digitCount++] = TChar('0' + (value % 10));
-                        value /= 10;
-                    }
-                }
-
-                while (digitCount) {
-                    result.append(digits[--digitCount]);
-                }
-            }
-
-            outValue = std::move(result);
+            outValue.clear();
+            outValue.append(narrow);
             return true;
         }
 

@@ -14,8 +14,8 @@ namespace x509 {
      */
     class CERTPP_API CPoliciesExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.32";              // --> id-ce-certificatePolicies
-        static constexpr const char* OID_ANY_POLICY = "2.5.29.32.0"; // --> anyPolicy
+        static constexpr SKnownOid OID = COid::EXT_CERTIFICATE_POLICIES;              // --> id-ce-certificatePolicies
+        static constexpr SKnownOid OID_ANY_POLICY = COid::ANY_POLICY; // --> anyPolicy
 
     private:
         TArray<CPolicyInformation> _policies;

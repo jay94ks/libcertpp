@@ -27,7 +27,7 @@ namespace x509 {
          * this class interprets; any other extension present in an entry is simply ignored, the
          * same "only what's exposed is interpreted" contract CCert::parseExtensions() follows.
          * Used by encode()/decode(). */
-        static constexpr const char* OID_REASON_CODE = "2.5.29.21";
+        static constexpr SKnownOid OID_REASON_CODE = COid::EXT_CRL_REASON_CODE;
 
     public:
         /**

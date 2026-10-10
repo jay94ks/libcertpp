@@ -146,6 +146,13 @@ namespace asn1 {
         bool writeOid(TReadOnlySpan<uint32_t> arcs);
 
         /**
+         * Writes an OBJECT IDENTIFIER from an SRawOid; see CEncoder::encodeOid().
+         * @param oid The OID to write.
+         * @return True on success; otherwise, false.
+         */
+        bool writeOid(const SRawOid& oid);
+
+        /**
          * Writes an OBJECT IDENTIFIER from its dotted-decimal text form (e.g.
          * "1.2.840.113549.1.1.1"); see CEncoder::encodeOidString().
          * @tparam TChar The source TString's character type (char or wchar_t).

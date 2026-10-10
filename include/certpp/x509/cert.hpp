@@ -111,7 +111,7 @@ namespace x509 {
          * @brief Represents the key algorithm information for the certificate.
          */
         struct SKeyAlgo {
-            const char* oid;
+            SKnownOid oid;               /**< The OID of the algorithm or curve. */
             const char* name;
             crypto::EAsymmetrics which;
         };
@@ -120,7 +120,7 @@ namespace x509 {
          * @brief Represents the signature algorithm information for the certificate.
          */
         struct SSigAlgo {
-            const char* oid;
+            SKnownOid oid;               /**< The OID of the signature algorithm. */
             const char* name;
             crypto::EHashers which;
         };
@@ -169,14 +169,14 @@ namespace x509 {
          * shape ({oid, name, which}) since a named curve is itself just another EAsymmetrics. */
         static const SKeyAlgo EC_CURVES[];
 
-        static constexpr const char* OID_EC_PUBLIC_KEY = "1.2.840.10045.2.1";    // --> id-ecPublicKey
+        static constexpr SKnownOid OID_EC_PUBLIC_KEY = COid::EC_PUBLIC_KEY;    // --> id-ecPublicKey
 
         /**
          * @brief One (hash, OID) pair in a signature-OID-by-family lookup table.
          */
         struct SSigHashOid {
             crypto::EHashers hash;
-            const char* oid;
+            SKnownOid oid;               /**< The OID of a signature algorithm using that hash. */
         };
 
         /* Signature-OID lookup tables for resolveSigAlgoForSigning(), one per hash-then-sign
@@ -191,14 +191,14 @@ namespace x509 {
 
         /* Linear lookup of hash within one of the *_SIG_OIDS tables above (table/count identify
          * which one), used 3x by resolveSigAlgoForSigning() (once each for RSA/DSA/ECDSA). */
-        static bool lookupSigOid(const SSigHashOid* table, size_t count, crypto::EHashers hash, CString& outOid);
+        static bool lookupSigOid(const SSigHashOid* table, size_t count, crypto::EHashers hash, COid& outOid);
 
         /* KEY_ALGOS's own OID for a keyAlgo() display name -- the reverse of the lookup
          * importDer()'s resolveKeyAlgo() does. Exists for CPemChainFormat, which needs the OID
          * to write a PKCS#8 PrivateKeyInfo and must not reach it from a second table of its own
          * that could drift out of step with this one. False for a name KEY_ALGOS doesn't list,
          * including the dotted-decimal OID text resolveKeyAlgo() falls back to. */
-        static bool lookupKeyAlgoOid(const CString& name, CString& outOid);
+        static bool lookupKeyAlgoOid(const CString& name, COid& outOid);
 
     private:
         COctet _rawData;        // --> Raw certificate data, DER-encoded.
@@ -283,7 +283,7 @@ namespace x509 {
          * Always sets outName (falling back to the OID's own dotted-decimal text when
          * unrecognized); returns whether outWhich was actually set. */
         static bool resolveKeyAlgo(
-            const CString& oid,
+            const COid& oid,
             const COctet& params,
             crypto::EAsymmetrics& outWhich,
             CString& outName
@@ -294,7 +294,7 @@ namespace x509 {
          * outHash's caller-supplied default -- EHASH_UNKNOWN -- for EdDSA or an unrecognized
          * OID). Always sets outName, falling back to the OID's own dotted-decimal text when
          * unrecognized. */
-        static void resolveSigAlgo(const CString& oid, crypto::EHashers& outHash, CString& outName);
+        static void resolveSigAlgo(const COid& oid, crypto::EHashers& outHash, CString& outName);
 
         /* Reads an X.509 Time CHOICE (UTCTime | GeneralizedTime); either read*Time() call rolls
          * the reader back on failure, so trying UTCTime first is safe regardless of which one
@@ -319,7 +319,7 @@ namespace x509 {
          * back); empty omits the field entirely. Shared by CCertBuilder::build() (which needs
          * one for TBSCertificate.signature/Certificate.signatureAlgorithm) and
          * CCertRequestBuilder::build() (CertificationRequest.signatureAlgorithm). */
-        static bool encodeAlgorithmIdentifier(const CString& oid, const COctet& params, CBuffer& out);
+        static bool encodeAlgorithmIdentifier(const COid& oid, const COctet& params, CBuffer& out);
 
         /* Encodes a complete SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
          * subjectPublicKey BIT STRING } tag-length-value for key, appending it to out --
@@ -454,10 +454,10 @@ namespace x509 {
          */
         static bool resolveKeyAlgoForBuild(
             crypto::EAsymmetrics which,
-            CString& outOid,
+            COid& outOid,
             bool& outIsDsa,
             bool& outIsEc,
-            CString& outEcCurveOid
+            COid& outEcCurveOid
         );
 
         /* Picks a signature algorithm OID (+ digest algorithm, EHASH_UNKNOWN for the
@@ -482,7 +482,7 @@ namespace x509 {
             crypto::EAsymmetrics which,
             crypto::EHashers hash,
             bool rsaPss,
-            CString& outOid,
+            COid& outOid,
             crypto::EHashers& outHash,
             COctet& outParams
         );
@@ -906,6 +906,18 @@ namespace x509 {
         ERetCode extensionOf(const wchar_t* oid, IExtensionPtr& out) const;
 
         /**
+         * @brief Gets the extension of the certificate by one of the library's known OIDs.
+         *
+         * Preferred over the const char* form, which is kept for a caller holding an OID it
+         * parsed rather than one the library names: this one takes the SKnownOid itself, so the
+         * comparison is on the arcs and no OID text is parsed to do it.
+         * @param oid The OID of the extension to retrieve.
+         * @param out The octet of the extension value in DER format.
+         * @return The result code of the operation.
+         */
+        ERetCode extensionOf(const SKnownOid& oid, IExtensionPtr& out) const;
+
+        /**
          * @brief Gets the extension of the certificate by its OID.
          * @param oid The OID of the extension to retrieve.
          * @param out The output buffer for the extension value.
@@ -914,6 +926,27 @@ namespace x509 {
         template<typename T>
         inline ERetCode extensionOf(const TString<T>& oid, IExtensionPtr& out) const {
             return extensionOf(oid.toPtr(), out);
+        }
+
+        /**
+         * @brief Gets the extension of the certificate by a COid.
+         * @param oid The OID of the extension to retrieve.
+         * @param out The octet of the extension value in DER format.
+         * @return The result code of the operation.
+         */
+        inline ERetCode extensionOf(const COid& oid, IExtensionPtr& out) const {
+            if (!oid) {
+                return ERET_INVAL;
+            }
+
+            for (const IExtensionPtr& ext : _extensions) {
+                if (ext && ext->oid() == oid) {
+                    out = ext;
+                    return ERET_OK;
+                }
+            }
+
+            return ERET_INVAL;
         }
 
         /**

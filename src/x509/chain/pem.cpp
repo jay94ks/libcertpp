@@ -453,15 +453,17 @@ namespace x509 {
         // --> CCert's own KEY_ALGOS table, reached through the friendship it grants this class,
         // so the OID written here and the one importDer() resolved the certificate's algorithm
         // from can never be two different tables that drift apart.
-        CString oidText;
-        if (!CCert::lookupKeyAlgoOid(cert.keyAlgo(), oidText)) {
+        COid keyOid;
+        if (!CCert::lookupKeyAlgoOid(cert.keyAlgo(), keyOid)) {
             return false;
         }
 
+        // --> Encoded from the arcs. keyAlgo() already parsed this OID out of the certificate, and
+        // formatting it to text only to have encodeOidString() parse it back would undo that.
         uint8_t oidContentBuf[32];
         size_t oidContentLen = 0;
-        if (!CEncoder::encodeOidString(
-                TSpan<uint8_t>(oidContentBuf, sizeof(oidContentBuf)), oidText, oidContentLen))
+        if (!CEncoder::encodeOid(
+                TSpan<uint8_t>(oidContentBuf, sizeof(oidContentBuf)), keyOid.raw(), oidContentLen))
         {
             return false;
         }

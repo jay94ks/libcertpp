@@ -41,12 +41,16 @@ namespace x509 {
                     return false;
                 }
 
-                CString text;
-                if (!CDecoder::decodeOidString(content, text)) {
+                // --> Into a COid, so the OID this GeneralName carries is the one the rest of
+                // the library compares. The COid constructor formats its own text, which is what
+                // text() reports, so the dotted-decimal form is still available and still comes
+                // from the arcs rather than from a second parse.
+                SRawOid raw;
+                if (!CDecoder::decodeOid(content, raw)) {
                     return false;
                 }
 
-                out = CGeneralName(EGNAME_REGISTERED_ID, text);
+                out = CGeneralName(COid(raw));
                 return true;
             }
 
@@ -138,8 +142,14 @@ namespace x509 {
             }
 
             case EGNAME_REGISTERED_ID: {
-                // --> IMPLICIT OBJECT IDENTIFIER.
-                size_t needed = CEncoder::encodedOidStringSize(_text);
+                // --> IMPLICIT OBJECT IDENTIFIER, encoded from the arcs registeredId() holds.
+                // Encoding _text instead would mean parsing back a string this class formatted
+                // from those same arcs on the way in.
+                if (!_registeredId) {
+                    return false;
+                }
+
+                size_t needed = CEncoder::encodedOidSize(_registeredId.raw());
                 if (!needed) {
                     return false;
                 }
@@ -150,7 +160,7 @@ namespace x509 {
                 }
 
                 size_t written = 0;
-                if (!CEncoder::encodeOidString(content.toSpan(), _text, written)) {
+                if (!CEncoder::encodeOid(content.toSpan(), _registeredId.raw(), written)) {
                     return false;
                 }
 

@@ -14,7 +14,7 @@ namespace x509 {
      */
     class CERTPP_API CSanExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.17"; // --> id-ce-subjectAltName
+        static constexpr SKnownOid OID = COid::EXT_SUBJECT_ALT_NAME; // --> id-ce-subjectAltName
 
     private:
         TArray<CGeneralName> _names;

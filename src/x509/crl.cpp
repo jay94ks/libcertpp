@@ -60,10 +60,15 @@ namespace x509 {
                         break;
                     }
 
-                    CString extnOid;
-                    if (!extSeq.readOidString(extnOid)) {
+                    // --> As a COid, because the only thing this loop does with the OID is
+                    // compare it against id-ce-cRLReasons. Holding the text would mean comparing
+                    // a CString against a COid, which is always true.
+                    SRawOid rawExtnOid;
+                    if (!extSeq.readOid(rawExtnOid)) {
                         continue;
                     }
+
+                    const COid extnOid(rawExtnOid);
 
                     bool critical = false;
                     extSeq.readBoolean(critical); // OPTIONAL DEFAULT FALSE -- not otherwise used
@@ -73,7 +78,7 @@ namespace x509 {
                         continue;
                     }
 
-                    if (extnOid.compare(OID_REASON_CODE) == 0) {
+                    if (extnOid == COid(OID_REASON_CODE)) {
                         SReadOnlyByteSpan reasonCursor = extnValue.toSpan();
                         CTag reasonTag;
                         SReadOnlyByteSpan reasonContent;
@@ -127,7 +132,8 @@ namespace x509 {
                     return ERET_UNKNOWN;
                 }
 
-                size_t oidNeeded = CEncoder::encodedOidStringSize(CString(OID_REASON_CODE));
+                const COid reasonCode(OID_REASON_CODE);
+                size_t oidNeeded = CEncoder::encodedOidSize(reasonCode.raw());
                 if (!oidNeeded) {
                     return ERET_UNKNOWN;
                 }
@@ -135,7 +141,7 @@ namespace x509 {
                 CBuffer oidContent;
                 size_t oidWritten = 0;
                 if (!oidContent.resize(oidNeeded)
-                    || !CEncoder::encodeOidString(oidContent.toSpan(), CString(OID_REASON_CODE), oidWritten))
+                    || !CEncoder::encodeOid(oidContent.toSpan(), reasonCode.raw(), oidWritten))
                 {
                     return ERET_UNKNOWN;
                 }
@@ -313,9 +319,13 @@ namespace x509 {
 
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         {
-            CString sigAlgoOid, sigAlgoName;
-            if (sigAlgoSeq.readOidString(sigAlgoOid)) {
-                CCert::resolveSigAlgo(sigAlgoOid, sigHash, sigAlgoName);
+            SRawOid rawSigAlgoOid;
+            if (sigAlgoSeq.readOid(rawSigAlgoOid)) {
+                // --> The display name is resolved and dropped. Only sigHash is wanted here: a
+                // CRL is read for what it says about revoked certificates, and nothing in this
+                // class reports the algorithm's name.
+                CString unusedName;
+                CCert::resolveSigAlgo(COid(rawSigAlgoOid), sigHash, unusedName);
             }
         }
 
@@ -550,7 +560,7 @@ namespace x509 {
         // fields of its own). ---
         crypto::EAsymmetrics issuerWhich = issuerPriv->algorithm();
 
-        CString sigOid;
+        COid sigOid;
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         COctet sigAlgoParams;
         if (!CCert::resolveSigAlgoForSigning(issuerWhich, crypto::EHASH_UNKNOWN, false, sigOid, sigHash, sigAlgoParams)) {
@@ -563,14 +573,14 @@ namespace x509 {
         // TBSCertList.signature and CertificateList.signatureAlgorithm must be byte-identical.
         CBuffer sigAlgoIdTlv;
         {
-            size_t needed = CEncoder::encodedOidStringSize(sigOid);
+            size_t needed = CEncoder::encodedOidSize(sigOid.raw());
             if (!needed) {
                 return ERET_UNKNOWN;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), sigOid, written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), sigOid.raw(), written)) {
                 return ERET_UNKNOWN;
             }
 

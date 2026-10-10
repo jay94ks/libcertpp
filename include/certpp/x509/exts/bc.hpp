@@ -13,7 +13,7 @@ namespace x509 {
      */
     class CERTPP_API CBasicConstraintsExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.19"; // --> id-ce-basicConstraints
+        static constexpr SKnownOid OID = COid::EXT_BASIC_CONSTRAINTS; // --> id-ce-basicConstraints
 
     private:
         bool _isCa = false;

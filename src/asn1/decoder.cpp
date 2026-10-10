@@ -570,6 +570,25 @@ namespace asn1 {
         return true;
     }
 
+    /* Decodes an OBJECT IDENTIFIER's content octets into an SRawOid. */
+    bool CDecoder::decodeOid(SReadOnlyByteSpan content, SRawOid& outOid) {
+        outOid.count = 0;
+
+        // --> One decode, straight into the arc array the caller actually keeps. The
+        // arc-count-then-decode shape the span overload needs is only needed because a span has
+        // to be sized by the caller; SRawOid has a fixed array, so the bound is known here and
+        // the pre-pass would be a second walk over the same octets for nothing.
+        if (!decodeOid(content, TSpan<uint32_t>(outOid.arcs, SRawOid::MAX_OID_ARCS), outOid.count)) {
+            // --> Left empty on failure rather than holding the arcs that did decode, so a
+            // caller that checks the return code and reads count cannot be handed a prefix of
+            // an OID that was rejected.
+            outOid.count = 0;
+            return false;
+        }
+
+        return true;
+    }
+
     /* Decodes/validates a character string type's content octets. */
     bool CDecoder::decodeText(SReadOnlyByteSpan content, EUniversalTags kind, SReadOnlyByteSpan& outText) {
         switch (kind) {

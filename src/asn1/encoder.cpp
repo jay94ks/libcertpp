@@ -362,6 +362,20 @@ namespace asn1 {
         return true;
     }
 
+    /* Computes the number of content octets required to encode an SRawOid. */
+    size_t CEncoder::encodedOidSize(const SRawOid& oid) {
+        return encodedOidSize(TReadOnlySpan<uint32_t>(oid.arcs, oid.count));
+    }
+
+    /* Encodes an OBJECT IDENTIFIER's content octets from an SRawOid. */
+    bool CEncoder::encodeOid(TSpan<uint8_t> destination, const SRawOid& oid, size_t& bytesWritten) {
+        // --> Delegated rather than reimplemented: the arc rules -- arcs[0] within 0-2, arcs[1]
+        // below 40 under a joint-iso root, the two combined into one subidentifier -- are the
+        // ones that decide whether an OID is encodable at all, and there is no reason for the
+        // SRawOid form to accept something the span form rejects or vice versa.
+        return encodeOid(destination, TReadOnlySpan<uint32_t>(oid.arcs, oid.count), bytesWritten);
+    }
+
     /* Encodes/validates a character string type's content octets. */
     bool CEncoder::encodeText(
         TSpan<uint8_t> destination,

@@ -26,23 +26,26 @@ namespace x509 {
     // ------------------------------------------------------------------------------------------
 
     /* CertID.hashAlgorithm's OID <-> EHashers -- see this method's own doc comment in ocsp.hpp. */
-    bool COcspCertId::hashAlgoToOid(crypto::EHashers hash, CString& outOid, bool& outNeedsNull) {
+    bool COcspCertId::hashAlgoToOid(crypto::EHashers hash, COid& outOid, bool& outNeedsNull) {
+        // --> The library's own hash OIDs rather than their text. This OID is written straight
+        // into a CertID's AlgorithmIdentifier a few lines below, so having it as arcs saves a
+        // format and a re-parse on every response built.
         switch (hash) {
-            case crypto::EHASH_SHA1:   outOid = "1.3.14.3.2.26";          outNeedsNull = true;  return true;
-            case crypto::EHASH_SHA224: outOid = "2.16.840.1.101.3.4.2.4"; outNeedsNull = false; return true;
-            case crypto::EHASH_SHA256: outOid = "2.16.840.1.101.3.4.2.1"; outNeedsNull = false; return true;
-            case crypto::EHASH_SHA384: outOid = "2.16.840.1.101.3.4.2.2"; outNeedsNull = false; return true;
-            case crypto::EHASH_SHA512: outOid = "2.16.840.1.101.3.4.2.3"; outNeedsNull = false; return true;
+            case crypto::EHASH_SHA1:   outOid = COid::SHA1;   outNeedsNull = true;  return true;
+            case crypto::EHASH_SHA224: outOid = COid::SHA224; outNeedsNull = false; return true;
+            case crypto::EHASH_SHA256: outOid = COid::SHA256; outNeedsNull = false; return true;
+            case crypto::EHASH_SHA384: outOid = COid::SHA384; outNeedsNull = false; return true;
+            case crypto::EHASH_SHA512: outOid = COid::SHA512; outNeedsNull = false; return true;
             default: return false;
         }
     }
 
-    bool COcspCertId::oidToHashAlgo(const CString& oid, crypto::EHashers& outHash) {
-        if (oid.compare("1.3.14.3.2.26") == 0)          { outHash = crypto::EHASH_SHA1;   return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.4") == 0) { outHash = crypto::EHASH_SHA224; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.1") == 0) { outHash = crypto::EHASH_SHA256; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.2") == 0) { outHash = crypto::EHASH_SHA384; return true; }
-        if (oid.compare("2.16.840.1.101.3.4.2.3") == 0) { outHash = crypto::EHASH_SHA512; return true; }
+    bool COcspCertId::oidToHashAlgo(const COid& oid, crypto::EHashers& outHash) {
+        if (oid == COid(COid::SHA1))   { outHash = crypto::EHASH_SHA1;   return true; }
+        if (oid == COid(COid::SHA224)) { outHash = crypto::EHASH_SHA224; return true; }
+        if (oid == COid(COid::SHA256)) { outHash = crypto::EHASH_SHA256; return true; }
+        if (oid == COid(COid::SHA384)) { outHash = crypto::EHASH_SHA384; return true; }
+        if (oid == COid(COid::SHA512)) { outHash = crypto::EHASH_SHA512; return true; }
         return false;
     }
 
@@ -143,10 +146,11 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString hashOid;
-        if (!algIdSeq.readOidString(hashOid)) {
+        SRawOid rawHashOid;
+        if (!algIdSeq.readOid(rawHashOid)) {
             return ERET_BADREQ;
         }
+        const COid hashOid(rawHashOid);
         // parameters ANY OPTIONAL -- not read; AlgorithmIdentifier is the last field of algIdSeq
         // regardless, so leaving it unconsumed is harmless.
 
@@ -176,7 +180,7 @@ namespace x509 {
             return ERET_INVAL;
         }
 
-        CString hashOid;
+        COid hashOid;
         bool needsNull = false;
         if (!hashAlgoToOid(_hashAlgo, hashOid, needsNull)) {
             return ERET_NOTSUP;
@@ -184,14 +188,14 @@ namespace x509 {
 
         CBuffer algIdTlv;
         {
-            size_t needed = CEncoder::encodedOidStringSize(hashOid);
+            size_t needed = CEncoder::encodedOidSize(hashOid.raw());
             if (!needed) {
                 return ERET_UNKNOWN;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), hashOid, written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), hashOid.raw(), written)) {
                 return ERET_UNKNOWN;
             }
 
@@ -572,10 +576,10 @@ namespace x509 {
                 if (sigWrapper.readSequence(sigSeq)) {
                     CReader sigAlgoSeq;
                     if (sigSeq.readSequence(sigAlgoSeq)) {
-                        CString sigAlgoOid;
-                        if (sigAlgoSeq.readOidString(sigAlgoOid)) {
+                        SRawOid rawSigAlgoOid;
+                        if (sigAlgoSeq.readOid(rawSigAlgoOid)) {
                             CString sigAlgoName;
-                            CCert::resolveSigAlgo(sigAlgoOid, sigHash, sigAlgoName);
+                            CCert::resolveSigAlgo(COid(rawSigAlgoOid), sigHash, sigAlgoName);
                         }
                     }
 
@@ -785,7 +789,7 @@ namespace x509 {
 
             crypto::EAsymmetrics which = priv->algorithm();
 
-            CString sigOid;
+            COid sigOid;
             crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
             COctet sigAlgoParams;
             if (!CCert::resolveSigAlgoForSigning(which, crypto::EHASH_UNKNOWN, false, sigOid, sigHash, sigAlgoParams)) {
@@ -796,14 +800,14 @@ namespace x509 {
 
             CBuffer sigAlgoIdTlv;
             {
-                size_t needed = CEncoder::encodedOidStringSize(sigOid);
+                size_t needed = CEncoder::encodedOidSize(sigOid.raw());
                 if (!needed) {
                     return ERET_UNKNOWN;
                 }
 
                 CBuffer oidContent;
                 size_t written = 0;
-                if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), sigOid, written)) {
+                if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), sigOid.raw(), written)) {
                     return ERET_UNKNOWN;
                 }
 
@@ -1085,7 +1089,7 @@ namespace x509 {
 
         crypto::EAsymmetrics responderWhich = responderPriv->algorithm();
 
-        CString sigOid;
+        COid sigOid;
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         COctet sigAlgoParams;
         if (!CCert::resolveSigAlgoForSigning(responderWhich, crypto::EHASH_UNKNOWN, false, sigOid, sigHash, sigAlgoParams)) {
@@ -1096,14 +1100,14 @@ namespace x509 {
 
         CBuffer sigAlgoIdTlv;
         {
-            size_t needed = CEncoder::encodedOidStringSize(sigOid);
+            size_t needed = CEncoder::encodedOidSize(sigOid.raw());
             if (!needed) {
                 return ERET_UNKNOWN;
             }
 
             CBuffer oidContent;
             size_t written = 0;
-            if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), sigOid, written)) {
+            if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), sigOid.raw(), written)) {
                 return ERET_UNKNOWN;
             }
 
@@ -1245,7 +1249,8 @@ namespace x509 {
         // ResponseBytes ::= SEQUENCE { responseType OID, response OCTET STRING }
         CBuffer responseBytesBody;
         {
-            size_t oidNeeded = CEncoder::encodedOidStringSize(CString(OcspCodec::OID_BASIC_RESPONSE));
+            const COid basicResponse(OcspCodec::OID_BASIC_RESPONSE);
+            size_t oidNeeded = CEncoder::encodedOidSize(basicResponse.raw());
             if (!oidNeeded) {
                 return ERET_UNKNOWN;
             }
@@ -1253,7 +1258,7 @@ namespace x509 {
             CBuffer oidContent;
             size_t oidWritten = 0;
             if (!oidContent.resize(oidNeeded)
-                || !CEncoder::encodeOidString(oidContent.toSpan(), CString(OcspCodec::OID_BASIC_RESPONSE), oidWritten))
+                || !CEncoder::encodeOid(oidContent.toSpan(), basicResponse.raw(), oidWritten))
             {
                 return ERET_UNKNOWN;
             }
@@ -1339,11 +1344,11 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString responseTypeOid;
-        if (!rbSeq.readOidString(responseTypeOid)) {
+        SRawOid rawResponseTypeOid;
+        if (!rbSeq.readOid(rawResponseTypeOid)) {
             return ERET_BADREQ;
         }
-        if (responseTypeOid.compare(OcspCodec::OID_BASIC_RESPONSE) != 0) {
+        if (COid(rawResponseTypeOid) != COid(OcspCodec::OID_BASIC_RESPONSE)) {
             return ERET_NOTSUP;
         }
 
@@ -1443,14 +1448,14 @@ namespace x509 {
             return ERET_BADREQ;
         }
 
-        CString sigAlgoOid;
-        if (!sigAlgoSeq.readOidString(sigAlgoOid)) {
+        SRawOid rawSigAlgoOid;
+        if (!sigAlgoSeq.readOid(rawSigAlgoOid)) {
             return ERET_BADREQ;
         }
 
         crypto::EHashers sigHash = crypto::EHASH_UNKNOWN;
         CString sigAlgoName;
-        CCert::resolveSigAlgo(sigAlgoOid, sigHash, sigAlgoName);
+        CCert::resolveSigAlgo(COid(rawSigAlgoOid), sigHash, sigAlgoName);
 
         SReadOnlyByteSpan sigBits;
         uint8_t sigUnused = 0;

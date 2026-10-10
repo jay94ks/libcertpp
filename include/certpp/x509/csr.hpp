@@ -32,8 +32,8 @@ namespace x509 {
      * be fed straight back into a builder without reshaping it.
      */
     struct SCertRequestAttribute {
-        /* The attribute's type OID, in dotted-decimal text. */
-        CString oid;
+        /* The attribute's type OID. */
+        COid oid;
 
         /* The content octets of the attribute's `values SET OF ANY` field -- i.e. the
          * concatenated DER elements inside that SET, *without* the SET's own tag and length.
@@ -48,10 +48,10 @@ namespace x509 {
 
         /**
          * @brief Constructs an attribute from its type OID and raw values content.
-         * @param oid The attribute's type OID, in dotted-decimal text.
+         * @param oid The attribute's type OID.
          * @param values The content octets of the attribute's values SET.
          */
-        SCertRequestAttribute(const CString& oid, const COctet& values)
+        SCertRequestAttribute(const COid& oid, const COctet& values)
             : oid(oid), values(values)
         {
         }
@@ -93,7 +93,7 @@ namespace x509 {
          * for a SubjectAlternativeName, a KeyUsage and so on. Its contents are decoded into this
          * object's own extension list, reachable through extensionOf()/extension().
          */
-        static constexpr const char* OID_EXTENSION_REQUEST = "1.2.840.113549.1.9.14";
+        static constexpr SKnownOid OID_EXTENSION_REQUEST = COid::EXT_EXTENSION_REQUEST;
 
     private:
         COctet _rawData;        // --> Raw certification request data, DER-encoded.
@@ -353,6 +353,18 @@ namespace x509 {
         ERetCode attributeOf(const char* oid, COctet& out) const;
 
         /**
+         * @brief Looks up one attribute's raw `values` content by one of the library's known OIDs.
+         *
+         * Preferred over the const char* form, which is kept for a caller holding an OID it
+         * parsed rather than one the library names: this one takes the SKnownOid itself, so the
+         * comparison is on the arcs rather than on formatted OID text.
+         * @param oid The attribute type OID to look for.
+         * @param out Receives the content octets of that attribute's values SET.
+         * @return ERET_OK if found; ERET_INVAL if no such attribute is present.
+         */
+        ERetCode attributeOf(const SKnownOid& oid, COctet& out) const;
+
+        /**
          * @brief Gets every extension the request *asks for*, decoded out of its PKCS#9
          * extensionRequest attribute (OID_EXTENSION_REQUEST). Empty when the request carries no
          * such attribute.
@@ -370,6 +382,14 @@ namespace x509 {
          * @return ERET_OK if found; ERET_INVAL if oid is null or no such extension was requested.
          */
         ERetCode extensionOf(const char* oid, IExtensionPtr& out) const;
+
+        /**
+         * @brief Looks up one requested extension by one of the library's known OIDs.
+         * @param oid The OID of the extension to retrieve.
+         * @param out Receives the extension.
+         * @return ERET_OK if found; ERET_INVAL if no such extension was requested.
+         */
+        ERetCode extensionOf(const SKnownOid& oid, IExtensionPtr& out) const;
 
         /**
          * @brief Looks up one requested extension by its OID.

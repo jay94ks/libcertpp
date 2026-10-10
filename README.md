@@ -108,6 +108,16 @@ Unicode strings. BSON maps integer values to the library's `double` number
 type and rejects BSON types without a JSON equivalent. Disable the utility at
 configure time with `-DCERTPP_WITHOUT_JSON=ON`.
 
+**Object identifiers** — `COid` is an OID and `SRawOid` is its arcs, with
+`COid` holding a pointer to a cached slot rather than a copy of the OID. The
+118 OIDs the library defines are declared once, as `static constexpr SKnownOid`
+members of `COid` (`COid::RSA`, `COid::CURVE_P256`, `COid::EXT_BASIC_CONSTRAINTS`,
+`COid::PURPOSE_SERVER_AUTH`, `COid::PBES2`, `COid::DOMAIN_COMPONENT`, …), and
+every OID comparison in the library is on arcs rather than on dotted-decimal
+text. The ASN.1 codec reads and writes `SRawOid` directly; the string-based
+`readOidString()`/`encodeOidString()` entry points remain for a caller that
+holds OID text, and are implemented on top of it.
+
 **Hardware acceleration** — ADX/BMI2 for big-number arithmetic, PCLMULQDQ for
 binary fields and GHASH, SHA-NI, AES-NI, and a four-block SSE2 ChaCha20
 keystream. Each has a portable fallback expected to produce byte-identical

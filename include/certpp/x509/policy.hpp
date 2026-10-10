@@ -2,6 +2,7 @@
 #define __INCLUDE_CERTPP_X509_POLICY_HPP__
 
 #include <certpp/common.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/string.hpp>
 #include <certpp/io/octet.hpp>
 #include <certpp/io/array.hpp>
@@ -18,7 +19,7 @@ namespace x509 {
      */
     class CERTPP_API CPolicyInformation {
     private:
-        CString _policyIdentifier;
+        COid _policyIdentifier;
         COctet _qualifiersRaw;
 
     public:
@@ -32,7 +33,7 @@ namespace x509 {
          * @param policyIdentifier The policy OID's dotted-decimal text.
          * @param qualifiersRaw The policyQualifiers SEQUENCE's raw content, if present.
          */
-        CPolicyInformation(const CString& policyIdentifier, const COctet& qualifiersRaw)
+        CPolicyInformation(const COid& policyIdentifier, const COctet& qualifiersRaw)
             : _policyIdentifier(policyIdentifier), _qualifiersRaw(qualifiersRaw)
         {
         }
@@ -42,7 +43,7 @@ namespace x509 {
          * CPoliciesExtension::OID_ANY_POLICY).
          * @return The policy identifier.
          */
-        inline const CString& policyIdentifier() const { return _policyIdentifier; }
+        inline const COid& policyIdentifier() const { return _policyIdentifier; }
 
         /**
          * @brief Whether policyQualifiersRaw() is present.

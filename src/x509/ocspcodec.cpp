@@ -14,15 +14,18 @@ namespace x509 {
     using asn1::EAENC_DER;
 
     /* Appends one Extension { extnID = oid, extnValue = extnValue } SEQUENCE OF Extension to out. */
-    bool OcspCodec::appendSingleExtensionList(CBuffer& out, const char* oid, SReadOnlyByteSpan extnValue) {
-        size_t needed = CEncoder::encodedOidStringSize(CString(oid));
+    bool OcspCodec::appendSingleExtensionList(CBuffer& out, const SKnownOid& oid, SReadOnlyByteSpan extnValue) {
+        // --> The OID arrives as one of the library's own constants, so the extension's extnID
+        // is encoded from the arcs that constant carries rather than by parsing its text again.
+        const COid id(oid);
+        size_t needed = CEncoder::encodedOidSize(id.raw());
         if (!needed) {
             return false;
         }
 
         CBuffer oidContent;
         size_t written = 0;
-        if (!oidContent.resize(needed) || !CEncoder::encodeOidString(oidContent.toSpan(), CString(oid), written)) {
+        if (!oidContent.resize(needed) || !CEncoder::encodeOid(oidContent.toSpan(), id.raw(), written)) {
             return false;
         }
 
@@ -56,10 +59,15 @@ namespace x509 {
                 break;
             }
 
-            CString extnOid;
-            if (!extSeq.readOidString(extnOid)) {
+            // --> As a COid, because the only thing this loop does with the OID is compare it
+            // against id-pkix-ocsp-nonce. Holding the text would mean comparing a CString
+            // against a COid, which is always true.
+            SRawOid rawExtnOid;
+            if (!extSeq.readOid(rawExtnOid)) {
                 continue;
             }
+
+            const COid extnOid(rawExtnOid);
 
             bool critical = false;
             extSeq.readBoolean(critical); // OPTIONAL DEFAULT FALSE -- not otherwise used
@@ -69,7 +77,7 @@ namespace x509 {
                 continue;
             }
 
-            if (extnOid.compare(OID_NONCE) == 0) {
+            if (extnOid == COid(OID_NONCE)) {
                 SReadOnlyByteSpan cursor = extnValue.toSpan();
                 CTag innerTag;
                 SReadOnlyByteSpan innerContent;

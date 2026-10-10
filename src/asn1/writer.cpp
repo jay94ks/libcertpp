@@ -151,6 +151,20 @@ namespace asn1 {
             && writeElement(CTag::OBJ_ID, SReadOnlyByteSpan(buf.toPtr(), written));
     }
 
+    /* Writes an OBJECT IDENTIFIER from an SRawOid. */
+    bool CWriter::writeOid(const SRawOid& oid) {
+        size_t needed = CEncoder::encodedOidSize(oid);
+        if (!needed) {
+            return false;
+        }
+
+        CBuffer buf(needed);
+        size_t written = 0;
+
+        return CEncoder::encodeOid(TSpan<uint8_t>(buf.toPtr(), buf.size()), oid, written)
+            && writeElement(CTag::OBJ_ID, SReadOnlyByteSpan(buf.toPtr(), written));
+    }
+
     /* Writes a character string type's content. */
     bool CWriter::writeText(EUniversalTags kind, SReadOnlyByteSpan text) {
         CTag tag(kind, false);

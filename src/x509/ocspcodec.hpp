@@ -18,8 +18,8 @@ namespace x509 {
      */
     class OcspCodec {
     public:
-        static constexpr const char* OID_NONCE = "1.3.6.1.5.5.7.48.1.2";          // id-pkix-ocsp-nonce
-        static constexpr const char* OID_BASIC_RESPONSE = "1.3.6.1.5.5.7.48.1.1"; // id-pkix-ocsp-basic
+        static constexpr SKnownOid OID_NONCE = COid::OCSP_NONCE;           // id-pkix-ocsp-nonce
+        static constexpr SKnownOid OID_BASIC_RESPONSE = COid::OCSP_BASIC_RESPONSE; // id-pkix-ocsp-basic
 
         /**
          * Appends one Extension { extnID = oid, extnValue = extnValue } SEQUENCE OF Extension
@@ -27,7 +27,7 @@ namespace x509 {
          * both requestExtensions and responseExtensions) to out.
          * @return true on success; false otherwise.
          */
-        static bool appendSingleExtensionList(CBuffer& out, const char* oid, SReadOnlyByteSpan extnValue);
+        static bool appendSingleExtensionList(CBuffer& out, const SKnownOid& oid, SReadOnlyByteSpan extnValue);
 
         /**
          * Builds the Nonce extension's own extnValue: an OCTET STRING wrapping nonce's raw bytes

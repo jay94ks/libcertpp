@@ -19,8 +19,8 @@ namespace x509 {
      */
     class UnknownExtension : public IExtension {
     public:
-        UnknownExtension(const CString& oid, const COctet& value) : IExtension(oid, value) { }
-        UnknownExtension(const CString& oid, COctet&& value) : IExtension(oid, std::move(value)) { }
+        UnknownExtension(const COid& oid, const COctet& value) : IExtension(oid, value) { }
+        UnknownExtension(const COid& oid, COctet&& value) : IExtension(oid, std::move(value)) { }
 
         bool encode(CBuffer& out) const override { return encodeValue(out); }
     };
@@ -44,35 +44,35 @@ namespace x509 {
      * the matching concrete IExtension subclass, falling back to UnknownExtension (still keeping
      * oid()/value()) for any OID this library doesn't model in full.
      */
-    IExtensionPtr IExtension::create(const CString& oid, const COctet& value) {
-        if (oid.compare(CBasicConstraintsExtension::OID) == 0) {
+    IExtensionPtr IExtension::create(const COid& oid, const COctet& value) {
+        if (oid == COid(CBasicConstraintsExtension::OID)) {
             return std::make_shared<CBasicConstraintsExtension>(value);
         }
-        if (oid.compare(CKeyUsagesExtension::OID) == 0) {
+        if (oid == COid(CKeyUsagesExtension::OID)) {
             return std::make_shared<CKeyUsagesExtension>(value);
         }
-        if (oid.compare(CEkuExtension::OID) == 0) {
+        if (oid == COid(CEkuExtension::OID)) {
             return std::make_shared<CEkuExtension>(value);
         }
-        if (oid.compare(CSanExtension::OID) == 0) {
+        if (oid == COid(CSanExtension::OID)) {
             return std::make_shared<CSanExtension>(value);
         }
-        if (oid.compare(CSkiExtension::OID) == 0) {
+        if (oid == COid(CSkiExtension::OID)) {
             return std::make_shared<CSkiExtension>(value);
         }
-        if (oid.compare(CAkiExtension::OID) == 0) {
+        if (oid == COid(CAkiExtension::OID)) {
             return std::make_shared<CAkiExtension>(value);
         }
-        if (oid.compare(CCdpExtension::OID) == 0) {
+        if (oid == COid(CCdpExtension::OID)) {
             return std::make_shared<CCdpExtension>(value);
         }
-        if (oid.compare(CAiaExtension::OID) == 0) {
+        if (oid == COid(CAiaExtension::OID)) {
             return std::make_shared<CAiaExtension>(value);
         }
-        if (oid.compare(CPoliciesExtension::OID) == 0) {
+        if (oid == COid(CPoliciesExtension::OID)) {
             return std::make_shared<CPoliciesExtension>(value);
         }
-        if (oid.compare(CNameConstraintsExtension::OID) == 0) {
+        if (oid == COid(CNameConstraintsExtension::OID)) {
             return std::make_shared<CNameConstraintsExtension>(value);
         }
 

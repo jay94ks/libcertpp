@@ -3,6 +3,7 @@
 
 #include <certpp/common.hpp>
 #include <certpp/string.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/io/octet.hpp>
 #include <certpp/io/buffer.hpp>
 
@@ -26,7 +27,7 @@ namespace x509 {
      */
     class CERTPP_API IExtension {
     private:
-        CString _oid;
+        COid _oid;
         COctet _value;
         bool _critical = false;
 
@@ -42,7 +43,7 @@ namespace x509 {
          * @param value The value of the extension.
          * @return A shared pointer to the created IExtension instance.
          */
-        static IExtensionPtr create(const CString& oid, const COctet& value);
+        static IExtensionPtr create(const COid& oid, const COctet& value);
 
     public:
         /**
@@ -51,7 +52,7 @@ namespace x509 {
          * @param oid The OID of the extension.
          * @param value The value of the extension.
          */
-        IExtension(const CString& oid, const COctet& value) : _oid(oid), _value(value) { }
+        IExtension(const COid& oid, const COctet& value) : _oid(oid), _value(value) { }
 
         /**
          * Constructor with rvalue reference for the value.
@@ -59,7 +60,7 @@ namespace x509 {
          * @param oid The OID of the extension.
          * @param value The value of the extension.
          */
-        IExtension(const CString& oid, COctet&& value) : _oid(oid), _value(std::move(value)) { }
+        IExtension(const COid& oid, COctet&& value) : _oid(oid), _value(std::move(value)) { }
 
         /**
          * Destructor.
@@ -71,7 +72,7 @@ namespace x509 {
          *
          * @return The OID of the extension.
          */
-        inline const CString& oid() const {
+        inline const COid& oid() const {
             return _oid;
         }
 

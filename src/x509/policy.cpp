@@ -15,7 +15,7 @@ namespace x509 {
         // PolicyInformation ::= SEQUENCE {
         //     policyIdentifier   CertPolicyId,
         //     policyQualifiers   SEQUENCE SIZE (1..MAX) OF PolicyQualifierInfo OPTIONAL }
-        size_t needed = CEncoder::encodedOidStringSize(_policyIdentifier);
+        size_t needed = CEncoder::encodedOidSize(_policyIdentifier.raw());
         if (!needed) {
             return false;
         }
@@ -26,7 +26,7 @@ namespace x509 {
         }
 
         size_t written = 0;
-        if (!CEncoder::encodeOidString(oidContent.toSpan(), _policyIdentifier, written)) {
+        if (!CEncoder::encodeOid(oidContent.toSpan(), _policyIdentifier.raw(), written)) {
             return false;
         }
 

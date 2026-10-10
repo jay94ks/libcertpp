@@ -17,7 +17,7 @@ namespace x509 {
      */
     class CERTPP_API CAkiExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.35"; // --> id-ce-authorityKeyIdentifier
+        static constexpr SKnownOid OID = COid::EXT_AUTHORITY_KEY_IDENTIFIER; // --> id-ce-authorityKeyIdentifier
 
     private:
         COctet _keyIdentifier;

@@ -14,7 +14,7 @@ namespace x509 {
      */
     class CERTPP_API CNameConstraintsExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.30"; // --> id-ce-nameConstraints
+        static constexpr SKnownOid OID = COid::EXT_NAME_CONSTRAINTS; // --> id-ce-nameConstraints
 
     private:
         TArray<CGeneralSubtree> _permittedSubtrees;

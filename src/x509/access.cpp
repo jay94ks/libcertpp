@@ -108,7 +108,7 @@ namespace x509 {
     bool CAccessDescription::encode(CBuffer& out) const {
         // AccessDescription ::= SEQUENCE { accessMethod OBJECT IDENTIFIER,
         //                                   accessLocation GeneralName }
-        size_t needed = CEncoder::encodedOidStringSize(_accessMethod);
+        size_t needed = CEncoder::encodedOidSize(_accessMethod.raw());
         if (!needed) {
             return false;
         }
@@ -119,7 +119,7 @@ namespace x509 {
         }
 
         size_t written = 0;
-        if (!CEncoder::encodeOidString(oidContent.toSpan(), _accessMethod, written)) {
+        if (!CEncoder::encodeOid(oidContent.toSpan(), _accessMethod.raw(), written)) {
             return false;
         }
 

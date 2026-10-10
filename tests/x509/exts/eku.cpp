@@ -37,7 +37,7 @@ TEST_CASE("CEkuExtensionBuilder: serverAuth + clientAuth") {
 
 TEST_CASE("CEkuExtensionBuilder: a malformed OID fails to build") {
     CEkuExtensionBuilder builder;
-    builder.addPurpose(CString("not-an-oid"));
+    builder.addPurpose("not-an-oid");
 
     CHECK_FALSE(builder.build());
 }

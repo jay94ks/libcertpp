@@ -15,9 +15,9 @@ namespace x509 {
      */
     class CERTPP_API CAiaExtension : public IExtension {
     public:
-        static constexpr const char* OID = "1.3.6.1.5.5.7.1.1"; // --> id-pe-authorityInfoAccess
-        static constexpr const char* OID_OCSP_METHOD = "1.3.6.1.5.5.7.48.1";       // --> id-ad-ocsp
-        static constexpr const char* OID_CA_ISSUERS_METHOD = "1.3.6.1.5.5.7.48.2"; // --> id-ad-caIssuers
+        static constexpr SKnownOid OID = COid::EXT_AUTHORITY_INFO_ACCESS; // --> id-pe-authorityInfoAccess
+        static constexpr SKnownOid OID_OCSP_METHOD = COid::METHOD_OCSP;       // --> id-ad-ocsp
+        static constexpr SKnownOid OID_CA_ISSUERS_METHOD = COid::METHOD_CA_ISSUERS; // --> id-ad-caIssuers
 
     private:
         TArray<CAccessDescription> _descriptions;

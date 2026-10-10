@@ -4012,3 +4012,115 @@ MSVC에서는 `COid::equals`의 재정의입니다. 이 변경과 무관하며 �
 그 파일에서 실패했고 스크립트가 이전 바이너리를 측정했기 때문입니다. 이후로
 여기서 쓴 모든 측정 스크립트는 깨끗한 빌드를 보지 못하면 아무 것도 측정하지
 않으며, 위 표를 낸 실행은 `error lines: 0`을 보고합니다.
+
+## `COid`/`SRawOid`, 그리고 라이브러리가 이름 붙인 모든 OID를 한 곳에
+
+OID 모듈이 완성되었고, 라이브러리가 정의하는 OID가 모두 그 안으로 모였습니다.
+바뀐 것은 API의 크기가 아니라 OID를 표기할 수 있는 지점의 개수입니다.
+
+### `SRawOid`와 `COid`
+
+`SRawOid`는 OID의 arc일 뿐입니다. 고정 배열과 개수, 그리고 `parse()`,
+`toString()`, `compare()`, 스트림 연산자. `COid`는 라이브러리가 이름 붙인 OID
+또는 텍스트에서 파싱한 OID를 가리키는 핸들입니다. 캐시된 슬롯을 가리키는
+`shared_ptr`이므로 `COid`는 포인터 크기 값이고, 복사하면 재파싱이 아니라
+참조 카운트 증가 한 번입니다.
+
+`SKnownOid`는 테이블 항목으로, `{ uint32_t nth; const char* s; }` 그리고
+그것뿐입니다. 테이블 안에서의 인덱스와 점-구분 텍스트만 담고, arc는 `COid`가
+생성될 때 `SRawOid::parse()`가 그 텍스트에서 꺼냅니다. arc도 함께 담던 초기
+설계는 의도적으로 버렸습니다. 문자열과 arc은 같은 사실의 두 가지 표기이고,
+서로 어긋날 수 있으며, 일치시키려면 두 번째 파서와 "어느 쪽이 맞는가"라는
+규칙이 필요합니다. 이제는 하나뿐입니다.
+
+테이블은 런타임 중에 atomic하게 채워집니다. `CACHED`는 0으로 초기화된
+`std::atomic<Slot*>` 배열이고, 해당 항목의 첫 `COid`가
+`compare_exchange_strong`(acquire/release)로 슬롯을 공개하며 이후의 것들은 그것을
+읽습니다. 로드 타임 초기화가 없으므로 초기화 순서를 잘못 맞출 일도 없고,
+프로세스 시작 경로에 OID 작업도 없습니다. 경합에서 진 쪽은 자기 슬롯을
+삭제합니다. 슬롯은 의도적으로 해제하지 않습니다. 이를 별칭하는 `shared_ptr`이
+무동작 deleter를 쓰고, `COid`는 특정 사용보다 오래 살 수 있기 때문입니다.
+
+`SRawOid::parse()`는 문법뿐 아니라 X.690 8.19.4도 검사합니다: `arcs[0] <= 2`,
+그리고 `arcs[0] < 2`일 때 `arcs[1] < 40`. 거부된 OID는 파싱된 앞부분을 들고
+있는 대신 `count == 0`으로 돌아옵니다. `COid::operator=(const CString&)`는
+파싱 실패 시 조용히 이전 OID를 유지하지 않고 비우고, 나쁜 OID이 간과될 수
+있는 다른 경로였습니다.
+
+`CERTPP_KNOWN_OIDS`에 118개의 OID를 모았습니다: 해시, 키 알고리즘, 서명
+알고리즘, 이름 있는 곡선 30개, 이 라이브러리가 다루는 X.509 확장, 접근 방법,
+EKU 목적, OCSP, PKCS#12/PFX 세트, 그리고 `CName`이 인식하는 DN 속성. 각 항목은
+매크로로 번호를 매기지 않고 인덱스를 직접 적었습니다. 매크로 카운터는 값을
+맞추지만 눈에 보이지 않고, 항목을 하나 넣으면 뒤의 모든 것이 조용히 다시
+번호가 매겨집니다.
+
+### OID 코덱이 arc로 디코딩한다
+
+`CDecoder::decodeOid`, `CEncoder::encodedOidSize`/`encodeOid`,
+`CReader::readOid`, `CWriter::writeOid`에 각각 `SRawOid` 오버로드를
+추가했습니다. 문자열 형태(`decodeOidString`, `encodeOidString`,
+`encodedOidStringSize`, `readOidString`)는 이제 각자 변환을 들고 있지 않고
+그 위에 구현됩니다. 특히 `decodeOidString`은 각자 사릿수 출력 루프를 가지고
+있었습니다. 이제 포매터는 `SRawOid::toString()` 하나뿐이고, 하나의 값에 포매터가
+둘이면 같은 OID에 대해 서로 disagrees하기 마련입니다 -- 실제로 `CName`의 DN
+테이블과 그것이 서술하던 OID 사이에서 그렇게 일어났습니다.
+
+`CEncoder::parseOidArcs`를 public으로 만들어 `SRawOid::parse()`가 테스트된
+파서 하나를 재사용하게 했습니다. 선행 0과 arc 폭 규칙을 두 번 구현하지
+않습니다.
+
+### x509가 OID를 문자열로 보관하지 않는다
+
+`IExtension::_oid`, `SCertRequestAttribute::oid`,
+`CAccessDescription::_accessMethod`, `CPolicyInformation::_policyIdentifier`,
+`CEkuExtension(Builder)::_purposes`, `CGeneralName`의 `registeredID`가 이제
+`COid`이고, `include/certpp/x509/exts/*.hpp`의 확장 `static constexpr const char* OID`
+상수 20개는 `COid::` 상수의 별칭인 `static constexpr SKnownOid`입니다. 이름은
+그대로여서 호출부와 테스트가 읽던 모양을 유지하지만, OID는 라이브러리에 두 번이
+아니라 한 번만 나타납니다. `cert.cpp`의 테이블(`KEY_ALGOS`, `EC_CURVES`,
+`SIG_ALGOS`, `RSA_SIG_OIDS`, `DSA_SIG_OIDS`, `ECDSA_SIG_OIDS`), `pfx.cpp`의
+익명 네임스페이스 상수 23개, `ocspcodec.hpp`의 2개가 같은 변화입니다. 라이브러리의
+모든 OID 비교가 이제 arc 기준이고, 점-구분 형태는 OID이 표시되는 곳에서만
+만들어집니다 -- 그것은 이름을 모르는 알고리즘에 대해 `resolveKeyAlgo()`/
+`resolveSigAlgo()`가 OID 자신의 텍스트로 폴백하는 곳입니다.
+
+`CCert::keyAlgo()`와 `CCert::signAlgo()`는 이관하지 않았고, 이는 누락이
+아닙니다. 둘은 OID가 아니라 표시 이름(`"RSA"`, `"EC"`,
+`"sha256WithRSAEncryption"`)을 담습니다. `COid`로 바꿔 보고 되돌렸습니다 --
+PEM writer가 `keyAlgo().compare("RSA")`로 분기하고, 기존 테스트 6개도 같은
+접근자를 그 이름들과 비교합니다.
+
+### 이 과정에서 발견한 세 가지 버그
+
+- **`CName::TYPE_OIDS`가 `domainComponent`를 10개 arc로 기술하고 있었습니다.**
+  실제로는 `0.9.2342.19200300.100.1.25`로 7개입니다. 표가 0 세 개로 패딩되어
+  있었습니다. `src/name.cpp`, `include/certpp/name.hpp`의 주석,
+  `tests/name.cpp`의 기대값을 수정했습니다.
+- **`CString == COid(...)`는 컴파일되고 항상 참입니다.** 이건 명명할 가치가
+  있습니다. `TString::operator==`는 `const TString&`를 받는데, 이 비교는 OID의
+  arc와는 무관한 변환을 통해 `COid`에 도달합니다.
+  `CCert::importDer()`의 `sigAlgoOid == COid(COid::RSASSA_PSS)`로 쓰여졌을 때
+  모든 인증서에 대해 참이었고, 그 결과 모든 self-signed 인증서가 RSASSA-PSS
+  분기를 타서 서명에 실제로 사용된 다이제스트 알고리즘이 아니라 그 분기의 기본값이
+  담긴 채 `importDer()`에서 나왔고, 자기 서명을 검증하는 데 실패했습니다.
+  같은 형태가 `crl.cpp`(모든 CRL 항목 확장이 reason code로 읽힘)와
+  `ocspcodec.cpp`(모든 OCSP 확장이 nonce로 읽힘)에도 살아 있었습니다. 둘 다
+  인식하려는 확장과 *다른* 확장으로 해당 경로를 아무것도 테스트하지 않았기
+  때문에 테스트를 통과했습니다. 셋 다 이제 `SRawOid`로 읽고 `COid`를 보유하여
+  비교가 말한 대로 의미를 갖습니다. `tests/oid.cpp`가 양쪽 동작을 고정해 이
+  형태가 되돌아오지 못하게 합니다.
+- **`pfx.cpp`의 OID 작성기가 이중으로 감싼 OBJECT IDENTIFIER를 출력했습니다.**
+  파일 내부의 `encodeOid(const char*, CBuffer&)`는 콘텐츠 옥텟만 만듭니다.
+  `appendOid()`가 태그와 길이를 붙이므로 그렇습니다. 같은 자리에 추가한
+  `SKnownOid` 오버로드는 자기 TLV를 붙여서, `appendOid()`가 결과를 두 번
+  감쌌고 리더는 그 콘텐츠 타입을 올바르게 거부했습니다. `load()`의 서른여섯
+  개가 넘는 `return`이 모두 `load() == ERET_OK`만 보고하기 때문에 하나씩 계측해
+  찾았습니다.
+
+`src/oid.cpp`는 어느 툴체인에서도 그대로는 컴파일되지 않습니다 -- GCC에서
+`SRawOid::operator=(SRawOid&&)`의 재정의, MSVC에서 `COId::equals`의 재정의가
+있어서 검증 스크립트가 이 파일을 옆으로 옮겼었습니다. 둘 다 해결했고, 이제
+스크립트는 그럴 필요가 없습니다.
+
+네 가지 구성 모두 130/130으로 검증했습니다: GCC Release+ASan, GCC ASan,
+MSVC Release, MSVC Debug.

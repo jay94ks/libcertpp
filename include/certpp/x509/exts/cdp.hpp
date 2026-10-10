@@ -13,7 +13,7 @@ namespace x509 {
      */
     class CERTPP_API CCdpExtension : public IExtension {
     public:
-        static constexpr const char* OID = "2.5.29.31"; // --> id-ce-cRLDistributionPoints
+        static constexpr SKnownOid OID = COid::EXT_CRL_DISTRIBUTION_POINTS; // --> id-ce-cRLDistributionPoints
 
     private:
         TArray<CDistributionPoint> _points;

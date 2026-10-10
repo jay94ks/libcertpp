@@ -4090,3 +4090,122 @@ the before run, because the build had failed on that file and the script was
 measuring the previous binary. Every measurement script used here now refuses
 to time anything unless it has seen a clean build, and the after-run that
 produced the table above reports `error lines: 0`.
+
+## `COid`/`SRawOid`, and every OID the library names living in one place
+
+The OID module finished, and the OIDs the library defines were collected into
+it. What that changed is not the size of the API but the number of places an
+OID can be spelled.
+
+### `SRawOid` and `COid`
+
+`SRawOid` is an OID's arcs and nothing else: a fixed array plus a count, with
+`parse()`, `toString()`, `compare()` and the stream operators. `COid` is a
+handle onto one of the library's named OIDs or onto an OID parsed from text --
+a `shared_ptr` to a cached slot, so a `COid` is a pointer-sized value and
+copying one is a refcount bump rather than a re-parse.
+
+`SKnownOid` is the table entry: `{ uint32_t nth; const char* s; }` and nothing
+else. It stores the index into the table and the dotted-decimal text, and the
+arcs are parsed out of that text by `SRawOid::parse()` when a `COid` is
+constructed for it. An earlier design had the entry carry its arcs as well.
+That was dropped deliberately: the string and the arcs are two spellings of
+one fact, they can disagree, and keeping them in agreement needs a second
+parser and a rule about which one wins. There is now one.
+
+The table is filled at runtime, atomically. `CACHED` is a zero-initialized
+`std::atomic<Slot*>` array; the first `COid` constructed for an entry publishes
+its slot with `compare_exchange_strong` (acquire/release) and every later one
+reads it. Nothing is initialized at load time, so there is no static-init
+ordering to get wrong and no OID work on the process's startup path. The loser
+of a race deletes its own slot; slots are deliberately never freed, since the
+`shared_ptr`s aliasing them use a no-op deleter and a `COid` may outlive any
+particular use of it.
+
+`SRawOid::parse()` enforces X.690 8.19.4 as well as the syntax: `arcs[0] <= 2`,
+and `arcs[1] < 40` when `arcs[0] < 2`. A rejected OID comes back with
+`count == 0` rather than holding the prefix that did parse.
+`COid::operator=(const CString&)` resets to empty on a parse failure rather
+than silently keeping the previous OID, which was the other way a bad OID could
+go unnoticed.
+
+118 OIDs are collected in `CERTPP_KNOWN_OIDS`: hashes, key algorithms,
+signature algorithms, 30 named curves, the X.509 extensions this library
+models, access methods, EKU purposes, OCSP, the PKCS#12/PFX set, and the DN
+attributes `CName` recognizes. Each entry is written with its index spelled out
+rather than numbered by a macro: a macro counter makes the value correct but
+invisible, and inserting an entry would silently renumber everything after it.
+
+### The OID codec decodes to arcs
+
+`CDecoder::decodeOid`, `CEncoder::encodedOidSize`/`encodeOid`,
+`CReader::readOid` and `CWriter::writeOid` each gained an `SRawOid` overload.
+The string forms (`decodeOidString`, `encodeOidString`,
+`encodedOidStringSize`, `readOidString`) are now implemented on top of them
+rather than carrying their own conversion. `decodeOidString` in particular used
+to have its own copy of the digit loop; there is now one formatter,
+`SRawOid::toString()`, and having two formatters for one value is how they come
+to disagree about the same OID -- which is exactly what had happened between
+`CName`'s DN table and the OID it was describing.
+
+`CEncoder::parseOidArcs` was made public so `SRawOid::parse()` reuses the one
+tested parser instead of a second implementation of the leading-zero and
+arc-width rules.
+
+### x509 no longer stores OIDs as strings
+
+`IExtension::_oid`, `SCertRequestAttribute::oid`,
+`CAccessDescription::_accessMethod`, `CPolicyInformation::_policyIdentifier`,
+`CEkuExtension(Builder)::_purposes` and `CGeneralName`'s `registeredID` are
+`COid`s now, and the twenty extension `static constexpr const char* OID`
+constants in `include/certpp/x509/exts/*.hpp` are `static constexpr SKnownOid`
+aliases of `COid::` constants -- same names, so call sites and tests keep
+reading the way they did, but the OID appears once in the library rather than
+twice. The tables in `cert.cpp` (`KEY_ALGOS`, `EC_CURVES`, `SIG_ALGOS`,
+`RSA_SIG_OIDS`, `DSA_SIG_OIDS`, `ECDSA_SIG_OIDS`), `pfx.cpp`'s 23 anonymous-namespace
+constants, and `ocspcodec.hpp`'s two are the same change. Every OID comparison
+in the library is now on arcs; the dotted-decimal form is produced only where
+an OID is displayed, which is `resolveKeyAlgo()`/`resolveSigAlgo()` falling
+back to the OID's own text for an algorithm it has no name for.
+
+`CCert::keyAlgo()` and `CCert::signAlgo()` were *not* migrated, and that is not
+an oversight: they hold display names (`"RSA"`, `"EC"`,
+`"sha256WithRSAEncryption"`), not OIDs. Converting them to `COid` was tried and
+reverted -- the PEM writer dispatches on `keyAlgo().compare("RSA")`, and six
+existing tests compare the same accessor against those names.
+
+### Three bugs found on the way
+
+- **`CName::TYPE_OIDS` claimed `domainComponent` had ten arcs.** It is
+  `0.9.2342.19200300.100.1.25` -- seven. The table had been padded with three
+  zeros. Fixed in `src/name.cpp`, in the comments in `include/certpp/name.hpp`,
+  and in `tests/name.cpp`.
+- **`CString == COid(...)` compiles, and is always true.** This one is worth
+  naming. `TString::operator==` takes `const TString&`, and the comparison
+  reaches a `COid` through a conversion that has nothing to do with the OID's
+  arcs. Written as `sigAlgoOid == COid(COid::RSASSA_PSS)` in
+  `CCert::importDer()`, it held for every certificate: every self-signed
+  certificate took the RSASSA-PSS branch, came out of `importDer()` carrying the
+  digest algorithm that branch's defaults give rather than the one it was
+  actually signed with, and then failed to verify against its own signature.
+  The same shape was live in `crl.cpp` (every CRL-entry extension read as a
+  reason code) and in `ocspcodec.cpp` (every OCSP extension read as a nonce);
+  those two passed the suite only because nothing exercised either path with an
+  extension that was *not* the one being recognized. All three now read into an
+  `SRawOid` and hold a `COid`, so the comparison means what it says.
+  `tests/oid.cpp` pins the behaviour both ways so the form cannot come back.
+- **`pfx.cpp`'s OID writer emitted a doubly-wrapped OBJECT IDENTIFIER.** The
+  file-local `encodeOid(const char*, CBuffer&)` produces content octets only,
+  because `appendOid()` adds the tag and length. The `SKnownOid` overload added
+  alongside it appended its own TLV, so `appendOid()` wrapped the result twice
+  and the reader correctly rejected the content type. Found by instrumenting
+  `load()`'s thirty-odd `return`s one at a time, since every one of them reports
+  only `load() == ERET_OK`.
+
+`src/oid.cpp` does not compile on either toolchain out of the box -- it carried
+a redefinition of `SRawOid::operator=(SRawOid&&)` on GCC and of `COid::equals` on
+MSVC, which is why the verification scripts used to move it aside. Both are
+resolved; the scripts no longer need to.
+
+Verified as 130/130 on all four configurations: GCC Release+ASan, GCC ASan,
+MSVC Release, MSVC Debug.

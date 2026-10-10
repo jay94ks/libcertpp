@@ -959,7 +959,7 @@ TEST_CASE("CCertRequestBuilder: refuses to build anything it cannot sign for") {
 
         static constexpr uint8_t EMPTY_SEQ[] = { 0x30, 0x00 };
         REQUIRE(builder.attributes.add(SCertRequestAttribute(
-            CString(CCertRequest::OID_EXTENSION_REQUEST), COctet(EMPTY_SEQ, sizeof(EMPTY_SEQ)))));
+            COid(CCertRequest::OID_EXTENSION_REQUEST), COctet(EMPTY_SEQ, sizeof(EMPTY_SEQ)))));
 
         CCertRequest req;
         CHECK(builder.build(req) == ERET_INVAL);

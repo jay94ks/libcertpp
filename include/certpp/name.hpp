@@ -55,7 +55,7 @@ namespace certpp {
          * The maximum number of arcs any recognized DN attribute-type OBJECT IDENTIFIER has --
          * the size an attributeOid() caller's output span has to be able to take. The X.520
          * attributeType arc needs only 4 ({2, 5, 4, N}); RFC 4519's domainComponent
-         * (0.9.2342.19200300.100.1.25) needs all 10.
+         * (0.9.2342.19200300.100.1.25) needs 7, so 10 leaves room beyond either.
          */
         static constexpr size_t MAX_OID_ARCS = 10;
 
@@ -63,7 +63,7 @@ namespace certpp {
         /**
          * One recognized DN attribute type's OBJECT IDENTIFIER, as its arc values plus how many
          * of them are in use -- a plain fixed-size array can't hold the table, since
-         * domainComponent's OID is 10 arcs long where every X.520 one is 4.
+         * domainComponent's OID is 7 arcs long where every X.520 one is 4.
          */
         struct SAttributeOid {
             uint8_t count;

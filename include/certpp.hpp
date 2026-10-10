@@ -5,6 +5,7 @@
 #include <certpp/version.hpp>
 #include <certpp/time.hpp>
 #include <certpp/string.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/name.hpp>
 
 #include <certpp/utils/djb.hpp>

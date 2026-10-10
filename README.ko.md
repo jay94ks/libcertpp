@@ -107,6 +107,15 @@ RDATA, 키 태그, DS 다이제스트, 그리고 DNSSEC의 와이어 포맷과 �
 대응하는 값이 없는 BSON 타입은 거부합니다. `-DCERTPP_WITHOUT_JSON=ON`으로
 설정하면 유틸리티를 빌드에서 제외할 수 있습니다.
 
+**객체 식별자** — `COid`가 OID이고 `SRawOid`가 그 arc입니다. `COid`는 OID
+사본이 아니라 캐시된 슬롯을 가리키는 포인터를 담습니다. 라이브러리가 정의하는
+118개의 OID는 `COid`의 `static constexpr SKnownOid` 멤버로 한 번만 선언되어
+있습니다(`COid::RSA`, `COid::CURVE_P256`, `COid::EXT_BASIC_CONSTRAINTS`,
+`COid::PURPOSE_SERVER_AUTH`, `COid::PBES2`, `COid::DOMAIN_COMPONENT` 등). 라이브러리의
+모든 OID 비교는 점-구분 텍스트가 아니라 arc 기준입니다. ASN.1 코덱은
+`SRawOid`를 직접 읽고 쓰며, 문자열 기반 `readOidString()`/`encodeOidString()`
+진입점은 OID 텍스트를 가진 호출자를 위해 남아 있고 그 위에 구현되어 있습니다.
+
 **하드웨어 가속** — 큰 수 연산용 ADX/BMI2, 이진체 연산 및 GHASH용 PCLMULQDQ,
 SHA-NI, AES-NI, 그리고 4블록 SSE2 ChaCha20 키스트림. 각각 바이트 단위로 동일한
 결과를 내도록 요구되는 소프트웨어 폴백과, 그것을 강제하는 CMake 스위치를 함께

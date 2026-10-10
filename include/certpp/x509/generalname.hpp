@@ -3,6 +3,7 @@
 
 #include <certpp/common.hpp>
 #include <certpp/string.hpp>
+#include <certpp/oid.hpp>
 #include <certpp/name.hpp>
 #include <certpp/io/octet.hpp>
 #include <certpp/io/array.hpp>
@@ -40,7 +41,8 @@ namespace x509 {
     class CERTPP_API CGeneralName {
     private:
         EGeneralNameType _type;
-        CString _text;                  // --> rfc822Name/dNSName/URI/registeredID (as OID text).
+        CString _text;                  // --> rfc822Name/dNSName/URI, or registeredID's text.
+        COid _registeredId;             // --> registeredID only; empty for every other type.
         COctet _raw;                     // --> iPAddress, or the unparsed content for other/x400/ediParty.
         CDistinguishedName _directoryName; // --> directoryName only.
 
@@ -52,10 +54,30 @@ namespace x509 {
 
         /**
          * @brief Constructs a text-valued GeneralName (rfc822Name/dNSName/URI/registeredID).
+         *
+         * For EGNAME_REGISTERED_ID the text must be dotted-decimal OID text; it is parsed here
+         * so registeredId() has the arcs to answer with, and a text that does not parse leaves
+         * registeredId() empty rather than half-built. Prefer the COid overload when the caller
+         * already has an OID.
          * @param type The alternative this holds.
          * @param text The decoded text.
          */
-        CGeneralName(EGeneralNameType type, const CString& text) : _type(type), _text(text) { }
+        CGeneralName(EGeneralNameType type, const CString& text) : _type(type), _text(text) {
+            if (type == EGNAME_REGISTERED_ID) {
+                _registeredId = text;
+                if (!_registeredId) {
+                    _text.clear();
+                }
+            }
+        }
+
+        /**
+         * @brief Constructs a registeredID-valued GeneralName from a COid.
+         * @param oid The registered OID.
+         */
+        CGeneralName(const COid& oid) : _type(EGNAME_REGISTERED_ID), _registeredId(oid) {
+            _registeredId.toString(_text);
+        }
 
         /**
          * @brief Constructs a directoryName-valued GeneralName.
@@ -83,6 +105,17 @@ namespace x509 {
          * @return The decoded text.
          */
         inline const CString& text() const { return _text; }
+
+        /**
+         * @brief Gets the OID, for EGNAME_REGISTERED_ID only. Empty for every other alternative.
+         *
+         * The accessor to compare against when a caller wants to know whether two
+         * GeneralNames name the same registered ID: the comparison is on the arcs. text() gives
+         * the same OID as dotted-decimal text, which is the right thing to display and the wrong
+         * thing to compare.
+         * @return The registered OID, or an empty COid if this is not a registeredID.
+         */
+        inline const COid& registeredId() const { return _registeredId; }
 
         /**
          * @brief Gets the decoded directory name, for EGNAME_DIRECTORY only. Empty for every

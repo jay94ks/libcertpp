@@ -25,22 +25,22 @@ namespace x509 {
         }
 
         while (!seq.atEnd()) {
-            CString purpose;
-            if (!seq.readOidString(purpose)) {
+            SRawOid raw;
+            if (!seq.readOid(raw)) {
                 break;
             }
-            _purposes.add(purpose);
+
+            // --> Kept as a COid: has() compares a KeyPurposeId against one of the library's
+            // named OIDs, so an arc comparison avoids formatting both sides to text.
+            _purposes.add(COid(raw));
         }
     }
 
     /* Checks whether a specific KeyPurposeId OID is present. */
-    bool CEkuExtension::has(const char* purposeOid) const {
-        if (!purposeOid) {
-            return false;
-        }
-
-        for (const CString& purpose : _purposes) {
-            if (purpose.compare(purposeOid) == 0) {
+    bool CEkuExtension::has(const SKnownOid& purposeOid) const {
+        const COid target(purposeOid);
+        for (const COid& purpose : _purposes) {
+            if (purpose == target) {
                 return true;
             }
         }
@@ -58,8 +58,8 @@ namespace x509 {
         // ExtKeyUsageSyntax ::= SEQUENCE SIZE (1..MAX) OF KeyPurposeId (OBJECT IDENTIFIER)
         CBuffer body;
 
-        for (const CString& purpose : _purposes) {
-            size_t needed = CEncoder::encodedOidStringSize(purpose);
+        for (const COid& purpose : _purposes) {
+            size_t needed = CEncoder::encodedOidSize(purpose.raw());
             if (!needed) {
                 return nullptr;
             }
@@ -70,7 +70,7 @@ namespace x509 {
             }
 
             size_t written = 0;
-            if (!CEncoder::encodeOidString(oidContent.toSpan(), purpose, written)
+            if (!CEncoder::encodeOid(oidContent.toSpan(), purpose.raw(), written)
                 || !CDer::appendTlv(body, CTag::OBJ_ID, SReadOnlyByteSpan(oidContent.toPtr(), written)))
             {
                 return nullptr;
