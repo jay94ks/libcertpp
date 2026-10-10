@@ -136,8 +136,8 @@ with the items above.
 
 Measuring both toolchains in one session on the same machine shows GCC equal
 or faster on almost everything -- SHA3-256 by 2.8x, Streebog by 42%, ML-KEM by
-30%, AES-256-GCM by 28% -- and two exceptions that ran the other way, **both
-since resolved**:
+30%, AES-256-GCM by 28% -- and four exceptions that ran the other way, **two
+resolved and two open**:
 
 1. **RSA-2048 was 2.4x slower to sign on GCC.** Not the portable multiply
    (dispatches to `mulAccelerated()` on a `hasAdxBmi2()` check that passes for
@@ -147,14 +147,56 @@ since resolved**:
    takes 4.69 ms on MSVC against 5.48 ms on GCC (1.17x, down from 2.37x).
    Knuth-D division is data-dependent; Montgomery's CIOS iterates a fixed
    number of times regardless of operand values.
-2. **MD5 is 23% slower on GCC** (455 against 593 MiB/s). One scalar routine,
+2. **MD5 was 23% slower on GCC** (455 against 593 MiB/s). One scalar routine,
    one direction, no acceleration involved. **Resolved** by P7: GCC now leads
    at 718 MiB/s.
+3. **DSA-2048 is 2.7x slower to sign on GCC** -- 7.29 against 2.70 ms, and
+   18.1 against 6.6 ms to verify. A wider gap than RSA's ever was, found only
+   when the benchmark was extended to cover every algorithm. **Open**, and
+   uninvestigated: the backend is the same `CBigNum` RSA was on, so the cause
+   is presumably the same shape of thing `CMontgomery` fixed, but the profile
+   has not been taken.
+4. **Every GF(2^m) curve is 1.2--2.1x slower on GCC** -- B-571 verify is
+   19.9 ms against 7.6 ms. Ten curves, all moving the same way, which argues
+   for a shared cause in `CGf2m` rather than ten coincidences. **Open**, and
+   uninvestigated.
 
 Both sets of figures come from the same harness on the same machine, so the
 comparison is like-for-like. Two limits on that comparison: the GCC side ran
 under WSL2 (a VM), and "both Release" hides that CMake's Release defaults are
-`/O2` for MSVC and `-O3` for GCC. Anything still worth chasing should be
+`/O2` for MSVC and `-O3` for GCC.
+
+### The optimisation level is not the cause, and does not need changing
+
+The confound above was worth removing rather than leaving as a caveat, so both
+toolchains were rebuilt across their optimisation levels and the same
+algorithms timed. Measured on this machine, min of 3 batches of 5 iterations:
+
+| Build | RSA-2048 sign | DSA-2048 sign | B-571 verify | MD5 | ARIA-256-CBC |
+|---|---|---|---|---|---|
+| GCC `-O3` (the default) | 5.65 ms | 7.25 ms | 19.39 ms | 710.6 MiB/s | 28.5 MiB/s |
+| GCC `-O2` | 5.33 ms | 7.50 ms | 19.31 ms | 687.4 MiB/s | 28.3 MiB/s |
+| GCC `-O1` | 5.57 ms | 7.28 ms | 19.50 ms | 665.4 MiB/s | 28.7 MiB/s |
+| GCC `-Os` | 5.40 ms | 7.18 ms | 19.12 ms | 718.2 MiB/s | 28.5 MiB/s |
+| GCC `-O3 -march=native` | 6.06 ms | 7.19 ms | 18.59 ms | 666.7 MiB/s | 28.2 MiB/s |
+| GCC `-O3 -flto` | 6.27 ms | 7.32 ms | 19.74 ms | 717.9 MiB/s | 29.1 MiB/s |
+| MSVC `/O2` (the default) | 5.71 ms | 2.73 ms | 7.76 ms | 572.5 MiB/s | -- |
+| MSVC `/O3` | 5.69 ms | 2.66 ms | 7.60 ms | 567.3 MiB/s | 45.5 MiB/s |
+| MSVC `/Ox` | 5.66 ms | 2.78 ms | 7.87 ms | 560.9 MiB/s | 45.1 MiB/s |
+
+Nothing there is worth changing, and two entries are worth never using.
+`-march=native` makes RSA **7% slower** (5.65 to 6.06 ms) and `-flto` makes it
+11% slower again, both from changes in what the optimiser chooses rather than
+from the instruction set. MSVC `/Ox` costs **20% on SHA-1** (1766 to
+1407 MiB/s). Every other difference is inside this machine's 20--30% spread,
+which means `/O3` on MSVC is *not* a demonstrated improvement over `/O2` even
+though it wins four of the five rows.
+
+The conclusion that matters for the two open items: **the GCC gaps do not move
+with the optimisation level.** GCC is 7.2--7.5 ms on DSA-2048 signing at every
+level from `-Os` to `-O3`, and 19.1--19.5 ms on B-571 verify. Those are
+algorithm-level differences in the shared `CBigNum` and `CGf2m` backends, and
+no flag reaches them. Anything still worth chasing should be aimed there, and
 re-measured on bare-metal Linux before the gap is called a GCC bug.
 
 ## Not planned
