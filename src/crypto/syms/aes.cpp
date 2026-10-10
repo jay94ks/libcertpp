@@ -51,11 +51,28 @@ namespace crypto {
                 auto roundKeys = _roundKeys; // --> captured by the lambda below, kept alive with it.
                 uint32_t nr = _nr;
 
+                // --> The bulk path, where this CPU has AES-NI: AesCore::encryptCbcBulk()
+                // keeps the chaining value in a register across a whole run of blocks, which
+                // is worth ~1.8x at 64 KiB because the per-block path writes the chain out
+                // and reads it back for every block. It produces identical output -- checked
+                // by tests/crypto/syms/aes.cpp against the portable block function, and kept
+                // that way by construction here.
+                CbcTransformer::BulkBlockFn bulk = nullptr;
+                if (AesCore::hasAesNi()) {
+                    bulk = [roundKeys, nr](
+                        const uint8_t* in, uint8_t* out, size_t blocks, uint8_t* chain
+                    ) {
+                        AesCore::encryptCbcBulk(in, out, blocks, chain,
+                                                roundKeys.begin(), nr);
+                    };
+                }
+
                 out = std::make_shared<CbcTransformer>(
                     shared_from_this(), true, AES_BLOCK_BYTES, iv().toSpan(), padding(),
                     [roundKeys, nr](const uint8_t* in, uint8_t* o) {
                         AesCore::encryptBlock(in, o, roundKeys.begin(), nr);
-                    }
+                    },
+                    bulk
                 );
                 return ERET_OK;
             }

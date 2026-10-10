@@ -1353,6 +1353,7 @@ namespace certpp {
         static IStringEncoding<TChar>& get();
     };
 
+
 } // namespace certpp
 
 #endif

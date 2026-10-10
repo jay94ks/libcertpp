@@ -77,7 +77,7 @@ is that turning the MULX/ADCX path on changes RSA and prime-curve timings by
 an amount indistinguishable from noise. This cuts against the obvious plan:
 there is nothing to win by improving that function.
 
-### Ordered plan (P0--P7)
+### Ordered plan (P0--P8)
 
 Sequenced by what the measurements actually support, not by how easy each item
 looks. Each names how it would be verified, because on this machine a change
@@ -94,6 +94,7 @@ corrected diagnoses, is in [`docs/changelog.md`](changelog.md).
 | **P5** -- A field for the prime curves | **Closed** (negative result) | The prime curves are *already* on Montgomery (`eccurve.cpp:747`), so there is no per-curve field to build. |
 | **P6** -- Ed448 and P-521 | **Closed** (negative result) | Both curves already have dedicated constant-time paths: P-521 is on Montgomery (`eccurve.cpp:747`), Ed448 has its own branch-free ladder (`ed448.cpp:192`) over `CMontgomery` (`ed448.cpp:129`). |
 | **P7** -- MD5 on GCC | **Done** | Unrolling the four rounds removed a branch and a modulo per step: 545 to 341 cycles/block, 1.60x. GCC 455 to 718 MiB/s; MSVC unchanged within noise. |
+| **P8** -- AES-CBC register chain | **Done** | `CbcTransformer`'s per-block interface cost two loads and two stores a block of a chain that never needed to leave a register. Holding it in a `__m128i`: MSVC 1.94--2.14x, GCC 1.84--2.03x, AES-256-CBC now 0.94x OpenSSL. [Changelog](changelog.md) |
 
 The lesson worth carrying to the next pass: seven changes were implemented on
 the reasoning that fewer instructions would mean less work, and six of the
@@ -102,6 +103,20 @@ lanes that the input did not fill. Measure the decomposition before proposing
 the change, not after. And the generalisable form: the first question to ask
 of any SIMD proposal is not "does it compute the same thing" but **"is the
 thing I am vectorising actually the bottleneck."**
+
+P8 is the shape those seven were not. It vectorises nothing and widens nothing;
+it removes one load and one store per block from a chain whose dependency is
+inherently serial. The reason it worked where the others failed is that the
+bottleneck was not the arithmetic but the interface around it -- which is the
+same lesson in a form that is easy to get backwards: the arithmetic being
+hard is not a reason to suspect it, and the arithmetic being *solved* by a
+hardware instruction is not a reason to expect the caller's layer to be free.
+
+ARIA is the one throughput gap left, and it is not the same kind: 28 MiB/s
+against OpenSSL's 114 for ARIA-256-CBC, after P8. AES-NI's absence is the whole
+story and there is no ARIA equivalent to reach for, so this is portable C++
+against hand-written assembly rather than anything portable C++ can be changed
+to close. No further CBC work is planned.
 
 ### Remaining work
 

@@ -6,10 +6,12 @@ namespace crypto {
 
     CbcTransformer::CbcTransformer(
         const ISymmetricContextPtr& ctx, bool encrypting, size_t blockBytes,
-        SReadOnlyByteSpan iv, ESymPaddings padding, BlockFn blockFn
+        SReadOnlyByteSpan iv, ESymPaddings padding, BlockFn blockFn,
+        BulkBlockFn bulkBlockFn
     )
         : ISymmetricTransformer(ctx), _encrypting(encrypting), _blockBytes(blockBytes),
-          _padding(padding), _blockFn(std::move(blockFn))
+          _padding(padding), _blockFn(std::move(blockFn)),
+          _bulkBlockFn(std::move(bulkBlockFn))
     {
         blockSize(blockBytes);
 
@@ -43,6 +45,39 @@ namespace crypto {
         uint8_t* chainPtr = _chain.toPtr();
 
         if (_encrypting) {
+            // --> A bulk run of whole blocks, where the cipher offers one. Everything about
+            // the shape stays the same: it still reads from _buffer, it is still bounded by
+            // the output space left, it still leaves _chain holding the last ciphertext
+            // block, and the per-block loop below still handles whatever it did not take.
+            // The bulk function's advantage is internal -- it keeps the chaining value in a
+            // register rather than writing it out and reading it back -- so from here the
+            // two paths are interchangeable and the choice is invisible to a caller.
+            if (_bulkBlockFn) {
+                size_t wholeBlocks = (_buffer.size() - consumed) / _blockBytes;
+                // Leave the output-space rule intact: a bulk run may not write more than the
+                // caller's buffer can hold, and may not run past the end of the input.
+                if (wholeBlocks > 0) {
+                    const size_t fitting = (output.size - outWritten) / _blockBytes;
+                    if (fitting < wholeBlocks) {
+                        // Not enough room for every whole block. The per-block loop below
+                        // handles this by leaving the rest in _buffer for a later transform(),
+                        // which is the contract that keeps a partial output buffer usable
+                        // across calls -- so the bulk path must not write more than fits,
+                        // whether or not this is the final call. ERET_NOSPC is preserved by
+                        // the per-block loop's own check when final leaves nothing to emit.
+                        wholeBlocks = fitting;
+                    }
+
+                    if (wholeBlocks > 0) {
+                        _bulkBlockFn(_buffer.toPtr() + consumed,
+                                     output.data + outWritten,
+                                     wholeBlocks, chainPtr);
+                        outWritten += wholeBlocks * _blockBytes;
+                        consumed += wholeBlocks * _blockBytes;
+                    }
+                }
+            }
+
             while (_buffer.size() - consumed >= _blockBytes) {
                 if (output.size - outWritten < _blockBytes) {
                     if (!final) {

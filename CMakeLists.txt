@@ -250,6 +250,19 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        # crypto/syms/aes compiles AesCore in so the register-chain CBC bulk path can be held
+        # against AesCore::encryptBlockPortable(): the transformer uses the bulk path on a CPU
+        # with AES-NI, and the two share no code at all -- one is AES-NI intrinsics, the other
+        # the FIPS-197 round functions -- so agreement between them is a real check rather than
+        # a tautology. Round-trip tests cannot do this job: a broken chain still round-trips on
+        # its own output. aescore.cpp is safe to compile in here because AesCore is internal,
+        # unlike CMlDsa, which the test already imports.
+        if(CERTPP_TEST_REL STREQUAL "crypto/syms/aes")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/syms/aescore.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/mldsasampler")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/mldsaring.cpp

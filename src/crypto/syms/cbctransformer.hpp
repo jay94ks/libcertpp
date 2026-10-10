@@ -34,11 +34,39 @@ namespace crypto {
         /* Encrypts/decrypts exactly one block (in and out may alias the same buffer). */
         using BlockFn = std::function<void(const uint8_t* in, uint8_t* out)>;
 
+        /* Encrypts a run of whole blocks, holding the chaining value in a register.
+         *
+         * Offered by AES, where the per-block path costs ~84 cycles a block against ~45
+         * here because the chaining value would otherwise be written to `_chain` and read
+         * back for the next block -- pure addition to a serial chain's critical path. See
+         * AesCore::encryptCbcBulk() for the measurement.
+         *
+         * Optional, and empty for every cipher that cannot supply one, in which case
+         * processBuffered() uses the per-block path exactly as before. The bulk function
+         * replaces only the whole-block loop's body: the output-space check, the chain
+         * write-back, the remainder handling and the PKCS#7 logic all stay where they are,
+         * so a bulk run is indistinguishable from an equivalent run of single blocks
+         * except in speed.
+         *
+         * --> Keep the two paths byte-identical. Round-trip tests prove the two directions
+         * agree with each other but cannot tell you the ciphertext is *right* -- two matching
+         * errors still round-trip -- so tests/crypto/syms/aes.cpp holds the bulk path against
+         * AesCore::encryptBlockPortable() directly. Keep that passing.
+         *
+         * --> `chain` is the transformer's own chain buffer, so the bulk function reads it
+         * on entry and writes it back on exit -- the same state the per-block path leaves,
+         * which is what lets a later transform() call continue without knowing which path
+         * produced the blocks before it. */
+        using BulkBlockFn = std::function<
+            void(const uint8_t* in, uint8_t* out, size_t blocks, uint8_t* chain)
+        >;
+
     private:
         bool _encrypting;
         size_t _blockBytes;
         ESymPaddings _padding;
         BlockFn _blockFn;
+        BulkBlockFn _bulkBlockFn;   // --> empty when the cipher offers no bulk path.
         CBuffer _chain;      // --> current chaining value; IV until the first block.
         CBuffer _buffer;     // --> input not yet consumed.
         CBuffer _scratch;    // --> one block of scratch space, reused per block.
@@ -57,10 +85,16 @@ namespace crypto {
          * @param blockFn Encrypts (if encrypting) or decrypts (otherwise) one raw blockBytes-long
          * block, with no chaining/padding of its own -- this transformer applies CBC chaining and
          * whatever padding `padding` selects around it.
+         * @param bulkBlockFn Optional: encrypts a run of whole blocks with the chaining value in
+         * a register, reading and writing the transformer's own chain buffer. Empty means the
+         * per-block function is used for everything, which is how every cipher but AES calls
+         * this. Supplying both makes the bulk path handle whole blocks and the per-block path
+         * handle the remainder, so the two must produce identical output.
          */
         CbcTransformer(
             const ISymmetricContextPtr& ctx, bool encrypting, size_t blockBytes,
-            SReadOnlyByteSpan iv, ESymPaddings padding, BlockFn blockFn
+            SReadOnlyByteSpan iv, ESymPaddings padding, BlockFn blockFn,
+            BulkBlockFn bulkBlockFn = nullptr
         );
 
         ERetCode transform(const SReadOnlyByteSpan& input, SByteSpan& output) override;

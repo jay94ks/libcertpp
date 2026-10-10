@@ -107,6 +107,34 @@ namespace certpp {
      */
     using std::move;
 
+    /**
+     * Compares two shared pointers.
+     * This does not compare the actual objects pointed to by the shared pointers,
+     * but rather the shared pointers themselves.
+     *
+     * @tparam T The type of the objects pointed to by the shared pointers.
+     * @param a The first shared pointer.
+     * @param b The second shared pointer.
+     * @return A negative value if a is less than b, zero if they are equal, a positive value if a is greater than b.
+     */
+    template <typename T>
+    inline int32_t compareShared(const std::shared_ptr<T>& a, const std::shared_ptr<T>& b) {
+        if (a == b) {
+            return 0;
+        }
+        
+        if (a) {
+            if (!b) {
+                return 1;
+            }
+        }
+
+        else if (b) {
+            return -1;
+        }
+
+        return 0;
+    }
 } // namespace certpp
 
 #endif

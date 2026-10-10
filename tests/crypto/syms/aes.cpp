@@ -3,6 +3,9 @@
 
 #include <certpp.hpp>
 #include <cstring>
+#include <algorithm>
+
+#include "crypto/syms/aescore.hpp"
 
 using namespace certpp;
 using namespace certpp::crypto;
@@ -393,6 +396,185 @@ TEST_CASE("AES-CBC: the default is still PKCS#7, and it still pads a block-align
     // identical to the unpadded case's, so nothing about the chaining changed.
     CHECK(written == sizeof(CBC_PLAINTEXT) + 16);
     CHECK(std::memcmp(padded.begin(), CBC_CIPHERTEXT, sizeof(CBC_CIPHERTEXT)) == 0);
+}
+
+// --- The bulk CBC path -------------------------------------------------------------------------
+//
+// CbcTransformer's whole-block run goes through AesCore::encryptCbcBulk() on a CPU with
+// AES-NI, which holds the chaining value in a register instead of writing it out and reading
+// it back -- worth ~1.8x at 64 KiB. Nothing above the cipher can see which path ran, so the
+// only way to know the register chain is right is to compute the same CBC a different way and
+// compare. What follows does that with AesCore::encryptBlockPortable(), the FIPS-197 round
+// functions, which shares no code -- no intrinsics, no shared helper -- with the bulk path.
+//
+// A round-trip cannot do this job: it proves the two directions agree with each other, not
+// that the ciphertext is right, and two matching errors still round-trip. This pins the bulk
+// path to an answer computed without it.
+
+namespace {
+    // Deterministic key material at each size AES accepts, so all three round counts (10, 12,
+    // 14) go through the bulk loop rather than only AES-256's.
+    const uint8_t BULK_KEY_128[16] = {
+        0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+        0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
+    };
+    const uint8_t BULK_KEY_192[24] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0xa5, 0x5a, 0x3c, 0xc3, 0x96, 0x69, 0x0f, 0xf0,
+    };
+    const uint8_t BULK_KEY_256[32] = {
+        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+        0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x00,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+        0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+    };
+
+    // CBC-encrypts `length` bytes a block at a time through the portable round functions.
+    // Returns false if the key length isn't one AES accepts.
+    bool cbcEncryptPortable(
+        const uint8_t* key, size_t keyBytes, const uint8_t* iv,
+        const uint8_t* input, size_t length, TArray<uint8_t>& out
+    ) {
+        TArray<uint8_t> roundKeys;
+        uint32_t nr = 0;
+        if (!AesCore::expandKey(key, keyBytes, roundKeys, nr)) {
+            return false;
+        }
+        if (length % 16 != 0) {
+            return false;
+        }
+
+        out.resize(length);
+        uint8_t chain[16];
+        std::memcpy(chain, iv, 16);
+
+        for (size_t off = 0; off < length; off += 16) {
+            uint8_t blockIn[16];
+            for (size_t i = 0; i < 16; ++i) {
+                blockIn[i] = uint8_t(input[off + i] ^ chain[i]);
+            }
+
+            uint8_t blockOut[16];
+            AesCore::encryptBlockPortable(blockIn, blockOut, roundKeys.begin(), nr);
+            std::memcpy(out.begin() + off, blockOut, 16);
+            std::memcpy(chain, blockOut, 16);   // --> the serial step the bulk path keeps in a register
+        }
+
+        return true;
+    }
+
+    // Feeds `input` to a fresh unpadded CBC encrypter through `ctx`, handing transform() at
+    // most `feed` bytes of input per call so the transformer's internal buffer holds a varying
+    // remainder at each boundary. `out` must have room for `length` bytes, which is always
+    // enough: unpadded CBC on block-aligned input writes exactly as much as it reads.
+    // Returns false on any failure.
+    bool encryptChunked(
+        const ISymmetricContextPtr& ctx, const uint8_t* input, size_t length,
+        size_t feed, uint8_t* out, size_t& written
+    ) {
+        ISymmetricTransformerPtr encrypter;
+        if (ctx->createEncrypter(encrypter) != ERET_OK) {
+            return false;
+        }
+
+        written = 0;
+        TArray<uint8_t> sink;
+        sink.resize(length + 16);
+
+        size_t inOff = 0;
+        while (inOff < length) {
+            const size_t n = (std::min)(feed, length - inOff);
+            SByteSpan step(sink.begin(), sink.size());
+            if (encrypter->transform(SReadOnlyByteSpan(input + inOff, n), step) != ERET_OK) {
+                return false;
+            }
+            std::memcpy(out + written, sink.begin(), step.size);
+            written += step.size;
+            inOff += n;
+        }
+
+        SByteSpan last(sink.begin(), sink.size());
+        if (encrypter->transformFinal(last) != ERET_OK) {
+            return false;
+        }
+        std::memcpy(out + written, sink.begin(), last.size);
+        written += last.size;
+        return true;
+    }
+}
+
+TEST_CASE("AES-CBC: the bulk path matches CBC computed one block at a time") {
+    const uint8_t IV[16] = {
+        0xc0, 0x1f, 0xe0, 0xd0, 0x05, 0x50, 0x51, 0x52,
+        0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
+    };
+
+    struct KeySpec { size_t bits; const uint8_t* bytes; };
+    const KeySpec keys[] = {
+        { 128, BULK_KEY_128 },
+        { 192, BULK_KEY_192 },
+        { 256, BULK_KEY_256 },
+    };
+
+    // Both an exact multiple of the block size and one off it: the first runs entirely in
+    // whole blocks, the second leaves a remainder the per-block path has to catch up on, and
+    // where the two paths meet moves with it. Long enough that the bulk run is more than a
+    // couple of blocks.
+    const size_t lengths[] = { size_t(1024), size_t(1024 + 16), size_t(1024 + 32) };
+
+    for (const KeySpec& k : keys) {
+        const size_t keyBytes = k.bits / 8;
+        ISymmetricPtr aes = ISymmetric::builtIn(ESYM_AES);
+        ISymmetricKeyPtr key = aes->createKey(SReadOnlyByteSpan(k.bytes, keyBytes));
+        REQUIRE(key);
+
+        for (size_t len : lengths) {
+            CAPTURE(k.bits);
+            CAPTURE(len);
+
+            TArray<uint8_t> plaintext;
+            plaintext.resize(len);
+            for (size_t i = 0; i < len; ++i) {
+                plaintext[i] = uint8_t((i * 7 + (i >> 5)) & 0xFF);
+            }
+
+            // The independent reference: one block at a time, portable round functions.
+            TArray<uint8_t> expected;
+            REQUIRE(cbcEncryptPortable(k.bytes, keyBytes, IV,
+                                       plaintext.begin(), len, expected));
+
+            // The library, fed the whole thing at once -- a single bulk run of 64 blocks.
+            ISymmetricContextPtr ctx = aes->createContext(key);
+            ctx->padding(ESYMPAD_NONE);
+            ctx->key(key, CBuffer(IV, sizeof(IV)));
+
+            TArray<uint8_t> got;
+            size_t written = 0;
+            REQUIRE(runUnpadded(true, key, CBuffer(IV, sizeof(IV)),
+                                SReadOnlyByteSpan(plaintext.begin(), len), got, written)
+                    == ERET_OK);
+            REQUIRE(written == len);
+            CHECK(SReadOnlyByteSpan(got.begin(), written)
+                .sequencialEqual(SReadOnlyByteSpan(expected.begin(), len)));
+
+            // The same plaintext fed in 7-byte pieces, so the transformer buffers a varying
+            // remainder and the bulk path runs with a different block count at every call.
+            // A chain that only works when all the blocks are contiguous fails here.
+            ISymmetricContextPtr cctx = aes->createContext(key);
+            cctx->padding(ESYMPAD_NONE);
+            cctx->key(key, CBuffer(IV, sizeof(IV)));
+
+            TArray<uint8_t> chunked;
+            chunked.resize(len);
+            size_t cwritten = 0;
+            REQUIRE(encryptChunked(cctx, plaintext.begin(), len, 7,
+                                   chunked.begin(), cwritten));
+            REQUIRE(cwritten == len);
+            CHECK(SReadOnlyByteSpan(chunked.begin(), cwritten)
+                .sequencialEqual(SReadOnlyByteSpan(expected.begin(), len)));
+        }
+    }
 }
 
 TEST_CASE("AES-CBC unpadded: a length that isn't a whole number of blocks is refused") {

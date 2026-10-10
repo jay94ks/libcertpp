@@ -232,8 +232,8 @@ not depend on it.
 | SHA3-256, 64 KiB | 308 MiB/s | 431 MiB/s | 0.72x |
 | SHAKE-256, 64 KiB | 310 MiB/s | 431 MiB/s | 0.72x |
 | SHA-512, 64 KiB | 352 MiB/s | 692 MiB/s | 0.51x |
-| AES-256-CBC, 64 KiB | 727 MiB/s | 1364 MiB/s | 0.53x |
-| ARIA-256-CBC, 64 KiB | 29 MiB/s | 108 MiB/s | 0.27x |
+| AES-256-CBC, 64 KiB | 1262 MiB/s | 1345 MiB/s | **0.94x** |
+| ARIA-256-CBC, 64 KiB | 28 MiB/s | 114 MiB/s | 0.25x |
 | Ed25519 sign | 0.163 ms | 0.036 ms | 4.5x slower |
 
 Each figure is one run's fastest-of-five, and this machine's spread between
@@ -243,11 +243,15 @@ single run's absolute value is not the algorithm's speed.
 The shape of it is more informative than any single ratio. **On the 32-bit
 hashes certpp is within 4% of OpenSSL**, which is not the gap a young library is
 expected to have against code that has had fifteen years of assembly. **On
-64-bit words it is roughly half** -- SHA-512 at 0.51x is the clearest row -- and
-on ARIA it is a quarter, which is AES-NI's absence rather than anything about
-this library. Ed25519 signing is 4.5x slower, which is the constant-time field
-arithmetic: `Fe25519` is deliberately fixed-width so its cost does not depend on
-the operand, and OpenSSL's does not have to be.
+64-bit words it is roughly half** -- SHA-512 at 0.51x is the clearest row.
+AES-256-CBC sat at 0.53x too and now measures 0.94x: that gap was never the
+cipher, it was the per-block interface, and once the chaining value stopped
+leaving a register the two implementations met. ARIA, at a quarter, is what a
+real absence looks like -- there is no AES-NI equivalent for it, and OpenSSL's
+is hand-written assembly, so portable C++ has nothing to reach for. Ed25519
+signing is 4.5x slower, which is the constant-time field arithmetic: `Fe25519` is
+deliberately fixed-width so its cost does not depend on the operand, and
+OpenSSL's does not have to be.
 
 The 32-bit result is the one worth explaining, because it is not what the road
 map predicted. SHA-256 and SHA-1 reach OpenSSL's level while SHA-512 does not,
@@ -442,9 +446,9 @@ software around them is not the bottleneck.
 
 | | MSVC | GCC |
 |---|---|---|
-| AES-128-CBC | 735.9 MiB/s | **843.9 MiB/s** |
-| AES-192-CBC | 680.8 MiB/s | **760.6 MiB/s** |
-| AES-256-CBC | 644.0 MiB/s | **727.1 MiB/s** |
+| AES-128-CBC | 1442.4 MiB/s | **1717.9 MiB/s** |
+| AES-192-CBC | 1234.9 MiB/s | **1515.3 MiB/s** |
+| AES-256-CBC | 1111.9 MiB/s | **1319.9 MiB/s** |
 | DES-CBC | **9.1 MiB/s** | 5.1 MiB/s |
 | 3DES-CBC | **3.0 MiB/s** | 1.7 MiB/s |
 | ARIA-128-CBC | **58.1 MiB/s** | 38.3 MiB/s |
@@ -489,14 +493,49 @@ Both belong in [`docs/roadmap.md`](docs/roadmap.md) as items, not in a README
 footnote; they are recorded here so the measurements are not lost, and neither
 has been investigated.
 
+### The AES-CBC gap that closed
+
+AES-256-CBC was the widest gap still open -- 0.53x OpenSSL, an odd place for a
+cipher with its own hardware instruction to be sitting. The cause was not the
+cipher. `ISymmetricTransformer`'s per-block interface made `CbcTransformer` call
+`AesCore::encryptBlock()` once per block, and that function loads the block,
+rounds it, stores the result and returns; the transformer then copies the
+ciphertext back into the chain, where the next block's load picks it up again.
+Two loads and two stores a block, all of them feeding a chain that never needed
+to leave a register.
+
+`AesCore::encryptCbcBulk()` runs the whole sequence with the chaining value held
+in a `__m128i`, so that falls to one load and one store a block. AES supplies it
+only where the CPU has AES-NI, and it replaces nothing above the cipher: the
+output-space check, the remainder handling and the PKCS#7 logic all stay exactly
+where they were, which is what lets the two paths produce identical bytes.
+
+Measured back-to-back in the same build directory, medians of three runs:
+
+| | before | after | |
+|---|---|---|---|
+| AES-128-CBC, MSVC | 673.3 MiB/s | 1442.4 MiB/s | 2.14x |
+| AES-192-CBC, MSVC | 617.1 MiB/s | 1234.9 MiB/s | 2.00x |
+| AES-256-CBC, MSVC | 574.0 MiB/s | 1111.9 MiB/s | 1.94x |
+| AES-128-CBC, GCC | 847.2 MiB/s | 1717.9 MiB/s | 2.03x |
+| AES-192-CBC, GCC | 775.0 MiB/s | 1515.3 MiB/s | 1.95x |
+| AES-256-CBC, GCC | 717.2 MiB/s | 1319.9 MiB/s | 1.84x |
+
+AES-256-GCM is untouched at 473 MiB/s on GCC, within noise of 465 before, since
+GHASH rather than the cipher is the bottleneck and the AEAD never enters the CBC
+path. The portable build (`CERTPP_DISABLE_HWACCEL_AES`) passes the same suite
+and offers no bulk path at all: `AesCore::hasAesNi()` reports false there, so the
+transformer keeps the per-block function for everything.
+
 ### What the slower rows are telling you
 
 - **DES and 3DES are 1000x slower than AES**, which is the cipher itself being
   slow, not the library: 3DES runs three DES operations per block and DES has
   no acceleration on any x86.
-- **ARIA runs 20--25x slower than AES**, for the opposite reason: AES-NI is a
+- **ARIA runs ~45x slower than AES**, for the opposite reason: AES-NI is a
   hardware instruction and ARIA has none, so the portable rounds are the whole
-  implementation. There is nothing to remove without new hardware.
+  implementation. OpenSSL has hand-written ARIA assembly, which is why it still
+  leads there by 4x. There is nothing to remove without new hardware.
 - **Signing beats verification on the prime curves** -- P-256 signs in 0.91 ms
   and verifies in 2.43 ms -- because signing multiplies the *fixed* base point
   and uses a precomputed window table, while verification multiplies a

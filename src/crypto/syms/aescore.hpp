@@ -107,6 +107,35 @@ namespace crypto {
         static void encryptBlock(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr);
 
         /**
+         * Encrypts a run of CBC blocks with the chaining value held in a register.
+         *
+         * `chain` is read on entry and written back on exit, so the caller's chain state
+         * survives exactly as the per-block path leaves it. `blocks` must be a whole number
+         * of blocks; partial-block and padding work stays with the caller.
+         *
+         * --> Exists because the per-block path costs ~84 cycles a block on AES-256 where
+         * this costs ~45, which is OpenSSL's own figure. The difference is not arithmetic:
+         * `encryptBlock()` loads the block, rounds it and stores it, and CbcTransformer then
+         * memcpys the ciphertext back into the chain -- two loads and two stores per block,
+         * where the chaining value never needs to leave a register. Measured at 64 KiB.
+         *
+         * Falls back to a per-block loop when this CPU lacks AES-NI, so the caller need not
+         * check for it. Held against an independent implementation by
+         * tests/crypto/syms/aes.cpp's "the bulk path matches CBC computed one block at a
+         * time", which drives this for all three round counts and compares the ciphertext
+         * against AesCore::encryptBlockPortable(). Round-trips alone are not enough for
+         * that job: they prove the two directions agree with each other, not that the
+         * ciphertext is correct, and two matching errors still round-trip.
+         */
+        static void encryptCbcBulk(
+            const uint8_t* in, uint8_t* out, size_t blocks, uint8_t* chain,
+            const uint8_t* roundKeys, uint32_t nr
+        );
+
+        /** Whether this CPU has AES-NI; false in a portable build or on a CPU without it. */
+        static bool hasAesNi();
+
+        /**
          * Decrypts one block. See encryptBlock().
          * @param in The 16 input bytes.
          * @param out Receives the 16 output bytes; may alias in.
