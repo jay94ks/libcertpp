@@ -288,9 +288,18 @@ if(CERTPP_BUILD_EXAMPLES)
     # Each examples/<name>.cpp (examples/common.hpp is shared support code, not an example of
     # its own) becomes its own executable, named after its path relative to examples/ (e.g.
     # examples/01_issue_ca_root.cpp -> certpp_example_01_issue_ca_root).
+    #
+    # 06_openssl_compare.cpp is the exception: it links OpenSSL, which this library itself
+    # does not, so it builds only where OpenSSL is present. A machine without it must still
+    # build everything else, which is why the check is required rather than optional.
+    find_package(OpenSSL QUIET)
     file(GLOB CERTPP_EXAMPLE_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp
     )
+    if(NOT OPENSSL_FOUND)
+        list(FILTER CERTPP_EXAMPLE_SOURCES EXCLUDE REGEX "/06_openssl_compare\\.cpp$")
+        message(STATUS "OpenSSL not found -- skipping examples/06_openssl_compare.cpp")
+    endif()
 
     # Where the certificates these examples produce/consume actually land -- fixed and
     # gitignored, so the examples work the same regardless of the working directory they're run
@@ -303,6 +312,11 @@ if(CERTPP_BUILD_EXAMPLES)
 
         add_executable(certpp_example_${CERTPP_EXAMPLE_NAME} ${CERTPP_EXAMPLE_SOURCE})
         target_link_libraries(certpp_example_${CERTPP_EXAMPLE_NAME} PRIVATE certpp::certpp)
+        if(OPENSSL_FOUND AND CERTPP_EXAMPLE_NAME STREQUAL "06_openssl_compare")
+            # The one example that reaches outside the library. OpenSSL is found, not
+            # required, so this stays a comparison aid and never a dependency.
+            target_link_libraries(certpp_example_${CERTPP_EXAMPLE_NAME} PRIVATE OpenSSL::Crypto)
+        endif()
         target_compile_definitions(certpp_example_${CERTPP_EXAMPLE_NAME} PRIVATE
             CERTPP_EXAMPLE_OUTPUT_DIR="${CERTPP_EXAMPLE_OUTPUT_DIR}"
         )

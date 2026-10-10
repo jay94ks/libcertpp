@@ -200,6 +200,62 @@ key-agreement schemes. No row in the harness's own output reports
 GF(2^m) curves appear under signatures but not under key agreement because
 that is what they implement: they do ECDSA and not ECDH.
 
+### Against OpenSSL
+
+A number means nothing in isolation, so the same algorithms were measured
+against OpenSSL 3.0.13 on the same machine.
+
+**Both sides are measured alone, in their own loops.** Interleaving the two
+implementations in one loop -- the obvious way to keep them on equal footing --
+turns out to corrupt both: certpp's SHA-256 drops from 1523 to 765 MiB/s and
+OpenSSL's from 1580 to a similar half when they alternate. Alternating caches
+and branch predictors ends up penalising both, so the interleaved numbers are
+not a comparison of the cryptography but of the measurement method. Each side
+is therefore timed on its own, with the same warm-up and the same
+fastest-of-5-batches-of-300 methodology. OpenSSL is called through EVP directly
+rather than through this library's wrapper, which measures the cryptography
+rather than the per-call allocations a caller through `certpp` would add.
+
+Warming up is not a detail either. OpenSSL resolves its constructors lazily and
+the first SHA-256 of 64 KiB costs 963 µs against 38.9 µs warm, so a cold
+comparison reports it at a quarter of its real speed.
+
+[`examples/06_openssl_compare.cpp`](examples/06_openssl_compare.cpp) reproduces
+these, and links OpenSSL only where OpenSSL is installed -- `certpp` itself does
+not depend on it.
+
+| | certpp | OpenSSL | certpp is |
+|---|---|---|---|
+| SHA-256, 64 KiB | 1523 MiB/s | 1580 MiB/s | **0.96x** |
+| SHA-1, 64 KiB | 1743 MiB/s | 1855 MiB/s | 0.94x |
+| MD5, 64 KiB | 716 MiB/s | 807 MiB/s | 0.89x |
+| SHA3-256, 64 KiB | 308 MiB/s | 431 MiB/s | 0.72x |
+| SHAKE-256, 64 KiB | 310 MiB/s | 431 MiB/s | 0.72x |
+| SHA-512, 64 KiB | 352 MiB/s | 692 MiB/s | 0.51x |
+| AES-256-CBC, 64 KiB | 727 MiB/s | 1364 MiB/s | 0.53x |
+| ARIA-256-CBC, 64 KiB | 29 MiB/s | 108 MiB/s | 0.27x |
+| Ed25519 sign | 0.163 ms | 0.036 ms | 4.5x slower |
+
+Each figure is one run's fastest-of-five, and this machine's spread between
+those runs is 1--3% for a side measured alone -- so the ratios hold, but a
+single run's absolute value is not the algorithm's speed.
+
+The shape of it is more informative than any single ratio. **On the 32-bit
+hashes certpp is within 4% of OpenSSL**, which is not the gap a young library is
+expected to have against code that has had fifteen years of assembly. **On
+64-bit words it is roughly half** -- SHA-512 at 0.51x is the clearest row -- and
+on ARIA it is a quarter, which is AES-NI's absence rather than anything about
+this library. Ed25519 signing is 4.5x slower, which is the constant-time field
+arithmetic: `Fe25519` is deliberately fixed-width so its cost does not depend on
+the operand, and OpenSSL's does not have to be.
+
+The 32-bit result is the one worth explaining, because it is not what the road
+map predicted. SHA-256 and SHA-1 reach OpenSSL's level while SHA-512 does not,
+and the difference is that the first two run on SHA-NI where both sides call the
+same instruction, while SHA-512 does not and this library's scalar implementation
+is the part that shows. Where the hardware instructions are the same, the
+software around them is not the bottleneck.
+
 #### Signatures
 
 | | MSVC | GCC |
