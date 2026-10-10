@@ -524,7 +524,7 @@ int main() {
     printf("\n= AEAD seal, %zu KiB =\n", BULK_BYTES / 1024);
     benchAeads(bulk);
 
-    printf("\n= AEAD seal, 64 B, per record\n");
+    printf("\n= AEAD seal, 64 B, per record =\n");
     benchSmallRecord();
 
     return 0;

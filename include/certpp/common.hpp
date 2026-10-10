@@ -86,15 +86,6 @@ namespace certpp {
 
         // --
         ERET_TOO_LONG       = 0x20u,     // --> Specified value is too long.
-        ERET_NETDOWN        = 0x21u,     // --> Network is down
-        ERET_NOTCONN        = 0x23u,     // --> Socket is not connected
-        ERET_BUF_ERROR      = 0x22u,     // --> Buffer error (e.g., insufficient buffer size)
-        ERET_CONNRESET      = 0x24u,     // --> Connection reset by peer
-        ERET_CONNABORTED    = 0x25u,     // --> Connection aborted by peer
-        ERET_CONNREFUSED    = 0x26u,     // --> Connection refused by peer
-        ERET_HOSTUNREACH    = 0x27u,     // --> Host is unreachable
-        ERET_ADDRINUSE      = 0x28u,     // --> Address already in use
-        ERET_ADDRNOTAVAIL   = 0x29u,     // --> Address not available
     };
 
     /**

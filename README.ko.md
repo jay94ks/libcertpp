@@ -190,122 +190,291 @@ ML-KEM과 ML-DSA는 NIST ACVP, 그 외에는 해당 RFC가 제시한 테스트 �
 GCC 13.3으로 측정했습니다. 각 수치는 반복 20회 배치 3개 중 가장 빠른 것이며,
 세 번 실행 중 최선이고, 둘은 동시에가 아니라 순차로 실행해 어느 쪽도 다른
 쪽의 컴파일러를 측정하지 않게 했습니다. 실행 간 편차가 20~30%이므로 그보다
-작은 것은 결과가 아닙니다. 굵게는 그 열에서 가장 빠른 값입니다.
+작은 것은 결과가 아닙니다. 굵게는 그 행에서 더 빠른 값입니다.
 
-| 서명 | MSVC sign | MSVC verify | GCC sign | GCC verify |
-|---|---|---|---|---|
-| Ed25519 | **0.20 ms** | **0.87 ms** | **0.16 ms** | **0.71 ms** |
-| ML-DSA-65 | 1.67 ms | 0.56 ms | 1.56 ms | 0.45 ms |
-| ECDSA P-256 | 0.92 ms | 2.44 ms | 0.86 ms | 2.31 ms |
-| ECDSA P-384 | 2.10 ms | 5.52 ms | 1.99 ms | 5.50 ms |
-| ECDSA P-521 | 4.64 ms | 13.4 ms | 4.50 ms | 12.4 ms |
-| Ed448 | 2.47 ms | 10.6 ms | 2.46 ms | 10.4 ms |
-| RSA-2048 | **4.69 ms** | 0.140 ms | 5.48 ms | 0.156 ms |
+표는 이 라이브러리가 구현한 모든 알고리즘을 대상으로 합니다. 해시 14종,
+블록 암호 구성 8종, KEM 매개변수 집합 3종, 서명 및 키 합의 방식 34종입니다.
+하네스 출력의 어떤 행도 "(unavailable)"를 보고하지 않으며, 전부를 다루게 한
+이유가 그것입니다.
 
-| 키 합의 / KEM | MSVC 키 생성 | GCC 키 생성 | MSVC 연산 | GCC 연산 |
-|---|---|---|---|---|
-| X25519 | 0.33 ms | 0.280 ms | 0.164 ms derive | 0.140 ms derive |
-| ML-KEM-768 | 0.193 ms | 0.142 ms | 0.169 / 0.185 ms encap/decap | 0.117 / 0.130 ms encap/decap |
-| ECDH P-256 | 3.15 ms | 2.98 ms | 1.40 ms derive | 1.39 ms derive |
+GF(2^m) 곡선은 서명 아래에는 나타나고 키 합의 아래에는 없는 것인데, 그것이
+이들이 구현하는 바입니다. ECDSA는 하고 ECDH는 하지 않습니다.
 
-해시와 AEAD seal, 64 KiB:
+#### 서명
 
-| 해시 | MSVC | GCC |
+| | MSVC | GCC |
 |---|---|---|
-| SHA-256 | **1534 MiB/s** | **1552 MiB/s** |
-| MD5 | 572 MiB/s | **718 MiB/s** |
-| BLAKE2s | 412 MiB/s | 401 MiB/s |
-| SHA-512 | 353 MiB/s | 364 MiB/s |
-| SHA3-256 | 108 MiB/s | 308 MiB/s |
-| Streebog-256 | 75 MiB/s | 106 MiB/s |
+| RSA-2048 sign | **5.619 ms** | 5.250 ms |
+| RSA-2048 verify | 0.143 ms | **0.150 ms** |
+| DSA-2048 sign | 2.695 ms | **7.292 ms** |
+| DSA-2048 verify | 6.581 ms | **18.069 ms** |
+| Ed25519 sign | 0.198 ms | **0.201 ms** |
+| Ed25519 verify | **0.873 ms** | 0.702 ms |
+| Ed448 sign | **2.527 ms** | 2.499 ms |
+| Ed448 verify | 10.661 ms | **10.758 ms** |
+| ECDSA P-192 sign | **0.580 ms** | 0.520 ms |
+| ECDSA P-192 verify | **1.448 ms** | 1.308 ms |
+| ECDSA P-224 sign | **0.755 ms** | 0.670 ms |
+| ECDSA P-224 verify | **1.945 ms** | 1.774 ms |
+| ECDSA P-256 sign | **0.908 ms** | 0.862 ms |
+| ECDSA P-256 verify | **2.428 ms** | 2.379 ms |
+| ECDSA P-384 sign | **2.026 ms** | 2.016 ms |
+| ECDSA P-384 verify | **5.694 ms** | 5.523 ms |
+| ECDSA P-521 sign | **4.737 ms** | 4.379 ms |
+| ECDSA P-521 verify | **13.545 ms** | 12.464 ms |
+| ECDSA secp256k1 sign | **0.901 ms** | 0.843 ms |
+| ECDSA secp256k1 verify | **2.435 ms** | 2.285 ms |
+| Brainpool-160r1 sign | **0.462 ms** | 0.385 ms |
+| Brainpool-160r1 verify | **1.078 ms** | 1.002 ms |
+| Brainpool-192r1 sign | **0.569 ms** | 0.523 ms |
+| Brainpool-192r1 verify | **1.407 ms** | 1.398 ms |
+| Brainpool-224r1 sign | **0.705 ms** | 0.694 ms |
+| Brainpool-224r1 verify | 1.888 ms | **1.980 ms** |
+| Brainpool-256r1 sign | **0.919 ms** | 0.890 ms |
+| Brainpool-256r1 verify | 2.412 ms | **2.415 ms** |
+| Brainpool-320r1 sign | **1.412 ms** | 1.402 ms |
+| Brainpool-320r1 verify | **3.741 ms** | 3.678 ms |
+| Brainpool-384r1 sign | 2.004 ms | **2.186 ms** |
+| Brainpool-384r1 verify | 5.369 ms | **5.908 ms** |
+| Brainpool-512r1 sign | 4.007 ms | **4.314 ms** |
+| Brainpool-512r1 verify | 11.341 ms | **11.553 ms** |
+| Brainpool-160t1 sign | **0.412 ms** | 0.388 ms |
+| Brainpool-160t1 verify | **1.074 ms** | 1.029 ms |
+| Brainpool-192t1 sign | **0.546 ms** | 0.522 ms |
+| Brainpool-192t1 verify | 1.361 ms | **1.381 ms** |
+| Brainpool-224t1 sign | 0.708 ms | **0.712 ms** |
+| Brainpool-224t1 verify | 1.851 ms | **1.918 ms** |
+| Brainpool-256t1 sign | **0.903 ms** | 0.879 ms |
+| Brainpool-256t1 verify | **2.414 ms** | 2.360 ms |
+| Brainpool-320t1 sign | **1.400 ms** | 1.391 ms |
+| Brainpool-320t1 verify | 3.815 ms | **3.887 ms** |
+| Brainpool-384t1 sign | 2.086 ms | **2.147 ms** |
+| Brainpool-384t1 verify | 5.484 ms | **5.902 ms** |
+| Brainpool-512t1 sign | 4.086 ms | **4.166 ms** |
+| Brainpool-512t1 verify | 11.223 ms | **11.557 ms** |
+| ECDSA B-163 sign | 0.527 ms | **0.635 ms** |
+| ECDSA B-163 verify | 1.760 ms | **2.282 ms** |
+| ECDSA K-163 sign | 0.493 ms | **0.595 ms** |
+| ECDSA K-163 verify | 1.681 ms | **2.214 ms** |
+| ECDSA B-233 sign | 0.596 ms | **0.895 ms** |
+| ECDSA B-233 verify | 1.983 ms | **3.296 ms** |
+| ECDSA K-233 sign | 0.564 ms | **0.846 ms** |
+| ECDSA K-233 verify | 1.971 ms | **3.023 ms** |
+| ECDSA B-283 sign | 0.935 ms | **1.421 ms** |
+| ECDSA B-283 verify | 3.112 ms | **5.049 ms** |
+| ECDSA K-283 sign | 0.863 ms | **1.342 ms** |
+| ECDSA K-283 verify | 2.910 ms | **4.731 ms** |
+| ECDSA B-409 sign | 1.223 ms | **2.588 ms** |
+| ECDSA B-409 verify | 4.057 ms | **9.392 ms** |
+| ECDSA K-409 sign | 1.151 ms | **2.314 ms** |
+| ECDSA K-409 verify | 3.834 ms | **8.651 ms** |
+| ECDSA B-571 sign | 2.358 ms | **5.303 ms** |
+| ECDSA B-571 verify | 7.586 ms | **19.857 ms** |
+| ECDSA K-571 sign | 2.057 ms | **4.888 ms** |
+| ECDSA K-571 verify | 7.161 ms | **18.295 ms** |
+| GOST-256 Test sign | **0.822 ms** | 0.783 ms |
+| GOST-256 Test verify | **2.372 ms** | 2.245 ms |
+| GOST-256 A sign | 0.819 ms | **0.866 ms** |
+| GOST-256 A verify | **2.495 ms** | 2.271 ms |
+| GOST-256 B sign | **0.845 ms** | 0.816 ms |
+| GOST-256 B verify | **2.391 ms** | 2.377 ms |
+| GOST-256 C sign | **0.843 ms** | 0.794 ms |
+| GOST-256 C verify | **2.325 ms** | 2.282 ms |
+| GOST-256 D sign | 0.804 ms | **0.914 ms** |
+| GOST-256 D verify | 2.370 ms | **2.381 ms** |
+| GOST-512 Test sign | 3.820 ms | **3.949 ms** |
+| GOST-512 Test verify | 11.152 ms | **11.435 ms** |
+| GOST-512 A sign | **3.865 ms** | 3.829 ms |
+| GOST-512 A verify | **12.447 ms** | 11.206 ms |
+| GOST-512 B sign | **3.878 ms** | 3.817 ms |
+| GOST-512 B verify | **11.184 ms** | 11.047 ms |
+| GOST-512 C sign | **3.856 ms** | 3.806 ms |
+| GOST-512 C verify | **11.117 ms** | 11.049 ms |
+| ML-DSA-44 sign | 1.045 ms | **1.194 ms** |
+| ML-DSA-44 verify | **0.346 ms** | 0.290 ms |
+| ML-DSA-65 sign | 1.528 ms | **2.218 ms** |
+| ML-DSA-65 verify | **0.565 ms** | 0.450 ms |
+| ML-DSA-87 sign | **2.417 ms** | 2.232 ms |
+| ML-DSA-87 verify | **0.903 ms** | 0.691 ms |
 
-| AEAD seal, 64 KiB | MSVC | GCC |
+#### 키 합의와 KEM
+
+| | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 736 MiB/s | **835 MiB/s** |
-| XChaCha20-Poly1305 | 748 MiB/s | 840 MiB/s |
-| AES-256-GCM | 370 MiB/s | 475 MiB/s |
+| X25519 keygen | **0.328 ms** | 0.284 ms |
+| X25519 derive | **0.165 ms** | 0.156 ms |
+| ECDH P-192 keygen | **1.722 ms** | 1.675 ms |
+| ECDH P-192 derive | 0.796 ms | **0.805 ms** |
+| ECDH P-224 keygen | 2.296 ms | **2.323 ms** |
+| ECDH P-224 derive | 1.063 ms | **1.070 ms** |
+| ECDH P-256 keygen | **3.066 ms** | 3.022 ms |
+| ECDH P-256 derive | **1.390 ms** | 1.361 ms |
+| ECDH P-384 keygen | 6.937 ms | **7.019 ms** |
+| ECDH P-384 derive | 3.343 ms | **3.407 ms** |
+| ECDH P-521 keygen | **16.959 ms** | 16.325 ms |
+| ECDH P-521 derive | **8.059 ms** | 7.784 ms |
+| ECDH secp256k1 keygen | **2.913 ms** | 2.892 ms |
+| ECDH secp256k1 derive | 1.357 ms | **1.396 ms** |
+| ECDH bp160r1 keygen | 1.253 ms | **1.320 ms** |
+| ECDH bp160r1 derive | **0.596 ms** | 0.581 ms |
+| ECDH bp192r1 keygen | 1.691 ms | **1.771 ms** |
+| ECDH bp192r1 derive | **0.809 ms** | 0.793 ms |
+| ECDH bp224r1 keygen | 2.255 ms | **2.426 ms** |
+| ECDH bp224r1 derive | 1.096 ms | **1.182 ms** |
+| ECDH bp256r1 keygen | 2.943 ms | **3.040 ms** |
+| ECDH bp256r1 derive | 1.387 ms | **1.410 ms** |
+| ECDH bp320r1 keygen | **5.773 ms** | 4.708 ms |
+| ECDH bp320r1 derive | **2.610 ms** | 2.221 ms |
+| ECDH bp384r1 keygen | 6.842 ms | **7.326 ms** |
+| ECDH bp384r1 derive | 3.342 ms | **3.429 ms** |
+| ECDH bp512r1 keygen | 14.789 ms | **16.070 ms** |
+| ECDH bp512r1 derive | 6.868 ms | **7.252 ms** |
+| ECDH bp160t1 keygen | **1.419 ms** | 1.370 ms |
+| ECDH bp160t1 derive | **0.750 ms** | 0.586 ms |
+| ECDH bp192t1 keygen | **2.450 ms** | 1.759 ms |
+| ECDH bp192t1 derive | **0.834 ms** | 0.812 ms |
+| ECDH bp224t1 keygen | **2.520 ms** | 2.411 ms |
+| ECDH bp224t1 derive | 1.055 ms | **1.136 ms** |
+| ECDH bp256t1 keygen | 2.973 ms | **3.108 ms** |
+| ECDH bp256t1 derive | 1.374 ms | **1.438 ms** |
+| ECDH bp320t1 keygen | 4.642 ms | **4.726 ms** |
+| ECDH bp320t1 derive | 2.147 ms | **2.203 ms** |
+| ECDH bp384t1 keygen | 6.873 ms | **7.339 ms** |
+| ECDH bp384t1 derive | 3.308 ms | **3.449 ms** |
+| ECDH bp512t1 keygen | 14.437 ms | **15.295 ms** |
+| ECDH bp512t1 derive | 6.696 ms | **7.113 ms** |
+| ECDH B-163 | (agreement unsupported) | (agreement unsupported) |
+| ECDH K-163 | (agreement unsupported) | (agreement unsupported) |
+| ECDH B-233 | (agreement unsupported) | (agreement unsupported) |
+| ECDH K-233 | (agreement unsupported) | (agreement unsupported) |
+| ECDH B-283 | (agreement unsupported) | (agreement unsupported) |
+| ECDH K-283 | (agreement unsupported) | (agreement unsupported) |
+| ECDH B-409 | (agreement unsupported) | (agreement unsupported) |
+| ECDH K-409 | (agreement unsupported) | (agreement unsupported) |
+| ECDH B-571 | (agreement unsupported) | (agreement unsupported) |
+| ECDH K-571 | (agreement unsupported) | (agreement unsupported) |
+| ML-KEM-512 keygen | **0.124 ms** | 0.094 ms |
+| ML-KEM-512 encapsulate | **0.101 ms** | 0.079 ms |
+| ML-KEM-512 decapsulate | **0.114 ms** | 0.096 ms |
+| ML-KEM-768 keygen | **0.194 ms** | 0.145 ms |
+| ML-KEM-768 encapsulate | **0.158 ms** | 0.124 ms |
+| ML-KEM-768 decapsulate | **0.183 ms** | 0.138 ms |
+| ML-KEM-1024 keygen | **0.290 ms** | 0.216 ms |
+| ML-KEM-1024 encapsulate | **0.236 ms** | 0.176 ms |
+| ML-KEM-1024 decapsulate | **0.275 ms** | 0.190 ms |
 
-위 64 KiB 행들은 AES-256-GCM을 마지막에 놓습니다. 64바이트에서는 셋 중 가장
-빠르고, 그 역전은 두 툴체인 모두에서 재현됩니다.
+#### 해시, 64 KiB
 
-| AEAD seal, 64 B | MSVC | GCC |
+| | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 415 ns | 374 ns |
-| XChaCha20-Poly1305 | 555 ns | 445 ns |
-| AES-256-GCM | **225 ns** | **186 ns** |
+| MD4 | **788.4 MiB/s** | 722.5 MiB/s |
+| MD5 | 572.5 MiB/s | **716.2 MiB/s** |
+| SHA-1 | **1782.1 MiB/s** | 1768.9 MiB/s |
+| SHA-224 | **1552.2 MiB/s** | 1544.4 MiB/s |
+| SHA-256 | **1556.5 MiB/s** | 1438.9 MiB/s |
+| SHA-384 | 349.2 MiB/s | **361.3 MiB/s** |
+| SHA-512 | 352.2 MiB/s | **359.0 MiB/s** |
+| SHA3-256 | 107.7 MiB/s | **309.4 MiB/s** |
+| SHA3-512 | 57.0 MiB/s | **163.6 MiB/s** |
+| SHAKE-128 | 132.9 MiB/s | **381.3 MiB/s** |
+| SHAKE-256 | 104.6 MiB/s | **309.7 MiB/s** |
+| BLAKE2s | 410.6 MiB/s | **417.1 MiB/s** |
+| Streebog-256 | 74.7 MiB/s | **107.3 MiB/s** |
+| Streebog-512 | 71.5 MiB/s | **108.3 MiB/s** |
 
-이 역전은 우연한 것이 아니라 구조적입니다. AES-GCM은 블록 하나를 암호화하는데
-ChaCha20은 두 개를 암호화하고, 추가된 하나가 counter 0에서 Poly1305 one-time
-key를 유도하는 블록입니다(RFC 8439 2.6). AES-GCM이 치르지 않는 비용이고,
-작은 레코드에서는 페이로드로 상각할 수 없는 비용입니다. 양쪽 방향 모두
-의미가 있습니다. 대용량을 보내는 쪽은 KiB 표를 보고, 한 번에 레코드 하나씩
-seal하는 호출자는 AES-NI가 ChaCha의 더 단순한 setup보다 얻는 것이 적은 이
-표를 보십시오.
+#### 블록 암호, CBC, 64 KiB
 
-두 표가 이제 이전보다 훨씬 다르게 말하고 있으며 그 이유는 밝힐 가치가 있습니다.
-512바이트 미만에서 ChaCha20은 스칼라 또는 SSE2 경로를 타므로 이 측정은 영향이
-없고, 64 KiB에서는 최근 추가된 AVX2 8블록 경로를 타며 이것이 AEAD 전체에
-1.28~1.34배를 줍니다. 따라서 대용량 발신자는 레코드 단위 호출자보다 ChaCha20에서
-훨씬 더 많은 것을 얻으며, 이는 이전의 균형을 뒤집는 것이고 표를 하나가 아니라 둘
-두는 이유입니다.
+| | MSVC | GCC |
+|---|---|---|
+| AES-128-CBC | 735.9 MiB/s | **843.9 MiB/s** |
+| AES-192-CBC | 680.8 MiB/s | **760.6 MiB/s** |
+| AES-256-CBC | 644.0 MiB/s | **727.1 MiB/s** |
+| DES-CBC | **9.1 MiB/s** | 5.1 MiB/s |
+| 3DES-CBC | **3.0 MiB/s** | 1.7 MiB/s |
+| ARIA-128-CBC | **58.1 MiB/s** | 38.3 MiB/s |
+| ARIA-192-CBC | **51.8 MiB/s** | 33.1 MiB/s |
+| ARIA-256-CBC | **45.3 MiB/s** | 28.4 MiB/s |
 
-이 나노초 수치는 이 절에서 가장 시끄러운 값입니다 — MSVC 실행 간 편차가 이
-구간에서 24%, KiB 구간에서 2%입니다 — 여기도 나머지처럼 best-of-three이지만,
-두 AEAD 사이에서 ~30% 미만인 격차는 미정으로 보십시오.
+#### AEAD seal, 64 KiB
+
+| | MSVC | GCC |
+|---|---|---|
+| ChaCha20-Poly1305 | 751.0 MiB/s | **841.2 MiB/s** |
+| XChaCha20-Poly1305 | 749.2 MiB/s | **841.5 MiB/s** |
+| AES-256-GCM | 371.6 MiB/s | **465.3 MiB/s** |
+
+#### AEAD seal, 64 B, 레코드당
+
+| | MSVC | GCC |
+|---|---|---|
+| ChaCha20-Poly1305 | **410 ns** | 338 ns |
+| XChaCha20-Poly1305 | **545 ns** | 446 ns |
+| AES-256-GCM | 220 ns | **234 ns** |
+
+### P1과 P7이 닫지 못한 크로스-툴체인 격차 둘
+
+기록되어 있던 격차는 RSA와 MD5 둘이었고, 둘 다 사라졌습니다. RSA-2048
+서명은 `CMontgomery`를 그 아래로 연결하기 전에는 8.06 ms 대 19.1 ms였고
+(지금은 5.62 대 5.25 ms), MD5의 23% 부족은 P7의 라운드 언롤링으로
+닫혔습니다(지금은 GCC **719.7 MiB/s** 대 MSVC 571.7 — 이제 GCC가 앞섭니다).
+모든 알고리즘을 다루면서 기록된 적 없는 격차가 둘 더 나왔습니다.
+
+- **DSA-2048이 GCC에서 서명이 2.7배 느립니다.** 7.29 ms 대 2.70 ms이고,
+  검증은 18.1 ms 대 6.6 ms입니다. 이것은 RSA의 격차보다 넓었고, 노이즈가
+  아니라 코드 생성 결함으로 읽힐 만한 유일하게 남은 차이입니다. 백엔드는
+  RSA가 쓰는 것과 같은 `CBigNum`이므로, 원인은 아마 `CMontgomery`가 거기서
+  고친 것과 같은 형태일 것입니다. 다만 프로파일을 받아 본 적은 없으므로,
+  그것은 가설일 뿐입니다.
+- **모든 GF(2^m) 곡선이 GCC에서 1.2~2.1배 느립니다.** B-571 검증은 19.9 ms
+  대 7.6 ms입니다. 곡선 열 개가 모두 같은 방향으로 움직이는데, 이것은 열 개의
+  우연이 아니라 `CGf2m`의 공통 원인을 가리킵니다.
+
+둘 다 이 README의 각주가 아니라
+[`docs/roadmap.md`](docs/roadmap.ko.md)의 항목으로 들어갈 자리입니다. 측정이
+사라지지 않도록 여기에 기록해 두지만, 어느 쪽도 조사한 적은 없습니다.
+
+### 느린 행들이 말하는 것
+
+- **DES와 3DES가 AES보다 1000배 느립니다.** 이는 라이브러리가 아니라 암호
+  자체가 느린 것입니다. 3DES는 블록당 DES 연산을 세 번 수행하고, DES는 어떤
+  x86에서도 가속이 없습니다.
+- **ARIA가 AES보다 20~25배 느립니다.** 이유는 정반대입니다. AES-NI는 하드웨어
+  명령이고 ARIA에는 그것이 없어서, 이식 가능한 라운드가 구현 전부입니다. 새
+  하드웨어 없이는 뺄 것이 없습니다.
+- **소수체 곡선에서는 서명이 검증을 이깁니다.** P-256은 서명 0.91 ms, 검증
+  2.43 ms입니다. 서명은 *고정* 베이스 점을 곱하고 미리 계산한 창 표를
+  쓰는 반면, 검증은 호출자가 준 점을 곱하므로 그럴 수 없기 때문입니다.
+- **RSA-2048은 설계가 비대칭입니다.** `e = 65537`이 검증을 곱셈 세 번으로
+  만드는 반면, 서명은 완전한 CRT 지수화입니다.
+- **AES-256-GCM은 AES-NI가 있음에도 ChaCha20-Poly1305 아래에 있습니다.**
+  암호가 아니라 GHASH가 병목이고, AEAD는 `1/total = 1/cipher + 1/mac`으로
+  합성되기 때문입니다.
+- **64 B AEAD 행은 64 KiB 행과 뒤집힙니다.** AES-256-GCM은 레코드당 더
+  빠르고(410 ns 대 220 ns) 대용량에서는 더 느립니다(751 대 371 MiB/s).
+  AES-GCM은 블록 하나를 암호화하고 ChaCha20은 두 개를 암호화하는데, 작은
+  레코드는 이 차이를 상각할 수 없기 때문입니다. 대용량 발신자와 레코드 단위
+  호출자는 서로 다른 승자를 보고 있습니다.
+
+나노초 단위 수치는 이 절에서 가장 시끄럽습니다. 두 AEAD 사이에서 30% 미만인
+격차는 미정으로 보십시오.
 
 ### WSL2, 그리고 GCC 열이 *아닌* 것
 
-GCC 수치는 **WSL2 위**에서 측정했습니다. 이 CPU에 bare metal 리눅스를 설치한
-환경이 아니라 VM 안의 실제 리눅스 커널이며, 이것은 위 조건의 절-clause가
-아니라 독립적으로 남길 만한 기록입니다. 이 하네스는 단일 스레드 CPU-bound
-암호 연산이므로 하이퍼바이저가 각 측정에서 차지하는 몫은 작아야 합니다.
-다만 그것은 작아야 *할*이라는 논지이지 실제로 작다는 것을 보여 주지는
-않으며, 이번 실행은 그 오버헤드를 어느 방향으로도 정량하지 않았습니다.
+GCC 수치는 **WSL2 위**에서 측정했습니다. 이 CPU의 bare metal 리눅스 설치가
+아니라 VM 안의 실제 리눅스 커널이며, 이것은 위 조건의 절-clause가 아니라
+독립적으로 남길 만한 기록입니다. 이 하네스는 단일 스레드 CPU-bound 암호
+연산이므로 하이퍼바이저가 각 측정에서 차지하는 몫은 작아야 합니다. 다만
+그것은 작아야 *할*이라는 논지이지 실제로 작다는 것을 보여 주지는 않으며,
+이번 실행은 그 오버헤드를 어느 방향으로도 정량하지 않았습니다.
 
-따라서 이 열은 *이 툴체인이 이 조건에서*의 결과이지 리눅스 전반의 성능이
-아닙니다. 이 점이 가장 중요한 항목은 아래의 RSA 격차입니다. 여기서 측정
-노이즈가 아니라 컴파일러 결함으로 읽힐 만큼 큰 차이는 이것 하나뿐인데,
-그러니 bare metal에서 다시 측정하기 전에 결함이라 부르지 말아야 하는 이유도
-정확히 그것입니다.
+그러므로 이 열은 *이 툴체인이 이 조건에서*의 결과이지 리눅스 전반의 성능이
+아닙니다. 이것이 가장 중요한 항목은 위의 DSA와 GF(2^m) 격차입니다. 컴파일러
+결함으로 읽힐 만큼 큰 유일하게 남은 차이이며, 그러니 bare metal에서 다시
+측정하기 전에 결함이라 부르지 말아야 하는 이유도 정확히 그것입니다.
 
-두 열에 공통으로 적용되는 한계가 더 있습니다. "Release"는 하나의 설정이
+두 열에 공통으로 적용되는 한계가 하나 더 있습니다. "Release"는 하나의 설정이
 아닙니다. CMake의 기본값은 MSVC가 `/O2`, GCC가 `-O3`이므로 툴체인과 최적화
-레벨이 함께 변합니다. 그리고 MSVC 열은 이 CPU에 대해 이전에 게시된 것을
-대체하는데, 그쪽 자체의 설명이 부하가 걸린 상태에서 측정했다고 적혀 있었습니다.
-다시 측정하니 모든 행이 같거나 더 빠르며 대부분은 10~20% 빠릅니다 — 가장 큰
-변화는 ECDSA P-256 검증으로 3.53 ms에서 2.44 ms인데, 위에서 말한 편차를 아주
-조금 넘어섭니다 — 그 어느 것도 설명할 코드 변경 없이 그러했습니다.
-
-### 그 안의 다섯 가지는 설명할 만합니다
-
-각각이 노이즈가 아니라 구현의 성질이기 때문입니다.
-
-- **Ed25519는 최적화된 구현(50~100 µs에 검증합니다)보다 한 자릿수 벗어나
-  있고**, 나머지 전부는 그보다 더 벗어나 있습니다. 그것은 전용 constant-time
-  필드(`Fe25519`) 위에 있는 하나뿐인 곡선입니다. 소수체 곡선들은 여전히
-  Montgomery 축약을 쓰는 범용 `CBigNum` 위에서 돌아갑니다.
-- **소수체 곡선에서는 서명이 검증을 앞섭니다** — P-256은 0.92 ms에 서명하고
-  2.44 ms에 검증합니다 — 서명은 *고정된* 기준점을 곱하며 미리 계산된 window
-  표를 쓰는 반면, 검증은 호출자가 공급한 점을 곱하므로 그럴 수 없기 때문입니다.
-- **RSA-2048은 설계상 한쪽으로 치우쳐 있습니다.** `e = 65537`이 검증을 곱셈
-  세 번으로 만드는 반면, 서명은 schoolbook 큰 수 백엔드에서의 완전한 CRT
-  지수화입니다.
-- **AES-256-GCM은 AES-NI가 있어도 ChaCha20-Poly1305 아래에 앉습니다.** 암호가
-  아니라 GHASH가 병목이고, AEAD가 `1/total = 1/cipher + 1/mac`로 합성되기
-  때문입니다. 두 툴체인 모두에서 재현되지만, GCC 쪽에서 ChaCha20-Poly1305와
-  벌리는 폭이 더 큽니다.
-- **RSA는 두 툴체인이 이제 동의하는 유일한 행이며, 거기까지 오는 과정이
-  기록할 만합니다.** RSA는 8.06 ms 대 19.1 ms — 2.37배 격차 — 였는데, 개인 키
-  연산의 모듈러 곱셈 전부가 `CBigNum::modExp()`를 지나갔고
-  `CBigNum::mod()`은 완전한 Knuth-D 긴 나눗셈이기 때문입니다. 이는 값 의존적
-  작업(몫 자릿수마다 정규화와 시행 뺄셈)이므로 두 컴파일러가 다르게 번역합니다.
-  `CMontgomery::modExp()`가 이미 있었고 나눗셈 없이 같은 일을 하는데, 곡선들은
-  이미 그 위에 있었습니다. **유일하게 올라가지 않은 호출자가 RSA였습니다.**
-  그곳으로 보내자 서명은 MSVC에서 42%, GCC에서 71% 줄었고, 부수적으로 격차도
-  대부분 사라졌습니다 — 2.37배에서 1.17배입니다.
-- **두 툴체인이 갈리는 곳은 MD5 하나이고, 방향도 반대입니다.** 593 MiB/s에 대해
-  455 MiB/s입니다 — 가속이 관여하지 않는 스칼라 루틴 하나로, 크고 독립적인
-  작업은 아닙니다. P7이 이제 이것을 닫았습니다 — 아래를 보십시오.
+레벨이 함께 변합니다.
 
 [`docs/roadmap.md`](docs/roadmap.ko.md)에 목표, 이미 끝난 것, 그리고 남은 각
 공백이 실제로 무엇을 필요로 하는지가 있습니다.
