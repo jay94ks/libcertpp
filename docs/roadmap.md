@@ -443,8 +443,34 @@ while its siblings use it, and nobody noticing, because the numbers still
 validate. Whether that warrants a shared field type for the curves is a
 separate decision, not a consequence of P1.
 
-**P6 -- Ed448 and P-521.** The remaining signature outliers, neither of which
-has had a dedicated pass.
+**P6 -- Ed448 and P-521.** *Closed, and the reason is the same as P5's: the
+premise is out of date.* "The remaining signature outliers, neither of which has
+had a dedicated pass" -- but both curves already have dedicated constant-time
+paths.
+
+- **P-521 is already on Montgomery.** `CEcCurve::scalarMul()` builds a
+  `CMontgomery field(p)` context (`eccurve.cpp:747`) and every field
+  multiplication inside it is a limb-wise multiply-accumulate. So the gap P1
+  closed for RSA does not exist here: the scalar multiplication is already
+  doing Montgomery arithmetic.
+- **Ed448 has its own ladder.** `scalarMulProj()` (`ed448.cpp:192`) is a
+  branch-free double-and-add over `EdPointProj`, and `pointAddProj()` runs its
+  field operations through `CMontgomery::mul()` (`ed448.cpp:129`). The ladder
+  never performs a per-step modular inversion -- `toAffine()` pays exactly
+  one, at the end.
+
+Measured on GCC, min of 5x30: Ed448 sign 2.4--2.5 ms, Ed448 verify
+10.5--10.8 ms, P-521 sign 4.4--4.5 ms. These are what the dedicated paths
+already cost, and neither curve is on the schoolbook division that made RSA
+and GHASH slow.
+
+So there is no P1-shaped gap to close here. The remaining question is whether
+Ed448's field arithmetic has a floor below its current one, and that is the
+same shape as P3's Poly1305 question: the field is multiply-throughput-bound,
+and beating it needs either a narrower radix (as with `Fe25519`) or an
+explicitly vectorised limb schedule. Neither is a small change, and the
+premise that no dedicated pass existed turned out to be false before any
+work was started.
 
 **P7 -- MD5 on GCC.** *Done.* 455 against 593 MiB/s: one scalar routine, no
 acceleration involved, independent of everything above. Small and isolated.
