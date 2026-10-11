@@ -675,3 +675,51 @@ eight blocks at a time with `r^8 .. r^1` precomputed at key setup, the accumulat
 vector lanes in 26-bit limbs, and the carry propagation done in the vector form. It deserves its
 own pass -- a MAC that is wrong only for some inputs is worse than one that is wrong for all of
 them, and the KATs will not necessarily tell the difference between those two cases.
+
+### The README's Performance section, trimmed: where its analysis now lives
+
+The Performance section in `README.md` was carrying about four hundred lines, most of them
+explanation rather than measurement. It now holds the tables, how they were taken, and a pointer
+here. The reasoning that used to be in it:
+
+**Two cross-toolchain gaps the section's own coverage surfaced.** Covering every algorithm found two
+that had never been written down, and both are still open:
+
+- **DSA-2048 is 2.7x slower to sign on GCC** -- 7.29 ms against 2.70 ms, and 18.1 ms against 6.6 ms
+  to verify. That is a wider gap than RSA's ever was, and the only one large enough to read as a
+  codegen defect rather than as noise. The backend is the same `CBigNum` RSA uses, so the cause is
+  presumably the shape of thing `CMontgomery` fixed there -- but the profile has not been taken, so
+  that is a hypothesis and nothing more.
+- **Every GF(2^m) curve is 1.2--2.1x slower on GCC.** B-571 verify is 19.9 ms against 7.6 ms. Ten
+  curves, all moving the same way, which argues for a shared cause in `CGf2m` rather than ten
+  coincidences.
+
+Both are recorded as items. The WSL2 caveat applies to both, and both should be re-measured on
+bare metal before either is called a compiler defect.
+
+**What the slower rows mean.** Not every row is a gap waiting to be closed:
+
+- **DES and 3DES are ~1000x slower than AES**, which is the cipher itself being slow, not the
+  library: 3DES runs three DES operations per block and DES has no acceleration on any x86.
+- **ARIA runs ~45x slower than AES** for the opposite reason: AES-NI is a hardware instruction and
+  ARIA has none, so the portable rounds are the whole implementation.
+- **Signing beats verification on the prime curves** -- P-256 signs in 0.91 ms and verifies in
+  2.43 ms -- because signing multiplies the *fixed* base point with a precomputed window table,
+  while verification multiplies a caller-supplied point and cannot.
+- **RSA-2048 is lopsided by design**: `e = 65537` makes verification three multiplies, while
+  signing is a full CRT exponentiation.
+- **AES-256-GCM sits below ChaCha20-Poly1305 despite AES-NI**, because GHASH rather than the cipher
+  is the bottleneck and an AEAD composes as `1/total = 1/cipher + 1/mac`. (GHASH has since been
+  worked on -- see the GFNI note above.)
+- **The 64 B AEAD rows invert the 64 KiB ones.** AES-256-GCM is *faster* per record and *slower* in
+  bulk, because AES-GCM encrypts one block where ChaCha20 encrypts two, and a small record cannot
+  amortise the difference. A bulk sender and a per-record caller are looking at different winners.
+
+Nanosecond figures are the noisiest in the set -- a gap under ~30% between two AEADs is unsettled.
+
+**Two limits on the toolchain columns.** The GCC figures were taken **under WSL2** -- a real Linux
+kernel inside a VM, not bare metal -- so that column reads as *this toolchain in this setup*, not
+Linux in general. The harness is single-threaded and CPU-bound, so the hypervisor's share ought to
+be small, but this run did not quantify it in either direction. And "Release" is not one setting:
+CMake's defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and optimization level are
+varied together.

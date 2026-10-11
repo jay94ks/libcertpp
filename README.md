@@ -191,95 +191,60 @@ the published vectors could not.
 
 ## Performance
 
-Measured by [`examples/05_benchmark.cpp`](examples/05_benchmark.cpp), so these
-are reproducible rather than claimed: build it and run it on your own hardware.
-Two toolchains, both Release, both measured in one session on a single
-4-core i7-11370H (3.30 GHz base, around 3.92 GHz sustained under this load):
-MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3
-on Ubuntu 24.04 **under WSL2**. Each figure is the fastest of three batches of
-20 iterations, best of three runs, and the two were run one after the other
-rather than at once so neither could end up measuring the other's compiler.
-The run-to-run spread is 20--30%, so nothing smaller than that is a result.
+Measured by [`examples/05_benchmark.cpp`](examples/05_benchmark.cpp) and
+[`examples/06_openssl_compare.cpp`](examples/06_openssl_compare.cpp), so these are reproducible
+rather than claimed: build them and run them on your own hardware. Both toolchains, both Release,
+measured in one session on a single 4-core i7-11370H (3.30 GHz base, around 3.92 GHz sustained
+under this load): MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3 on Ubuntu 24.04
+**under WSL2**. Each figure is the fastest of three batches of 20 iterations, best of three runs,
+and the two were run one after the other rather than at once so neither could end up measuring the
+other's compiler. The run-to-run spread is 20--30%, so nothing smaller than that is a result.
 Bold is the faster entry in its row.
 
-The tables cover every algorithm the library implements: 14 hashers, 8
-block-cipher configurations, 3 KEM parameter sets, and 34 signature and
-key-agreement schemes. No row in the harness's own output reports
-"(unavailable)", which was the point of covering all of them.
+The tables cover every algorithm the library implements: 14 hashers, 8 block-cipher configurations,
+3 KEM parameter sets, and 34 signature and key-agreement schemes. No row in the harness's own
+output reports "(unavailable)", which was the point of covering all of them.
 
-GF(2^m) curves appear under signatures but not under key agreement because
-that is what they implement: they do ECDSA and not ECDH.
+GF(2^m) curves appear under signatures but not under key agreement because that is what they
+implement: they do ECDSA and not ECDH.
 
 ### Against OpenSSL
 
-A number means nothing in isolation, so the same algorithms were measured
-against OpenSSL 3.0.13 on the same machine.
+A number means nothing in isolation, so the same algorithms were measured against OpenSSL 3.0.13
+on the same machine.
 
-**Both sides are measured alone, in their own loops.** Interleaving the two
-implementations in one loop -- the obvious way to keep them on equal footing --
-turns out to corrupt both: certpp's SHA-256 drops from 1523 to 765 MiB/s and
-OpenSSL's from 1580 to a similar half when they alternate. Alternating caches
-and branch predictors ends up penalising both, so the interleaved numbers are
-not a comparison of the cryptography but of the measurement method. Each side
-is therefore timed on its own, with the same warm-up and the same
-fastest-of-5-batches-of-300 methodology. OpenSSL is called through EVP directly
-rather than through this library's wrapper, which measures the cryptography
-rather than the per-call allocations a caller through `certpp` would add.
+**Both sides are timed alone, in their own loops.** Interleaving the two implementations in one
+loop -- the obvious way to keep them on equal footing -- turns out to corrupt both: certpp's
+SHA-256 drops from 1523 to 765 MiB/s and OpenSSL's halves too, because alternating caches and
+branch predictors penalises both. OpenSSL is called through EVP directly rather than through this
+library's wrapper, which measures the cryptography rather than the per-call allocations a caller
+through `certpp` would add. Both sides are warmed up first: OpenSSL resolves its constructors
+lazily, and a cold first SHA-256 of 64 KiB costs 963 us against 38.9 us warm.
 
-Warming up is not a detail either. OpenSSL resolves its constructors lazily and
-the first SHA-256 of 64 KiB costs 963 µs against 38.9 µs warm, so a cold
-comparison reports it at a quarter of its real speed.
-
-[`examples/06_openssl_compare.cpp`](examples/06_openssl_compare.cpp) reproduces
-these, and links OpenSSL only where OpenSSL is installed -- `certpp` itself does
-not depend on it.
+Each figure is the best of three runs of the harness on a quiet machine, so the spread between
+runs is 1--3% for a side measured alone -- the ratios hold, but a single run's absolute value is
+not the algorithm's speed.
 
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
-| SHA-256, 64 KiB | 1523 MiB/s | 1580 MiB/s | **0.96x** |
-| SHA-1, 64 KiB | 1743 MiB/s | 1855 MiB/s | 0.94x |
-| MD5, 64 KiB | 716 MiB/s | 807 MiB/s | 0.89x |
-| SHA3-256, 64 KiB | 308 MiB/s | 431 MiB/s | 0.72x |
-| SHAKE-256, 64 KiB | 310 MiB/s | 431 MiB/s | 0.72x |
-| SHA-512, 64 KiB | 352 MiB/s | 692 MiB/s | 0.51x |
-| AES-256-CBC, 64 KiB | 1262 MiB/s | 1345 MiB/s | **0.94x** |
-| ARIA-256-CBC, 64 KiB | 28 MiB/s | 114 MiB/s | 0.25x |
-| Ed25519 sign | 0.163 ms | 0.036 ms | 4.5x slower |
+| SHA-256, 64 KiB | 1524 MiB/s | 1550 MiB/s | 0.98x |
+| SHA-1, 64 KiB | 1678 MiB/s | 1773 MiB/s | 0.95x |
+| MD5, 64 KiB | 673 MiB/s | 790 MiB/s | 0.85x |
+| SHA3-256, 64 KiB | 370 MiB/s | 400 MiB/s | 0.93x |
+| SHAKE-256, 64 KiB | 363 MiB/s | 392 MiB/s | 0.93x |
+| SHA-512, 64 KiB | 362 MiB/s | 649 MiB/s | 0.56x |
+| AES-256-CBC, 64 KiB | 1249 MiB/s | 1350 MiB/s | 0.93x |
+| ARIA-256-CBC, 64 KiB | 26 MiB/s | 101 MiB/s | 0.26x |
+| Ed25519 sign | 0.163 ms | 0.037 ms | 4.5x slower |
 
-Each figure is one run's fastest-of-five, and this machine's spread between
-those runs is 1--3% for a side measured alone -- so the ratios hold, but a
-single run's absolute value is not the algorithm's speed.
+SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.56x is the clearest row
+where neither does.
 
-**The SHA-512 row is the one thing here now known to be stale**, and it is left
-as measured rather than quietly refreshed: SHA-512 gained a byte-swap message
-packing and shorter `Ch`/`Maj`, measured at +6.7% with an OpenSSL control that
-moved -0.4%. The gap at 0.51x is narrower than this row says. It is not
-replaced with a new number because the same binary measured between 240 and
-363 MiB/s across sessions on this machine -- a spread nothing like the 1--3%
-above -- so any single figure written here now would be less reproducible than
-the one it replaced. Re-baseline the whole table in a quiet session, not one
-cell of it. [`docs/roadmap.md`](docs/roadmap.md) has the measurement and the
-decomposition behind it.
-
-The shape of it is more informative than any single ratio. **On the 32-bit
-hashes certpp is within 4% of OpenSSL**, which is not the gap a young library is
-expected to have against code that has had fifteen years of assembly. **On
-64-bit words it is roughly half** -- SHA-512 at 0.51x is the clearest row.
-AES-256-CBC sat at 0.53x too and now measures 0.94x: that gap was never the
-cipher, it was the per-block interface, and once the chaining value stopped
-leaving a register the two implementations met. ARIA, at a quarter, is what a
-real absence looks like -- there is no AES-NI equivalent for it, and OpenSSL's
-is hand-written assembly, so portable C++ has nothing to reach for. Ed25519
-signing is 4.5x slower, which is the constant-time field arithmetic: `Fe25519` is
-deliberately fixed-width so its cost does not depend on the operand, and
-OpenSSL's does not have to be.
-
-The 32-bit result is the one worth explaining, because it is not what the road
-map predicted. SHA-256 and SHA-1 reach OpenSSL's level while SHA-512 does not,
-and the difference is that the first two run on SHA-NI where both sides call the
-same instruction, while SHA-512 does not and this library's scalar implementation
-is the part that shows. Where the hardware instructions are the same, the
-software around them is not the bottleneck.
+**What each remaining gap actually is, which ones have been closed and why, and the decompositions
+behind the ones that have not are in
+[`docs/roadmap.md`](docs/roadmap.md)** -- along with the two cross-toolchain gaps this section's
+own coverage surfaced (DSA-2048 and the GF(2^m) curves), what the slower rows mean, and the WSL2
+caveat on the GCC column.
 
 #### Signatures
 
@@ -492,111 +457,12 @@ software around them is not the bottleneck.
 | XChaCha20-Poly1305 | **545 ns** | 446 ns |
 | AES-256-GCM | 220 ns | **234 ns** |
 
-### Two cross-toolchain gaps that P1 and P7 did not close
 
-RSA and MD5 were the two documented gaps, and both are gone: RSA-2048 signing
-took 8.06 ms against 19.1 ms until `CMontgomery` was routed underneath it
-(now 5.62 against 5.25 ms), and MD5's 23% deficit closed with the P7 round
-unrolling (now **719.7 MiB/s** on GCC against 571.7 on MSVC -- GCC now leads).
-Covering every algorithm surfaced two more that were never written down:
-
-- **DSA-2048 is 2.7x slower to sign on GCC** -- 7.29 ms against 2.70 ms, and
-  18.1 ms against 6.6 ms to verify. That is a wider gap than RSA's ever was,
-  and it is the only remaining one large enough to read as a codegen defect
-  rather than as noise. The backend is the same `CBigNum` RSA uses, so the
-  cause is presumably the same shape of thing `CMontgomery` fixed there --
-  but the profile has not been taken, so that is a hypothesis and nothing more.
-- **Every GF(2^m) curve is 1.2--2.1x slower on GCC.** B-571 verify is 19.9 ms
-  against 7.6 ms. Ten curves, all moving the same way, which argues for a
-  shared cause in `CGf2m` rather than ten coincidences.
-
-Both belong in [`docs/roadmap.md`](docs/roadmap.md) as items, not in a README
-footnote; they are recorded here so the measurements are not lost, and neither
-has been investigated.
-
-### The AES-CBC gap that closed
-
-AES-256-CBC was the widest gap still open -- 0.53x OpenSSL, an odd place for a
-cipher with its own hardware instruction to be sitting. The cause was not the
-cipher. `ISymmetricTransformer`'s per-block interface made `CbcTransformer` call
-`AesCore::encryptBlock()` once per block, and that function loads the block,
-rounds it, stores the result and returns; the transformer then copies the
-ciphertext back into the chain, where the next block's load picks it up again.
-Two loads and two stores a block, all of them feeding a chain that never needed
-to leave a register.
-
-`AesCore::encryptCbcBulk()` runs the whole sequence with the chaining value held
-in a `__m128i`, so that falls to one load and one store a block. AES supplies it
-only where the CPU has AES-NI, and it replaces nothing above the cipher: the
-output-space check, the remainder handling and the PKCS#7 logic all stay exactly
-where they were, which is what lets the two paths produce identical bytes.
-
-Measured back-to-back in the same build directory, medians of three runs:
-
-| | before | after | |
-|---|---|---|---|
-| AES-128-CBC, MSVC | 673.3 MiB/s | 1442.4 MiB/s | 2.14x |
-| AES-192-CBC, MSVC | 617.1 MiB/s | 1234.9 MiB/s | 2.00x |
-| AES-256-CBC, MSVC | 574.0 MiB/s | 1111.9 MiB/s | 1.94x |
-| AES-128-CBC, GCC | 847.2 MiB/s | 1717.9 MiB/s | 2.03x |
-| AES-192-CBC, GCC | 775.0 MiB/s | 1515.3 MiB/s | 1.95x |
-| AES-256-CBC, GCC | 717.2 MiB/s | 1319.9 MiB/s | 1.84x |
-
-AES-256-GCM is untouched at 473 MiB/s on GCC, within noise of 465 before, since
-GHASH rather than the cipher is the bottleneck and the AEAD never enters the CBC
-path. The portable build (`CERTPP_DISABLE_HWACCEL_AES`) passes the same suite
-and offers no bulk path at all: `AesCore::hasAesNi()` reports false there, so the
-transformer keeps the per-block function for everything.
-
-### What the slower rows are telling you
-
-- **DES and 3DES are 1000x slower than AES**, which is the cipher itself being
-  slow, not the library: 3DES runs three DES operations per block and DES has
-  no acceleration on any x86.
-- **ARIA runs ~45x slower than AES**, for the opposite reason: AES-NI is a
-  hardware instruction and ARIA has none, so the portable rounds are the whole
-  implementation. OpenSSL has hand-written ARIA assembly, which is why it still
-  leads there by 4x. There is nothing to remove without new hardware.
-- **Signing beats verification on the prime curves** -- P-256 signs in 0.91 ms
-  and verifies in 2.43 ms -- because signing multiplies the *fixed* base point
-  and uses a precomputed window table, while verification multiplies a
-  caller-supplied point and cannot.
-- **RSA-2048 is lopsided by design**: `e = 65537` makes verification three
-  multiplies, while signing is a full CRT exponentiation.
-- **AES-256-GCM sits below ChaCha20-Poly1305 despite AES-NI**, because GHASH
-  rather than the cipher is the bottleneck and an AEAD composes as
-  `1/total = 1/cipher + 1/mac`.
-- **The 64 B AEAD rows invert the 64 KiB ones.** AES-256-GCM is *faster* per
-  record (220 ns against 410 ns) and *slower* in bulk (371 against 751 MiB/s),
-  because AES-GCM encrypts one block where ChaCha20 encrypts two and a small
-  record cannot amortize the difference. A bulk sender and a per-record caller
-  are looking at different winners.
-
-Nanosecond figures are the noisiest in the section -- treat a gap under ~30%
-between two AEADs as unsettled.
-
-### WSL2, and what the GCC column is not
-
-The GCC figures were measured **under WSL2** -- a real Linux kernel inside a
-VM, not a bare-metal Linux install on this CPU -- and that warrants a record of
-its own rather than a clause in the conditions above. The harness is
-single-threaded, CPU-bound cryptography, so the hypervisor's share of each
-measurement ought to be small. But that is an argument that it ought to be, not
-a measurement showing that it is: this run did not quantify the overhead in
-either direction.
-
-The column therefore reads as *this toolchain in this setup*, not as Linux
-performance in general. That matters most for the DSA and GF(2^m) gaps above,
-which are the only differences left large enough to read as compiler defects
-and therefore exactly the ones that should not be called that before being
-re-measured on bare metal.
-
-Two smaller limits apply to both columns. "Release" is not one setting:
-CMake's defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and
-optimization level are varied together.
-
-[`docs/roadmap.md`](docs/roadmap.md) has the targets, what is already done, and
-what each remaining gap actually needs.
+The GCC figures were measured **under WSL2** -- a real Linux kernel inside a VM, not bare metal
+-- so that column reads as *this toolchain in this setup*, not as Linux performance in general; the
+harness is single-threaded and CPU-bound, so the hypervisor's share ought to be small, but this run
+did not quantify it either way. And "Release" is not one setting: CMake's defaults are `/O2` for
+MSVC and `-O3` for GCC, so toolchain and optimization level are varied together.
 
 ## Status
 
