@@ -605,3 +605,34 @@ byte loads from a 512-byte table, 128 of them per block -- plus the permutations
 the compiler has already shaped as well as this formulation allows. Closing it means bit-slicing,
 which is a rewrite of the core rather than an optimisation of it, and DES is a legacy cipher kept
 for PKCS#12 compatibility. Recorded and closed, the same shape as ARIA.
+
+### ARIA re-examined: two hypotheses, both measured and both wrong
+
+The 0.26x ARIA gap was recorded as "not closable" on the grounds that OpenSSL's is hand-written
+assembly and portable C++ has nothing to reach for. With SHA-3 found to be hiding 484 wasted
+instructions, ARIA was worth one more look.
+
+Decomposed by instruction count. Per round, `diffusionLayer()` is 227 instructions against
+`substitutionLayer()`'s 55 -- 76% of the round, sixteen outputs each a seven-input XOR. Two
+hypotheses about where the 227 went, both tested against the generated code rather than reasoned
+about:
+
+1. **That each input byte was re-read from memory.** `diffusionLayer` showed 43 `movzbl`, and each
+   input is referenced by up to seven different outputs, so re-reads looked likely. Loading the 16
+   bytes into constants first changed the count from 229 to 227 -- nothing. Separating them shows
+   30 of the 43 are loads from memory and 13 are register-to-register zero-extensions, so the
+   hypothesis was simply wrong: GCC was already reading each byte once.
+
+2. **That the zero-extensions were removable by wider intermediates.** The byte arithmetic keeps
+   intermediates in 8-bit registers, each needing extension before the next XOR. Widening the
+   inputs to `unsigned` produced bit-identical code -- 227 instructions, same mix. Also wrong.
+
+So the 227 is the byte formulation's real cost: 96 XORs, 16 loads and 16 stores, with the
+extensions and the memory operands the compiler chose under its own register allocation. The
+remaining option is a different formulation -- a masked-broadcast SSE version, or the T-tables a
+fast software cipher uses -- and both are a rewrite of the core rather than an optimisation of it.
+ARIA is a 14-round cipher with a 128-bit diffusion layer and no hardware equivalent; the shape is
+as closed as it was recorded.
+
+Reverted in full. ARIA stays at 0.26x, now with the reason known rather than guessed, which is the
+third item this session to end that way.
