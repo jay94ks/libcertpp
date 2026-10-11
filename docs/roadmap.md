@@ -486,8 +486,9 @@ What shipped instead, because it was measured rather than argued:
   which spends a NOT the hardware does not have, and `((a | b) & c) | (a & b)` instead of a
   five-operation expression. Neither changes an output bit.
 
-End to end, interleaved with OpenSSL as the control on a quiet machine: **SHA-512 299.7 -> 319.0
-MiB/s, +6.4%, against a control that moved +0.2%.**
+End to end, interleaved with OpenSSL as the control on a quiet machine: **SHA-512 333.5 ->
+355.8 MiB/s, +6.7%, against a control that moved -0.4%.** A second, independent interleaved
+run gave +6.4% against a control at +0.2%, so the two runs bracket it at +6.4--6.7%.
 
 ### Item 3 measured: GHASH was the larger half of GCM, and the win was in the reflection
 
@@ -537,11 +538,13 @@ unchanged in cost.
 
 Result: **310.9 -> 237.5 instructions per block, 23.6% fewer**, measured, with 19,762 GHASH
 assertions and the twelve published GCM vectors passing. Wall clock, interleaved against the
-control on a quiet machine: **AES-256-GCM 414.6 -> 456.1 MiB/s, +10.0%, control -4.7%.** The
+control on a quiet machine: **AES-256-GCM 438.1 -> 494.1 MiB/s, +12.8%, control -0.8%**, with a
+spread of 1.9% and 2.9% within each side. A second run gave +10.0% against a control at -4.7%,
+so the two bracket it at +10--13%. The
 instruction count is the larger number than the clock, and the gap is the point: what was removed
 was cheap, well-pipelined SSE2 shifting, while what remains is latency-bound on a 5--7 cycle
-`PCLMULQDQ` chain. Removing a quarter of the instructions removes a tenth of the time. Anyone
-reading only the instruction count would overstate this by more than twice.
+`PCLMULQDQ` chain. Removing a quarter of the instructions removes an eighth of the time. Anyone
+reading only the instruction count would overstate this by nearly twice.
 
 **P2 is therefore closed, positively, and for a different reason than it was proposed.** What
 generalises: the roadmap asked "is the thing I am vectorising the bottleneck" and got "yes" here

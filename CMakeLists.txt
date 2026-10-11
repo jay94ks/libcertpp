@@ -219,6 +219,17 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
+        # Sha2_64Core::loadBe64Portable() is the byte-swap fallback for compilers with no
+        # intrinsic. It has to be a testable function rather than an `#else` branch precisely
+        # because an `#else` branch is compiled by none of this project's toolchains and so
+        # cannot be wrong visibly: the branch version byte-reversed its input and every build
+        # stayed green. Adding src/ to this test's include path is all it takes to compile it.
+        if(CERTPP_TEST_REL STREQUAL "crypto/hashers/sha512")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/hashers/sha2_64core.cpp
+            )
+        endif()
+
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/fe25519")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/fe25519.cpp

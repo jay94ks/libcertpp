@@ -2,6 +2,8 @@
 #include <doctest/doctest.h>
 
 #include <certpp/crypto/hashers/sha512.hpp>
+#include "crypto/hashers/sha2_64core.hpp"
+
 #include <cstring>
 #include <string>
 #include <vector>
@@ -119,4 +121,63 @@ TEST_CASE("SHA512::finish can be called more than once, yielding the same digest
     REQUIRE(hasher.finish(firstOut));
     REQUIRE(hasher.finish(secondOut));
     CHECK(std::memcmp(first, second, sizeof(first)) == 0);
+}
+
+// SHA-384/SHA-512 pack their message words MSB-first, and the pack is the one part of the
+// compression function that can be made perfect rather than merely fast. It reaches
+// Sha2_64Core::loadBe64(), whose portable form exists for compilers with no byte-swap intrinsic.
+//
+// That branch was, until recently, unreachable in every configuration this library ships --
+// GCC and MSVC both take a builtin -- and it was wrong: it byte-reversed the input instead of
+// assembling it big-endian. Nothing could have reported that, because nothing built it. It is a
+// function now, so this can check it on every configuration, and the check is here so that the
+// next mistake in a fallback path does not go unnoticed for the same reason.
+TEST_CASE("Sha2_64Core::loadBe64Portable assembles big-endian, and loadBe64 agrees with it") {
+    /* The reference, shaped differently on purpose: it walks from the least significant byte and
+     * shifts right, where the function under test walks from the most significant and shifts
+     * left. A reference written the same way would agree with a bug in both. */
+    const auto reference = [](const uint8_t* p) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i) {
+            v |= uint64_t(p[i]) << (8 * (7 - i));
+        }
+        return v;
+    };
+
+    // Every byte value in every one of the eight positions. An all-equal pattern cannot
+    // distinguish a big-endian assembly from a byte reversal -- they agree on it -- which is
+    // how the original mistake survived a hand-check in the first place, so each position gets
+    // its own value and the rest are varied independently of it.
+    for (int pos = 0; pos < 8; ++pos) {
+        for (int b = 0; b < 256; ++b) {
+            uint8_t buf[8];
+            for (int i = 0; i < 8; ++i) {
+                buf[i] = uint8_t(i == pos ? b : ((b * (i + 7)) ^ (i * 53 + 19)));
+            }
+
+            const uint64_t want = reference(buf);
+            CHECK(Sha2_64Core::loadBe64Portable(buf) == want);
+        }
+    }
+
+    // The two extremes, which the loop above reaches but which are worth naming: an all-ones and
+    // an all-zeros block, and the byte order actually asserted rather than implied.
+    const uint8_t zeros[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    const uint8_t ones[8]  = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    const uint8_t ordered[8] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
+    CHECK(Sha2_64Core::loadBe64Portable(zeros) == 0);
+    CHECK(Sha2_64Core::loadBe64Portable(ones) == ~uint64_t(0));
+    CHECK(Sha2_64Core::loadBe64Portable(ordered) == 0x0123456789ABCDEFULL);
+
+    // The shipped path must agree with the portable one on this CPU, which is the property that
+    // actually matters: whichever of the two the build selected, it has to be right.
+    for (int pos = 0; pos < 8; ++pos) {
+        for (int b = 0; b < 256; b += 7) {
+            uint8_t buf[8];
+            for (int i = 0; i < 8; ++i) {
+                buf[i] = uint8_t(i == pos ? b : ((b * (i + 7)) ^ (i * 53 + 19)));
+            }
+            CHECK(Sha2_64Core::loadBe64Portable(buf) == reference(buf));
+        }
+    }
 }

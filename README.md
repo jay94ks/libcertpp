@@ -252,8 +252,8 @@ single run's absolute value is not the algorithm's speed.
 
 **The SHA-512 row is the one thing here now known to be stale**, and it is left
 as measured rather than quietly refreshed: SHA-512 gained a byte-swap message
-packing and shorter `Ch`/`Maj`, measured at +6.4% with an OpenSSL control that
-moved +0.2%. The gap at 0.51x is narrower than this row says. It is not
+packing and shorter `Ch`/`Maj`, measured at +6.7% with an OpenSSL control that
+moved -0.4%. The gap at 0.51x is narrower than this row says. It is not
 replaced with a new number because the same binary measured between 240 and
 363 MiB/s across sessions on this machine -- a spread nothing like the 1--3%
 above -- so any single figure written here now would be less reproducible than

@@ -4292,8 +4292,8 @@ fill exactly four 256-bit registers -- is correct. The schedule is 20% of a
 function whose other 75% is a serial dependency chain, so it is not where the
 2x lives.
 
-SHA-512 299.7 -> 319.0 MiB/s, +6.4%, against an OpenSSL control that moved
-+0.2%.
+SHA-512 333.5 -> 355.8 MiB/s, +6.7%, against an OpenSSL control that moved
+-0.4%.
 
 ## GHASH: the subkey was being reflected once per 16 bytes
 
@@ -4314,8 +4314,9 @@ The public `Ghash::multiply()`, which takes a raw `h` and cannot use a prepared
 copy, is unchanged in cost.
 
 **310.9 -> 237.5 instructions per 16-byte block, 23.6% fewer**; AES-256-GCM
-414.6 -> 456.1 MiB/s, +10.0%, against a control that moved -4.7%. The
-instruction count is more than twice the clock, and that is the useful part:
+438.1 -> 494.1 MiB/s, +12.8%, against a control that moved -0.8%, with a
+spread of 1.9% and 2.9% within each side. The instruction count is nearly
+twice the clock, and that is the useful part:
 what was removed was cheap, well-pipelined SSE2 shifting, while what remains is
 latency-bound on a 5--7 cycle `PCLMULQDQ` chain.
 
@@ -4334,3 +4335,34 @@ already correct, over all 256 byte values in all 16 positions. MSVC declares the
 GFNI intrinsics in `zmmintrin.h` rather than `immintrin.h`.
 
 Verified 130/130 on GCC Release+ASan, GCC ASan, MSVC Release and MSVC Debug.
+
+## The SHA-512 byte-swap's fallback branch: wrong, and nothing could have said so
+
+`loadBe64()`'s `#else` branch -- the path for a compiler with no byte-swap intrinsic -- was
+byte-reversing its input instead of assembling it big-endian. It was wrong for every one of
+256 asymmetric patterns tried by hand. It also never ran.
+
+That is the whole of the problem: as a branch inside an `#if`, it is compiled by none of the
+four configurations this library ships, since GCC and MSVC both take a builtin. Four green
+builds, 130/130 four times over, and a branch that has never produced a correct answer.
+
+It is worth being precise about how it survived, because the first hand-check passed it. That
+check filled all eight bytes with the same value, where a byte reversal and a big-endian
+assembly agree, so it could not tell a correct implementation from this one. Only an
+asymmetric pattern distinguishes them, and that is what the test now uses.
+
+So the portable form is a function, `loadBe64Portable()`, public and always compiled, rather
+than a branch that nothing builds. Being a function is what makes it testable at all.
+`tests/crypto/hashers/sha512.cpp` holds it against a reference written a different way on
+purpose -- indexing from the least significant byte and shifting right, where the function
+under test indexes from the most significant and shifts left -- over every byte value in every
+one of the eight positions. Verified to fail against the broken version, 2,345 of 2,364
+assertions.
+
+The builtins stay, because they are not decoration: GCC 13 turns the portable loop into
+twenty-two instructions against the builtin's two (`movq`; `bswap`). Clang does recognise the
+loop and compiles either form to three instructions, which is why this is spelled out per
+compiler rather than left to the optimiser.
+
+Nothing about the measured performance changes -- GCC and MSVC never took this branch, and
+neither takes it now.
