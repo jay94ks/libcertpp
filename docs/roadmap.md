@@ -349,7 +349,7 @@ already done.
 | 2 | SHA-512 message schedule on AVX2 | 0.51x | **measured; wrong target** |
 | 3 | P2 (GHASH via VPCLMULQDQ/GFNI) | -- | **measured; closed positive** |
 | 4 | Poly1305 on AVX512IFMA | -- | re-opened by hardware presence |
-| 5 | SHA3/SHAKE on AVX2 | 0.66x | proposed, awkward lane fit |
+| 5 | SHA3/SHAKE on AVX2 | 0.72x | **partially closed; +28% measured** |
 | -- | ARIA-256-CBC | 0.26x | not closable; recorded and closed |
 
 Items 1--3 are now measured and written up below. The ordering held up: item 1 had the

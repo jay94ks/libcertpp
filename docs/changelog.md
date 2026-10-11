@@ -4366,3 +4366,51 @@ compiler rather than left to the optimiser.
 
 Nothing about the measured performance changes -- GCC and MSVC never took this branch, and
 neither takes it now.
+
+## SHA-3/SHAKE: the state was being transposed byte-by-byte, and chi cost two instructions
+
+SHA3-256 measured 0.72x OpenSSL and SHAKE-256 the same, the largest of the remaining gaps after
+ARIA and Ed25519 had been closed. Decomposed by instruction count first, which is what said
+which of two very different problems to fix.
+
+`KeccakCore::permute()` was 892 instructions, of which `f1600()` -- the permutation itself -- is
+408. The other ~484 were packing 25 lanes of 8 bytes in and unpacking them again, one byte at a
+time. GCC does not leave that alone: it auto-vectorises it into an SSE transpose (`movdqu`,
+`psrlw`, `packuswb`). But a transpose is the wrong shape for the job. Keccak lanes are
+little-endian 64-bit words, so on a little-endian host a lane *is* the eight bytes as they sit in
+memory -- one `memcpy` per lane, ~50 instructions.
+
+So there are two paths, selected on the host's byte order: a copy where it is correct, and the
+original loop where reversing is required. Both land on the same answer, held there by the
+SHA-3/SHAKE known-answer vectors, so an endianness mistake fails the suite rather than producing
+wrong digests. `permute()` went from 892 to 68 instructions; interleaved against OpenSSL with
+SHA-256 and SHA-512 as controls, SHA3-256 306.9 -> 348.5 MiB/s (+13.6%) and SHAKE-128 +17.4%.
+
+The second problem is the one that wanted assembly. `f1600`'s chi step computes
+`a ^ (~b1 & b2)`, and the compiler emits `notq` then `andq` -- two instructions, and a NOT the
+hardware has no other use for. BMI1's ANDN is that function in a single instruction.
+
+First attempt: `__attribute__((target("bmi")))` on the helper itself. That made it 25 of 408
+instructions' worth of calls, not one: GCC refuses to inline a function whose target attribute
+does not match its caller's, and chi runs 25 times a round for 24 rounds. `f1600` went from 408
+instructions to 861 and got slower. The fix is to put the attribute on the whole round loop,
+templated on which chi to use, so the helper is compiled as part of a BMI-enabled instantiation
+and inlines. `f1600`'s BMI path is now 361 instructions with 25 ANDN and no notq at all.
+
+The ANDN is inline assembly rather than the compiler's own encoding of the expression, because
+the instruction is the point and because AT&T reverses its operand order against Intel's: `%2`
+is src1 and `%1` is src2. Verified against the plain expression over every discriminating pair
+and 200,000 random pairs -- a swapped operand order is a different function that no commutative
+identity would reveal.
+
+Whether it was worth doing was not assumed. `f1600` is 136 stack loads and 136 stores deep,
+because 25 lanes of live state do not fit in fifteen GPRs, so an operation bound on that might
+not care about 25 fewer ALU instructions at all. Measured, it does care: `permute()` 460.2 ns ->
+394.6 ns, -14.3%, tracking the -13.3% instruction count closely.
+
+Combined, interleaved over 10 rounds with SHA-256/SHA-512/MD5/SHA-1 as controls, all four of
+which held within 1%: **SHA3-256 +28.5%, SHA3-512 +28.4%, SHAKE-128 +26.5%, SHAKE-256 +28.6%.**
+SHA3-256 moves from 0.72x to roughly 0.94x OpenSSL, and SHAKE-128 passes it.
+
+`include/certpp/arch.hpp` gains `CERTPP_ARCH_HAS_ANDN`, the same shape as `CERTPP_ARCH_HAS_MULX`
+beside it.
