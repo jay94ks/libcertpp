@@ -60,7 +60,23 @@ namespace crypto {
         uint8_t _block[BLOCK_BYTES];    // --> input not yet absorbed.
         size_t _buffered;               // --> how much of _block is filled.
 
+        /* H already converted into the ordinary polynomial basis, for the accelerated multiply.
+         *
+         * H does not change while the accumulator is in use, but converting it out of GCM's
+         * bit-reflected convention costs twenty instructions -- half of what the accelerated
+         * multiply spends, measured. Doing it once here instead of once per 16-byte block is
+         * most of what is left of this optimisation; the conversions of the block and of the
+         * product are on data that genuinely changes and stay where they are. */
+        uint8_t _hReflected[BLOCK_BYTES];
+
+        /* Which multiply absorb() should call, decided once per message rather than twice per
+         * block. Both of these are CPUID-guarded statics, and a guarded static costs a load and
+         * a test on every read -- harmless once, not once per 16 bytes of payload. */
+        bool _accelerated;   // --> whether this CPU and build have PCLMULQDQ at all.
+        bool _useGfni;       // --> whether it also has GFNI, to reflect in one instruction.
+
         void absorb(const uint8_t* block);
+        void reflectSubkey();
 
     public:
         /**
@@ -137,6 +153,17 @@ namespace crypto {
          * @param h The right operand.
          */
         static void multiplyAccelerated(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES]);
+
+        /**
+         * The multiplication proper, with the basis conversion of the two changing operands left
+         * to the caller -- which is what lets absorb() pass a subkey it already reflected once per
+         * message instead of once per block.
+         * @param block The left operand; receives the product.
+         * @param h The right operand, already in the ordinary polynomial basis.
+         * @param useGfni Whether this CPU has GFNI, and so can reflect in one instruction.
+         */
+        static void multiplyCore(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES],
+                                 bool useGfni);
 #endif
     };
 

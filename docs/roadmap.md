@@ -345,12 +345,18 @@ already done.
 
 | | Item | Gap | State |
 |---|---|---|---|
-| 1 | Ed25519 field to radix 2^51, native `__int128` | 4.5x | decomposed; P4 re-opened |
-| 2 | SHA-512 message schedule on AVX2 | 0.51x | proposed, unmeasured |
-| 3 | P2 (GHASH via VPCLMULQDQ/GFNI) | -- | re-opened by hardware presence |
+| 1 | Ed25519 field to radix 2^51, native `__int128` | 4.5x | **measured; negative** |
+| 2 | SHA-512 message schedule on AVX2 | 0.51x | **measured; wrong target** |
+| 3 | P2 (GHASH via VPCLMULQDQ/GFNI) | -- | **measured; closed positive** |
 | 4 | Poly1305 on AVX512IFMA | -- | re-opened by hardware presence |
 | 5 | SHA3/SHAKE on AVX2 | 0.66x | proposed, awkward lane fit |
 | -- | ARIA-256-CBC | 0.26x | not closable; recorded and closed |
+
+Items 1--3 are now measured and written up below. The ordering held up: item 1 had the
+largest gap and the finished decomposition, and items 2 and 3 were the two whose stated
+prerequisite this machine has. What the three have in common is that **two of the three
+proposals named the wrong target**, and in both cases the decomposition said so before any
+of it was written.
 
 Item 1 first because it is the only one where the decomposition is finished, the
 gap is the largest, and the roadmap's own verdict was reached on a number from
@@ -442,6 +448,119 @@ emulation is 6.5--7.0x the native one, 66--69 ns against the 43--45 ns of the la
 replace, so a single 2^51 implementation everywhere would have made MSVC *slower than it is
 today*. That is why this is a gate and not a rewrite, and it is the part of the investigation
 that generalises to everything else in this section.
+
+### Item 2 measured: the message schedule is not the bottleneck, and the vectorisation argument was sound
+
+Item 2 proposed vectorising SHA-512's message schedule on AVX2, and this file's own wording said
+why it should work: "the SHA-512 lane fit is the first in this file's history where the argument
+for vectorising is 'the input fills the lanes' rather than 'fewer instructions'". Sixteen 64-bit
+words do fill exactly four 256-bit registers. That argument is correct, and it does not matter,
+because the schedule is not most of the cost. Per 128-byte block, by building the same
+compression function with each part present and subtracting:
+
+| | ns/block | share |
+|---|---|---|
+| packing `W[0..15]` | 18.7 | 5.0% |
+| message schedule `W[16..79]` | 73.7 | 19.9% |
+| **the 80 rounds** | **278.4** | **75.1%** |
+
+The rounds are 75%, and they are a serial dependency chain -- round *i*'s `e`, `f` and `g` are
+round *i-1*'s `a`, `b` and `c`. The critical path is roughly seven dependent operations per round
+with a one-cycle latency each, which is close to what the measurement shows: 278 ns for 80 rounds
+is about 12 cycles per round. Vectorising a 20% component against a 75% latency-bound one cannot
+be the 2x that closes 0.51x.
+
+**So the item is closed as proposed, and the diagnosis is kept.** What the decomposition did find
+is that the packing -- 5% of the work, and the only part that was not doing real work -- built
+each big-endian message word one byte at a time: eight loads and seven shift-or pairs per word,
+where `BSWAP` is one instruction. Both x86-64 and AArch64 have it, so this needs no new ISA and
+no runtime check. Measured effect on the compression function: **8.7% and 4.5% on two runs of the
+same probe** -- a probe, not the library, on a machine that had a competing job for part of the
+session, which is why both numbers are reported rather than the larger one.
+
+What shipped instead, because it was measured rather than argued:
+
+- `Sha2_64Core::loadBe64()`, one byte-swap per word. The generated packing is now three
+  instructions per word (`movq`/`bswap`/`movq`) against twenty-three. SHA-384 shares this core.
+- `Ch` and `Maj` in their shorter forms -- `g ^ (e & (f ^ g))` instead of `(e & f) ^ (~e & g)`,
+  which spends a NOT the hardware does not have, and `((a | b) & c) | (a & b)` instead of a
+  five-operation expression. Neither changes an output bit.
+
+End to end, interleaved with OpenSSL as the control on a quiet machine: **SHA-512 299.7 -> 319.0
+MiB/s, +6.4%, against a control that moved +0.2%.**
+
+### Item 3 measured: GHASH was the larger half of GCM, and the win was in the reflection
+
+P2 was closed on the grounds that "VPCLMULQDQ is the only remaining path", with 4-block chaining
+measured 9--16% slower. The item was re-opened because this CPU has both `vpclmulqdq` and
+`gfni`. Decomposing AES-256-GCM first, in instructions per 16-byte block -- an instruction count
+does not need a quiet machine, which is what made this measurable at all, since a competing job
+ran for much of the session:
+
+| | per block |
+|---|---|
+| `AesCore::encryptBlock` (the cipher) | 167.8 |
+| GHASH, xor + multiply | 179.7 |
+| `CAesGcm::seal` (the whole construction) | 310.9 |
+
+**GHASH is the larger half**, which is the opposite of the SHA-512 verdict and is why item 2 and
+item 3 came out differently from the same method. It is worth attacking.
+
+But not by the means proposed. `VPCLMULQDQ` aggregates *independent* carry-less multiplies, and
+in GCM the per-block multiplies are one serial chain -- each block's accumulator depends on the
+last. There is nothing there to aggregate, which is the structural reason the 4-block reduction
+was slower. Decomposing the multiply instead:
+
+| | count |
+|---|---|
+| `multiplyAccelerated`, as written | 91 instructions |
+| of which shift/mask/or -- the basis conversion | **45** |
+
+Half the accelerated multiply was converting between GCM's bit-reflected convention and the
+ordinary polynomial basis. **One of the three conversions was on `h`**, the subkey, which is
+fixed for the whole message -- it was being re-reflected once per 16 bytes. The other two are on
+the block and on the product, both of which genuinely change.
+
+So:
+
+- `H` is reflected once, in `reset()`, into `_hReflected`. That is the "precompute what does not
+  change" half, and it needs no new instruction at all.
+- The two conversions that remain are one `GF2P8AFFINEQB` each where GFNI exists, against the
+  twenty-instruction SSE2 sequence. **This is what GFNI is actually good for** -- not
+  aggregation. The roadmap named the right feature for the wrong job.
+- Which of the two applies is read from a CPUID-guarded static **once per message** rather than
+  twice per block, because a guarded static costs a load and a test on every read and this is
+  called every 16 bytes.
+
+The public `Ghash::multiply()`, which takes a raw `h` and so cannot use a prepared copy, is
+unchanged in cost.
+
+Result: **310.9 -> 237.5 instructions per block, 23.6% fewer**, measured, with 19,762 GHASH
+assertions and the twelve published GCM vectors passing. Wall clock, interleaved against the
+control on a quiet machine: **AES-256-GCM 414.6 -> 456.1 MiB/s, +10.0%, control -4.7%.** The
+instruction count is the larger number than the clock, and the gap is the point: what was removed
+was cheap, well-pipelined SSE2 shifting, while what remains is latency-bound on a 5--7 cycle
+`PCLMULQDQ` chain. Removing a quarter of the instructions removes a tenth of the time. Anyone
+reading only the instruction count would overstate this by more than twice.
+
+**P2 is therefore closed, positively, and for a different reason than it was proposed.** What
+generalises: the roadmap asked "is the thing I am vectorising the bottleneck" and got "yes" here
+and "no" there, and in the case where the answer was yes, the work that paid was not vectorising
+anything. It was noticing that a quarter of the function was recomputing a constant.
+
+#### One thing this cost: a constant that was reasoned out and was wrong
+
+The GFNI bit-reversal matrix came out as `0x0102040810204080`, which is the transpose of the
+answer, and which computes **the identity** -- it reversed nothing at all. The GHASH field
+identities failed immediately. The correct constant is `0x8040201008040201`, settled by running
+every candidate against the SSE2 sequence that was already there and already correct, over all
+256 byte values in all 16 positions. It is recorded here because "check the matrix against the
+thing it replaces" is cheap and this file already contains one instance of trusting a constant
+that ought to have been generated (`CName::TYPE_OIDS` had ten arcs where the OID has seven).
+
+MSVC declares the GFNI intrinsics in `zmmintrin.h` rather than `immintrin.h`, which is why that
+include is there; it was found by grepping the toolset headers, because the GCC build compiled
+first and cleanly.
 
 ## Not planned
 

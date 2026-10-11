@@ -250,6 +250,17 @@ Each figure is one run's fastest-of-five, and this machine's spread between
 those runs is 1--3% for a side measured alone -- so the ratios hold, but a
 single run's absolute value is not the algorithm's speed.
 
+**The SHA-512 row is the one thing here now known to be stale**, and it is left
+as measured rather than quietly refreshed: SHA-512 gained a byte-swap message
+packing and shorter `Ch`/`Maj`, measured at +6.4% with an OpenSSL control that
+moved +0.2%. The gap at 0.51x is narrower than this row says. It is not
+replaced with a new number because the same binary measured between 240 and
+363 MiB/s across sessions on this machine -- a spread nothing like the 1--3%
+above -- so any single figure written here now would be less reproducible than
+the one it replaced. Re-baseline the whole table in a quiet session, not one
+cell of it. [`docs/roadmap.md`](docs/roadmap.md) has the measurement and the
+decomposition behind it.
+
 The shape of it is more informative than any single ratio. **On the 32-bit
 hashes certpp is within 4% of OpenSSL**, which is not the gap a young library is
 expected to have against code that has had fifteen years of assembly. **On

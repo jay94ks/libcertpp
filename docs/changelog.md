@@ -4268,3 +4268,69 @@ be worse than the leak.
 
 The whole suite now passes under LeakSanitizer with detection enabled. Before
 this, `io_array` did not.
+
+## SHA-512 and SHA-384: a byte-swap, two shorter round functions, and a decomposition that says not to vectorise
+
+`Sha2_64Core` built each big-endian message word one byte at a time -- eight
+loads and seven shift-or pairs per word -- where x86-64's `BSWAP` and AArch64's
+`REV` are one instruction. `loadBe64()` names those instructions behind a
+portable loop for a compiler with neither. Sixteen `bswap` now appear in the
+generated `transform()`, one per word, against three instructions of packing per
+word where there were twenty-three. SHA-384 shares this core, so it gets both
+changes.
+
+`Ch` and `Maj` are in their shorter forms -- `g ^ (e & (f ^ g))` rather than
+`(e & f) ^ (~e & g)`, which spends a `NOT` that x86-64 does not have, and
+`((a | b) & c) | (a & b)` rather than a five-operation expression. Neither
+changes an output bit.
+
+Neither change was worth writing without first measuring which part of the
+compression function costs anything. Decomposed per 128-byte block: packing
+5.0%, message schedule 19.9%, **rounds 75.1%**. The roadmap's item 2 proposed
+vectorising the schedule, and the argument for it -- that sixteen 64-bit words
+fill exactly four 256-bit registers -- is correct. The schedule is 20% of a
+function whose other 75% is a serial dependency chain, so it is not where the
+2x lives.
+
+SHA-512 299.7 -> 319.0 MiB/s, +6.4%, against an OpenSSL control that moved
++0.2%.
+
+## GHASH: the subkey was being reflected once per 16 bytes
+
+`Ghash::multiplyAccelerated` converts between GCM's bit-reflected convention
+and the ordinary polynomial basis three times, twenty instructions each --
+forty-five of its ninety-one instructions. One of the three is on `h`, the
+subkey, which is fixed for the whole message. It was being re-reflected once
+per 16 bytes of payload.
+
+`reset()` now reflects it once into `_hReflected`, and `absorb()` uses that. The
+other two conversions are on the block and on the product, both of which change,
+so they stay -- but where GFNI is present each is one `GF2P8AFFINEQB` instead of
+twenty. Which of the two applies is read from a CPUID-guarded static once per
+message rather than twice per block, because a guarded static costs a load and a
+test on every read and this runs every 16 bytes.
+
+The public `Ghash::multiply()`, which takes a raw `h` and cannot use a prepared
+copy, is unchanged in cost.
+
+**310.9 -> 237.5 instructions per 16-byte block, 23.6% fewer**; AES-256-GCM
+414.6 -> 456.1 MiB/s, +10.0%, against a control that moved -4.7%. The
+instruction count is more than twice the clock, and that is the useful part:
+what was removed was cheap, well-pipelined SSE2 shifting, while what remains is
+latency-bound on a 5--7 cycle `PCLMULQDQ` chain.
+
+This closes P2, which was closed once before on the grounds that "VPCLMULQDQ is
+the only remaining path", with 4-block chaining measured 9--16% slower. That
+negative result stands -- `VPCLMULQDQ` aggregates *independent* carry-less
+multiplies, and GCM's per-block multiplies are one serial chain, so there is
+nothing there to aggregate. What paid was not vectorising anything. It was
+noticing that a quarter of the function was recomputing a constant.
+
+The GFNI bit-reversal matrix is `0x8040201008040201`. It was first written as
+`0x0102040810204080`, which is its transpose and computes the identity -- it
+reversed nothing, and the GHASH field identities failed at once. Settled by
+running every candidate against the SSE2 sequence that was already there and
+already correct, over all 256 byte values in all 16 positions. MSVC declares the
+GFNI intrinsics in `zmmintrin.h` rather than `immintrin.h`.
+
+Verified 130/130 on GCC Release+ASan, GCC ASan, MSVC Release and MSVC Debug.

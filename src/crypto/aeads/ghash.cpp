@@ -5,8 +5,9 @@
 /* The guard in ghash.hpp decides whether an accelerated path exists at all; this one only pulls
  * in the intrinsics and CPUID headers it needs, and must stay in step with it. */
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
-#include <wmmintrin.h>
+#include <immintrin.h>   // GFNI's GF2P8AFFINEQB is newer than the wmmintrin.h that PCLMULQDQ needs
 #if defined(_MSC_VER)
+#include <zmmintrin.h>   // ...and MSVC declares the GFNI intrinsics here rather than there
 #include <intrin.h>
 #else
 #include <cpuid.h>
@@ -68,6 +69,27 @@ namespace crypto {
             return supported;
         }
 
+        /* Whether this CPU also has GFNI (CPUID.7.0:EBX.GFNI, bit 5). GFNI is a separate and newer
+         * feature from PCLMULQDQ -- a CPU can have either without the other, and plenty have
+         * neither -- so it is its own check rather than an assumption about the one above. */
+        bool hasGfni() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 5)) != 0;
+#else
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 5)) != 0;
+#endif
+            }();
+
+            return supported;
+        }
+
         /* Reverses the bits within each byte of a vector, leaving the bytes themselves where they
          * are -- the three masked swap steps (adjacent bits, adjacent pairs, nibbles) of the
          * classic bit-reversal, stopped before the byte/word steps that would reverse the whole
@@ -99,6 +121,29 @@ namespace crypto {
                 _mm_slli_epi64(_mm_and_si128(v, m0f), 4));
 
             return v;
+        }
+
+        /* The same per-byte bit reversal, in one instruction.
+         *
+         * GF2P8AFFINEQB applies an 8x8 bit matrix, given as eight rows in a vector, to each byte
+         * of its input. The reversal matrix's rows, in the order the instruction reads them, are
+         * 01 02 04 08 10 20 40 80 -- which is 0x8040201008040201 read little-endian, and is not
+         * the 0x0102040810204080 that the same reasoning produces from the transpose. That
+         * reversed nothing: it made GFNI compute the identity. The constant here was therefore
+         * not reasoned out, it was measured -- see the note on reverseBitsInBytesGfni below.
+         * The imm8 is 0, so nothing is XORed in afterwards.
+         *
+         * This is what the roadmap's "GFNI" is good for. Not aggregation -- GCM's per-block
+         * multiplies are one serial chain and have nothing to aggregate -- but this reflection,
+         * which is twenty instructions by hand and one here. Checked against the SSE2 version
+         * above by tests/crypto/aeads/ghash.cpp rather than taken on the constant's word. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+        __attribute__((target("gfni,sse2")))
+#endif
+        __m128i reverseBitsInBytesGfni(__m128i v) {
+            const __m128i matrix = _mm_set1_epi64x(
+                static_cast<long long>(0x8040201008040201ULL));
+            return _mm_gf2p8affine_epi64_epi8(v, matrix, 0);
         }
 #endif // CERTPP_GHASH_HWACCEL_AVAILABLE
 
@@ -144,24 +189,33 @@ namespace crypto {
     }
 
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
-    /* The same multiplication via PCLMULQDQ.
+    /* The multiplication proper, by PCLMULQDQ, shared by every accelerated route into it.
      *
      * Rather than multiply in GCM's reflected convention -- where the classic trick is a
      * shift-by-one plus a reduction whose constants are easy to transcribe and impossible to
-     * eyeball -- this converts both operands into the ordinary one (bit i of the 128-bit
-     * little-endian value is the coefficient of x^i) with reverseBitsInBytes(), multiplies there,
-     * and converts the product back. The conversion costs a dozen SSE2 instructions per operand
-     * and makes the reduction the textbook one: x^128 = x^7 + x^2 + x + 1, i.e. 0x87.
+     * eyeball -- this converts into the ordinary basis (bit i of the 128-bit little-endian value
+     * is the coefficient of x^i), multiplies there, and converts the product back. The conversion
+     * makes the reduction the textbook one: x^128 = x^7 + x^2 + x + 1, i.e. 0x87.
      *
-     * __attribute__((target(...))) lets GCC/Clang emit PCLMULQDQ in just this one function
+     * It used to cost a dozen SSE2 instructions per operand, twenty in all for the block and the
+     * product, which is nearly half of what this function spends -- so it is now one
+     * GF2P8AFFINEQB each where GFNI exists. The subkey's conversion is the caller's: H does not
+     * change while an accumulator is in use, and absorb() reflects it once per message.
+     *
+     * __attribute__((target(...))) lets GCC/Clang emit these in just this one function
      * regardless of the translation unit's default -march (MSVC needs no equivalent -- see the
-     * identical note on gf2m.cpp's wideProductAccelerated()). */
+     * identical note on gf2m.cpp's wideProductAccelerated()).
+     *
+     * @param useGfni Whether to reflect with GFNI rather than the SSE2 sequence. Only ever
+     * true where hasGfni() is true, which is what makes emitting GF2P8AFFINEQB here safe. */
 #if defined(__GNUC__) && !defined(_MSC_VER)
-    __attribute__((target("pclmul,sse2")))
+    __attribute__((target("gfni,pclmul,sse2")))
 #endif
-    void Ghash::multiplyAccelerated(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES]) {
-        const __m128i a = reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(block)));
-        const __m128i b = reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(h)));
+    void Ghash::multiplyCore(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES],
+                             bool useGfni) {
+        const __m128i loaded = _mm_loadu_si128(reinterpret_cast<const __m128i*>(block));
+        const __m128i a = useGfni ? reverseBitsInBytesGfni(loaded) : reverseBitsInBytes(loaded);
+        const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(h));
 
         // The 256-bit carry-less product, schoolbook over the two 64-bit halves: the two middle
         // partial products straddle bit 64, so they are split between the halves by hand.
@@ -190,7 +244,16 @@ namespace crypto {
         const __m128i spill = _mm_srli_si128(f1, 8);
         lo = _mm_xor_si128(lo, _mm_clmulepi64_si128(spill, poly, 0x00));
 
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(block), reverseBitsInBytes(lo));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(block),
+                         useGfni ? reverseBitsInBytesGfni(lo) : reverseBitsInBytes(lo));
+    }
+
+    /* The public entry point, which reflects the subkey itself and so needs no prepared copy. */
+    void Ghash::multiplyAccelerated(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES]) {
+        uint8_t hReflected[BLOCK_BYTES];
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(hReflected),
+                         reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(h))));
+        multiplyCore(block, hReflected, hasGfni());
     }
 #endif // CERTPP_GHASH_HWACCEL_AVAILABLE
 
@@ -215,15 +278,17 @@ namespace crypto {
     }
 
     /* Constructs an unkeyed accumulator. */
-    Ghash::Ghash() : _buffered(0) {
+    Ghash::Ghash() : _accelerated(false), _useGfni(false), _buffered(0) {
         std::memset(_h, 0, sizeof(_h));
         std::memset(_y, 0, sizeof(_y));
         std::memset(_block, 0, sizeof(_block));
+        reflectSubkey();
     }
 
     /* Clears the subkey and the accumulator. */
     Ghash::~Ghash() {
         CSecure::zero(SByteSpan(_h, sizeof(_h)));
+        CSecure::zero(SByteSpan(_hReflected, sizeof(_hReflected)));
         CSecure::zero(SByteSpan(_y, sizeof(_y)));
         CSecure::zero(SByteSpan(_block, sizeof(_block)));
     }
@@ -234,7 +299,32 @@ namespace crypto {
             _y[i] ^= block[i];
         }
 
+        // --> The prepared copy rather than multiply(): H is already in the right basis, and
+        // re-reflecting it here is the twenty instructions per block this used to spend. Which
+        // of the accelerated paths applies was decided in reflectSubkey(), once.
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        if (_accelerated) {
+            multiplyCore(_y, _hReflected, _useGfni);
+            return;
+        }
+#endif
         multiply(_y, _h);
+    }
+
+    /* Converts the subkey into the basis the accelerated multiply wants, once per message. */
+    void Ghash::reflectSubkey() {
+        std::memset(_hReflected, 0, sizeof(_hReflected));
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(_hReflected),
+                         reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(_h))));
+
+        // --> Read once here so absorb() does not read a guarded static per block.
+        _accelerated = hasPclmul();
+        _useGfni = _accelerated && hasGfni();
+#else
+        _accelerated = false;
+        _useGfni = false;
+#endif
     }
 
     /* Keys this accumulator and clears its state. */
@@ -243,6 +333,7 @@ namespace crypto {
         std::memset(_y, 0, sizeof(_y));
         std::memset(_block, 0, sizeof(_block));
         _buffered = 0;
+        reflectSubkey();
     }
 
     /* Absorbs more input. */

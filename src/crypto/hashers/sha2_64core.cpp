@@ -32,12 +32,9 @@ namespace crypto {
 
         uint64_t w[80];
         for (size_t i = 0; i < 16; ++i) {
-            // --> SHA-384/SHA-512 pack message words big-endian.
-            uint64_t word = 0;
-            for (size_t j = 0; j < 8; ++j) {
-                word = (word << 8) | uint64_t(block[i * 8 + j]);
-            }
-            w[i] = word;
+            // --> SHA-384/SHA-512 pack message words big-endian; loadBe64() is the byte-swap
+            // for that, one instruction where this used to be eight loads and seven shift-ors.
+            w[i] = loadBe64(block + i * 8);
         }
 
         for (size_t i = 16; i < 80; ++i) {
@@ -51,10 +48,17 @@ namespace crypto {
 
         for (uint32_t i = 0; i < 80; ++i) {
             uint64_t s1 = rotr(e, 14) ^ rotr(e, 18) ^ rotr(e, 41);
-            uint64_t ch = (e & f) ^ (~e & g);
+
+            // --> Ch(e, f, g) == (e & f) ^ (~e & g), which costs a NOT the hardware does not
+            // have. The form below is the same function -- g ^ (e & (f ^ g)) -- in three
+            // operations and none of them a NOT. Same for Maj: (a & b) ^ (a & c) ^ (b & c) is five
+            // operations, ((a | b) & c) | (a & b) is four. Neither changes any output bit; both
+            // were measured rather than assumed, since this file has a history of changes of
+            // this exact shape costing more than they saved.
+            uint64_t ch = g ^ (e & (f ^ g));
             uint64_t temp1 = h + s1 + ch + K[i] + w[i];
             uint64_t s0 = rotr(a, 28) ^ rotr(a, 34) ^ rotr(a, 39);
-            uint64_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint64_t maj = ((a | b) & c) | (a & b);
             uint64_t temp2 = s0 + maj;
 
             h = g;
