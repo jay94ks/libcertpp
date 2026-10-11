@@ -636,3 +636,42 @@ as closed as it was recorded.
 
 Reverted in full. ARIA stays at 0.26x, now with the reason known rather than guessed, which is the
 third item this session to end that way.
+
+### ChaCha20-Poly1305 decomposed: Poly1305 is two thirds of it, and 10.5x behind OpenSSL
+
+The last unexamined item was ChaCha20-Poly1305, at 833 MiB/s against OpenSSL's 3,631. Decomposed
+at 64 KiB so every figure is on the same scale -- measuring the two halves at 64-byte granularity
+while the AEAD is measured at 64 KiB compares per-call overhead against throughput and reports
+the AEAD as *faster* than one of its parts, which is how the first version of this probe read:
+
+| | certpp | OpenSSL | ratio |
+|---|---|---|---|
+| ChaCha20 `xorStream` | 2492 MiB/s | 5142.8 MiB/s | 0.48x |
+| Poly1305 MAC | 1196.9 MiB/s | 12633.4 MiB/s | **0.09x** |
+| the AEAD | 833 MiB/s | 3631.3 MiB/s | 0.23x |
+
+So Poly1305 is two thirds of the AEAD's cost, and it is 10.5x behind -- the largest gap found in
+this whole survey, six times ARIA's and larger than Ed25519's. OpenSSL is using AVX512-IFMA
+(`vpmadd52luq`/`vpmadd52huq`), and this machine has `avx512ifma`. **The roadmap's item 4 named the
+right feature, which is a first.**
+
+One thing to say about the arithmetic, because it cost a wrong conclusion on the way: these
+instructions are not "52-bit multiply-add". `vpmadd52lo` gives bits 0..51 of `a*b + c`;
+`vpmadd52huq` gives `((a*b) >> 52) + c` and does **not** mask its result to 52 bits -- a test that
+expected masking reported the instruction as WRONG when the instruction was right and the
+expectation was wrong. Verified against 128-bit arithmetic over the 26x26 case the algorithm
+actually uses. The accumulator can therefore exceed 52 bits unless the algorithm keeps it in
+range, which is exactly the constraint an implementation must respect.
+
+Also measured and negative: hoisting `r[1..4] * 5` out of `absorbBlock()` changed nothing --
++1.3% on Poly1305 and +0.6% on the AEAD, both inside noise, and the instruction count went *up*
+from 971 to 975 because GCC's loop-invariant code motion already moves those four multiplies out
+of the block loop. Reverted. That is the fourth time in this session that a "recomputing a
+constant" hypothesis turned out to be already handled by the compiler, after ARIA's byte loads,
+ARIA's zero-extensions, and this.
+
+So this is the item to take next, and it is a real implementation rather than a reformulation:
+eight blocks at a time with `r^8 .. r^1` precomputed at key setup, the accumulator spread across
+vector lanes in 26-bit limbs, and the carry propagation done in the vector form. It deserves its
+own pass -- a MAC that is wrong only for some inputs is worse than one that is wrong for all of
+them, and the KATs will not necessarily tell the difference between those two cases.
