@@ -4209,3 +4209,62 @@ resolved; the scripts no longer need to.
 
 Verified as 130/130 on all four configurations: GCC Release+ASan, GCC ASan,
 MSVC Release, MSVC Debug.
+
+### Two paths that matched on the OID without checking it
+
+The `CString == COid` trap fixed above was live in two more places, and neither
+had a test that would have caught it -- because each file's other tests either
+write no such extension at all, or write the one whose OID does match.
+
+`tests/x509/crl.cpp` now builds a genuine CRL entry through `CCrlWriter`, with
+a reason, and then changes exactly one thing about it: the reason code's OID
+(`2.5.29.21`, content `55 1D 15`) to certificatePolicies (`2.5.29.32`, content
+`55 1D 20`). Both encode to three content octets, so every length in the
+encoding stays valid and the OID is the only variable. The entry must still
+decode, and must report no reason. The test also decodes the unmodified
+entry first and requires the reason to be there, so that "no reason" in the altered
+case is a decision rather than a decode that never worked.
+
+`tests/x509/ocsp.cpp` does the same to a response's nonce, retargeting
+`id-pkix-ocsp-nonce` to `id-pkix-ocsp-basic` -- adjacent OIDs, differing only
+in the last arc, so again nothing else in the encoding moves. What the bug
+returned there was worse than a misread flag: a response carrying, say, a CRL
+reference would have had that reference's bytes handed back as the request's
+nonce, which is a replay-protection check answering with data it was never
+asked for.
+
+Both tests were confirmed to fail against the pre-fix code and pass against the
+current code, which is the only claim worth making about a test added for a bug
+that has already been fixed.
+
+Writing these also corrected a wrong first attempt at them, which hand-built
+the DER. The positive half of the CRL test failed for a reason that had nothing
+to do with the OID under test, which is what it means for a hand-built fixture
+to be testing the fixture rather than the code.
+
+## `io/array`: a fixed TArray leaked the buffer it owned
+
+`~TArray()` called `clear()` then `trimExcess()`, and `trimExcess()` returns
+false immediately when `EARRAY_FIXED` is set -- before reaching its `delete[]`.
+An array that had grown onto the heap and was then marked fixed therefore never
+released that buffer. `wrap()` had the same defect for the same reason: it
+cleared and trimmed the array before overwriting `_data`, so re-wrapping a fixed
+array leaked the old buffer too.
+
+Nothing observable was wrong with such an array. Size, capacity, type and
+contents were all exactly right, and every assertion an ordinary test can make
+about them passed. The whole suite had been run with
+`ASAN_OPTIONS=detect_leaks=0`, which is what hid it.
+
+The fix gives the destructor, and `wrap()`, a `releaseOwnedBuffer()` that hands
+back whatever the array owns without regard for `EARRAY_FIXED`. That flag means
+"refuse to reallocate", which is a statement about the array while it is in use
+-- a destructor is not in use, and neither is a `wrap()` about to replace the
+buffer outright. The ownership test is unchanged from `reserve()`/`trimExcess()`:
+an `EARRAY_STATIC` array aliases a caller's memory and must not be freed, and
+everything else is ours. `tests/io/array.cpp` covers both the leaking case and
+the must-not-free-the-caller's-buffer case, since a fix that did the latter would
+be worse than the leak.
+
+The whole suite now passes under LeakSanitizer with detection enabled. Before
+this, `io_array` did not.

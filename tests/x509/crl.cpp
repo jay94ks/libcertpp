@@ -2,6 +2,8 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
+#include <algorithm>
+#include <vector>
 
 using namespace certpp;
 using namespace certpp::x509;
@@ -37,6 +39,63 @@ namespace {
         REQUIRE(builder.build(ca) == ERET_OK);
         REQUIRE(ca.privateKey(kp.privateKey) == ERET_OK);
         return ca;
+    }
+
+    /* The content octets of an OID, as they appear inside an encoded Extension. */
+    std::vector<uint8_t> oidBytes(const SKnownOid& oid) {
+        const COid id(oid);
+        const size_t needed = asn1::CEncoder::encodedOidSize(id.raw());
+        REQUIRE(needed > 0);
+
+        CBuffer content;
+        REQUIRE(content.resize(needed) == true);
+
+        size_t written = 0;
+        REQUIRE(asn1::CEncoder::encodeOid(content.toSpan(), id.raw(), written) == true);
+        REQUIRE(written == needed);
+
+        const uint8_t* p = content.toPtr();
+        return std::vector<uint8_t>(p, p + written);
+    }
+
+    std::vector<uint8_t> reasonCodeOidBytes() {
+        return oidBytes(COid::EXT_CRL_REASON_CODE);
+    }
+
+    std::vector<uint8_t> certificatePoliciesOidBytes() {
+        return oidBytes(COid::EXT_CERTIFICATE_POLICIES);
+    }
+
+    /* Returns `der` with the first occurrence of `from` replaced by `to`. Requires equal
+     * lengths, so the encoding around the OID stays well-formed -- which is what lets this test
+     * change an OID without rebuilding the structure around it.
+     *
+     * Works through a CBuffer because COctet deliberately hands out its bytes as const (see
+     * COctet::secureClear()'s own comment on why), and this is not the one use that earns a
+     * mutable pointer on COctet itself. */
+    bool retargetOid(const COctet& der, const std::vector<uint8_t>& from,
+                     const std::vector<uint8_t>& to, COctet& out) {
+        if (from.size() != to.size() || from.empty() || der.empty()) {
+            return false;
+        }
+
+        CBuffer buffer;
+        if (!buffer.resize(der.size())) {
+            return false;
+        }
+
+        std::copy(der.toPtr(), der.toPtr() + der.size(), buffer.toPtr());
+
+        uint8_t* p = buffer.toPtr();
+        for (size_t i = 0; i + from.size() <= der.size(); ++i) {
+            if (std::equal(from.begin(), from.end(), p + i)) {
+                std::copy(to.begin(), to.end(), p + i);
+                out.store(buffer.toPtr(), buffer.size());
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /* Builds a self-signed P-256 leaf certificate with the given one-byte serial number -- only
@@ -332,6 +391,44 @@ TEST_CASE("CCrlRevokationInfo: encode()/decode() round-trips independently of CC
     CHECK(decoded.isFor(leaf) == ERET_OK);
     CHECK(decoded.reason() == ECRLR_AFFILIATION_CHANGED);
     CHECK(decoded.timestamp().hour == 8);
+}
+
+TEST_CASE("CCrlRevokationInfo: an entry extension that is not the reason code is not read as one") {
+    // --> The reason is read out of a crlEntryExtensions entry by matching the extension's OID
+    // against id-ce-cRLReasons. Everything else about the entry stays exactly as the writer
+    // produced it -- same ENUMERATED payload, same structure, same lengths -- and only the OID
+    // changes, to certificatePolicies. A decode that matched on anything but the OID would
+    // still report keyCompromise.
+    //
+    // It did exactly that, silently. The comparison was `extnOid == COid(OID_REASON_CODE)` with
+    // extnOid a CString, and CString == COid is always true, so *every* extension on *every* CRL
+    // entry was read as a reason code. Nothing caught it because every other test in this file
+    // either writes no entry extensions at all or writes the reason code -- the one extension
+    // whose OID does match.
+    CCert leaf = makeLeaf(0x81);
+
+    CCrlWriter writer;
+    writer.thisUpdate(SDateTime(2026, 2, 1, 0, 0, 0, 0, true));
+    REQUIRE(writer.add(leaf, SDateTime(2026, 1, 1, 8, 0, 0, 0, true), ECRLR_KEY_COMPROMISE) == ERET_OK);
+
+    COctet withReason;
+    REQUIRE(writer.revokations()[0].encode(withReason) == ERET_OK);
+
+    // --> The control: unmodified, the entry does report the reason.
+    CCrlRevokationInfo asWritten;
+    REQUIRE(CCrlRevokationInfo::decode(withReason, asWritten) == ERET_OK);
+    REQUIRE(asWritten.reason() == ECRLR_KEY_COMPROMISE);
+
+    COctet altered;
+    REQUIRE(retargetOid(withReason, reasonCodeOidBytes(), certificatePoliciesOidBytes(), altered));
+
+    CCrlRevokationInfo decoded;
+    REQUIRE(CCrlRevokationInfo::decode(altered, decoded) == ERET_OK);
+
+    // --> The entry still decodes -- an unrecognised extension is skipped, not a rejection --
+    // but it carries no reason, because nothing in it says which.
+    CHECK(decoded.reason() == ECRLR_NONE);
+    CHECK(decoded.timestamp().hour == 8); // the rest of the entry is untouched
 }
 
 TEST_CASE("CCrlReader: decode() rejects empty or structurally malformed data") {

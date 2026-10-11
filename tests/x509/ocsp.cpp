@@ -3,6 +3,7 @@
 
 #include <certpp.hpp>
 #include <cstring>
+#include <algorithm>
 #include <vector>
 
 using namespace certpp;
@@ -10,6 +11,50 @@ using namespace certpp::x509;
 using namespace certpp::crypto;
 
 namespace {
+
+    /* The content octets of an OID, as they appear inside an encoded Extension. */
+    std::vector<uint8_t> oidBytes(const SKnownOid& oid) {
+        const COid id(oid);
+        const size_t needed = asn1::CEncoder::encodedOidSize(id.raw());
+        REQUIRE(needed > 0);
+
+        CBuffer content;
+        REQUIRE(content.resize(needed) == true);
+
+        size_t written = 0;
+        REQUIRE(asn1::CEncoder::encodeOid(content.toSpan(), id.raw(), written) == true);
+        REQUIRE(written == needed);
+
+        const uint8_t* p = content.toPtr();
+        return std::vector<uint8_t>(p, p + written);
+    }
+
+    /* Returns `der` with the first occurrence of `from` replaced by `to`. Requires equal
+     * lengths, so the encoding around the OID stays well-formed. */
+    bool retargetOid(const COctet& der, const std::vector<uint8_t>& from,
+                     const std::vector<uint8_t>& to, COctet& out) {
+        if (from.size() != to.size() || from.empty() || der.empty()) {
+            return false;
+        }
+
+        CBuffer buffer;
+        if (!buffer.resize(der.size())) {
+            return false;
+        }
+
+        std::copy(der.toPtr(), der.toPtr() + der.size(), buffer.toPtr());
+
+        uint8_t* p = buffer.toPtr();
+        for (size_t i = 0; i + from.size() <= der.size(); ++i) {
+            if (std::equal(from.begin(), from.end(), p + i)) {
+                std::copy(to.begin(), to.end(), p + i);
+                out.store(buffer.toPtr(), buffer.size());
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /* Builds a self-signed P-256 CA certificate with its own private key attached and a
      * SubjectKeyIdentifier extension, for use as an OCSP responder/issuer across these tests. */
@@ -529,6 +574,49 @@ TEST_CASE("COcspResponse: nonceBytes() echoed from a request round-trips through
     COcspResponse decoded;
     REQUIRE(decoded.decode(out) == ERET_OK);
     CHECK(decoded.nonceBytes().toSpan().sequencialEqual(requestBuilder.nonceBytes().toSpan()));
+}
+
+TEST_CASE("COcspResponse: an extension that is not the nonce is not read as one") {
+    // --> The nonce is picked out of the response's singleResponse[0].extnScope by matching the
+    // extension's OID against id-pkix-ocsp-nonce. Everything else stays exactly as the builder
+    // produced it, and only the OID changes -- to id-pkix-ocsp-basic, the adjacent OID, so the
+    // encoding's lengths are untouched.
+    //
+    // The comparison used to be `extnOid == COid(OID_NONCE)` with extnOid a CString, and
+    // CString == COid is always true. Every extension on every response was therefore read as a
+    // nonce, and a response carrying, say, a CRL reference would have had that CRL reference's
+    // bytes handed back as the request's nonce -- which is a replay-protection check answering
+    // with data it was never asked for. Nothing caught it because the only other test touching
+    // this path builds a response whose sole extension is the nonce.
+    COctet caSki;
+    CCert ca = makeCa("Nonce Retarget CA", caSki);
+    CCert leaf = makeLeaf(ca, caSki, 0x57);
+
+    COcspResponseBuilder response;
+    response.status(EOCSP_OK);
+    response.producedAt(SDateTime(2026, 2, 1, 0, 0, 0, 0, true));
+    response.nonceBytes(COctet(reinterpret_cast<const uint8_t*>("a nonce this long"), 16));
+    REQUIRE(response.add(leaf, ca, EOCSPENT_GOOD, SDateTime(2026, 2, 1, 0, 0, 0, 0, true)) == ERET_OK);
+
+    COctet built;
+    REQUIRE(response.build(ca, built) == ERET_OK);
+
+    // --> The control: unmodified, the nonce is read back.
+    COcspResponse asBuilt;
+    REQUIRE(asBuilt.decode(built) == ERET_OK);
+    REQUIRE(asBuilt.nonceBytes().size() == 16);
+
+    COctet altered;
+    REQUIRE(retargetOid(built, oidBytes(COid::OCSP_NONCE),
+                        oidBytes(COid::OCSP_BASIC_RESPONSE), altered));
+
+    COcspResponse decoded;
+    REQUIRE(decoded.decode(altered) == ERET_OK);
+
+    // --> The rest of the response still decodes -- an unrecognised extension is skipped, not a
+    // rejection -- but there is no nonce, because the OID that named one is no longer there.
+    CHECK(decoded.nonceBytes().empty());
+    CHECK(decoded.entries().size() == 1);
 }
 
 TEST_CASE("COcspResponse/COcspRequest: Ed25519 responder signs and verifies a response") {
