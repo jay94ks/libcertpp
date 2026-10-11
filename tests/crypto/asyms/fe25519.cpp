@@ -16,6 +16,8 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
+
+#include <certpp/arch.hpp>
 #include "crypto/asyms/fe25519.hpp"
 
 #include <vector>
@@ -103,20 +105,39 @@ namespace {
     }
 }
 
-TEST_CASE("Fe25519: the limb layout is radix 2^25.5 over 255 bits") {
-    static_assert(Fe25519::LIMBS == 10, "ten limbs");
+TEST_CASE("Fe25519: the limb layout sums to exactly 255 bits, whichever was built") {
     static_assert(Fe25519::BYTES == 32, "32-byte encoding");
 
-    // Alternating 26 and 25 bits, summing to exactly 255 -- which is what makes the top limb
-    // line up with 2^255 and the wrap a clean factor of 19.
+    // --> Two representations, chosen at compile time: five limbs at radix 2^51 where the target
+    // has a native 64x64->128, and ten at radix 2^25.5 otherwise. Which one is a build
+    // decision, not a correctness one -- what must hold for either is that the widths sum to
+    // exactly 255, because that is what makes the top limb line up with 2^255 and the wrap a
+    // clean factor of 19. Everything below this line is representation-independent.
     int total = 0;
     for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
-        const int width = Fe25519::widthOf(i);
-        REQUIRE((width == 26 || width == 25));
-        REQUIRE(width == ((i % 2 == 0) ? 26 : 25));
-        total += width;
+        total += Fe25519::widthOf(i);
     }
     CHECK(total == 255);
+
+#if defined(CERTPP_FE25519_RADIX51)
+    static_assert(Fe25519::LIMBS == 5, "five limbs at radix 2^51");
+    for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+        CHECK(Fe25519::widthOf(i) == 51);
+    }
+
+    // --> The bound mul()'s reduction relies on: five products per accumulator, each at most
+    // (2^51-1)^2, each held in a signed 128-bit word. Checked here so a future change cannot
+    // silently overflow it -- reduce9()'s three rounds assume exactly this.
+    const __int128 worst = (static_cast<__int128>(1) << 51) - 1;
+    const __int128 bound = 5 * worst * worst;
+    CHECK(bound > 0);
+    CHECK(bound < (static_cast<__int128>(1) << 106));   // and 19*that still fits __int128
+    CHECK(19 * bound < (static_cast<__int128>(1) << 111));
+#else
+    static_assert(Fe25519::LIMBS == 10, "ten limbs at radix 2^25.5");
+    for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+        CHECK(Fe25519::widthOf(i) == ((i % 2 == 0) ? 26 : 25));
+    }
 
     // The int64 bound the multiply depends on: 10 partial products, each at most (2^26-1)^2,
     // each possibly scaled by 2 and by 19. Checked here so a future change to the radix cannot
@@ -125,6 +146,7 @@ TEST_CASE("Fe25519: the limb layout is radix 2^25.5 over 255 bits") {
     const int64_t bound = 10 * worst * worst * 38;
     CHECK(bound > 0);                              // no overflow computing it
     CHECK(bound < (int64_t(1) << 62));             // comfortably inside int64
+#endif
 }
 
 TEST_CASE("Fe25519: encoding round-trips and produces canonical bytes") {

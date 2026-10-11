@@ -370,6 +370,79 @@ instruction count, not a time -- but the predicted end-to-end outcome is, and it
 has no KAT behind it until item 1 is implemented and the field's known-answer
 tests pass.
 
+### Item 1 measured: a negative result, and the reason is not the radix
+
+The section above predicted that moving `Fe25519` to radix 2^51 would take Ed25519 signing from
+4.5x OpenSSL to roughly 2.5x. It was implemented, it is correct, and **it is not faster.** Both
+layouts, built from one source and timed back to back in one session, with OpenSSL's own timing
+as the control that says the machine was quiet:
+
+| | best of 3 |
+|---|---|
+| control: OpenSSL | 0.0515 ms (4% spread) |
+| radix 2^51, five limbs | 0.1919 ms |
+| **radix 2^25.5, ten limbs** | **0.1812 ms** |
+
+6% the wrong way, which is inside this machine's noise floor and therefore reads as "no change".
+The prediction said 2x. What happened is nothing.
+
+The 4.6--4.9x was real. It measured the **product accumulation in isolation**, and that is still
+what the two layouts differ by. The end-to-end number did not follow because the accumulation is
+not what `Fe25519::mul` costs. The generated assembly for the 2^51 multiply:
+
+| | count |
+|---|---|
+| `imulq` -- the 25 products | **25** |
+| `movq` | 190 |
+| `shrdq`/`shldq`/`salq`/`sarq` | 80 |
+
+458 instructions for 25 multiplies. The multiply is not the cost; moving the numbers around it
+is. Nine `__int128` accumulators are 18 registers and x86-64 has 15, so the products spill, and
+`>> 51` on a 128-bit value is a double-precision shift -- `shrd`+`sar`, two instructions -- which
+the reduction does eight of per round over three rounds.
+
+A second version kept every carry in 64-bit words instead, which is the obvious next move and
+which is the shape ref10 uses. It moved instructions per signature from 2,262,504 to 1,890,730 --
+16% -- and left the wall clock where it was, with IPC falling from 3.22 to 2.44.
+
+**So the diagnosis was right and the fix was not enough.** The bottleneck is the reduction's
+data movement, not the width of the products, and narrowing the products does not touch it.
+
+#### What is kept, and why
+
+- `include/certpp/arch.hpp`, new and public: the single place the library decides what
+  architecture it is on. Per-ISA, because the question that matters is not 32- versus 64-bit but
+  whether one instruction produces a 128-bit product -- x86-64 and AArch64 can, x86 and ARM-32
+  cannot, and inferring it from a word width is the mistake. Every remaining item in this section
+  needs it.
+- The radix-2^51 `Fe25519`, behind `CERTPP_ENABLE_FE25519_RADIX51`, **off by default**. It is
+  correct -- 38,494 field assertions against `CBigNum`, every RFC 8032 and 7748 vector, 130/130 on
+  both configurations -- and it is off because it is not faster, so the default build carries no
+  regression risk and none of the second layout's maintenance cost. It stays in the tree so that
+  the negative result is reproducible rather than merely recorded: turn the option on and re-run
+  the A/B.
+
+#### What this cost, and what it bought
+
+Three bugs in the new code, all caught by the existing tests rather than by inspection, and the
+third only after a probe whose expectations are computed in Python -- the hand-written ones were
+wrong twice, in opposite directions, which is what a hand-built fixture does:
+
+1. `toBytes` produced non-canonical bytes for values at or above p. The `CBigNum` encoding test
+   caught it; 22 assertions.
+2. `condSwap` zero-extended its 32-bit mask to the 51-bit limb type, so `0xFFFFFFFF` swapped the
+   low half of every limb. Caught by the condSwap test, which compares limbs directly.
+3. The reduction's carry chain normalised `t[0..7]` but not `t[8]`, so the 19x fold read an
+   un-reduced pair. Caught only by the Python-generated probe, and only on products above 2^408
+   -- everything below it was right, which is a worse way to find out.
+
+What it bought is the reason the answer is now known rather than guessed. P4 was closed in
+**two** sentences on a 22% figure that turned out to be measuring `_umul128`. Measured: that
+emulation is 6.5--7.0x the native one, 66--69 ns against the 43--45 ns of the layout it would
+replace, so a single 2^51 implementation everywhere would have made MSVC *slower than it is
+today*. That is why this is a gate and not a rewrite, and it is the part of the investigation
+that generalises to everything else in this section.
+
 ## Not planned
 
 - Path validation. Still deliberately out of scope; see

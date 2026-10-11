@@ -17,6 +17,7 @@ endif()
 option(CERTPP_BUILD_SHARED "Build certpp as a shared library" ON)
 option(CERTPP_WITHOUT_JSON "Exclude the JSON utility from the library" OFF)
 option(CERTPP_RNG_FALLBACK "Allow crypto::CRng to fall back to std::random_device if the OS CSPRNG is unavailable" OFF)
+option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255-19) instead of the default 2^25.5 ten-limb one. Correct but measured no faster on x86-64 GCC, so it is off; see docs/roadmap.md for the measurements" OFF)
 option(CERTPP_DISABLE_HWACCEL_SIMD "Disable CPU SIMD/extended-instruction hardware acceleration (PCLMULQDQ for CGf2m and GHASH, ADX/BMI2 for CBigNum, SSE2 for ChaCha20's keystream -- and, transitively, every asymmetric algorithm built on them, plus both AEADs), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
@@ -57,6 +58,7 @@ target_compile_definitions(certpp
         __COMPILES_LIBCERTPP__=1
         $<$<BOOL:${CERTPP_RNG_FALLBACK}>:CERTPP_RNG_FALLBACK=1>
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SIMD}>:CERTPP_DISABLE_HWACCEL_SIMD=1>
+    $<$<BOOL:${CERTPP_ENABLE_FE25519_RADIX51}>:CERTPP_ENABLE_FE25519_RADIX51=1>
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SHA}>:CERTPP_DISABLE_HWACCEL_SHA=1>
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AES}>:CERTPP_DISABLE_HWACCEL_AES=1>
     PUBLIC

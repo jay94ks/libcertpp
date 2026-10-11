@@ -6,6 +6,176 @@ namespace crypto {
 
     namespace {
 
+#if defined(CERTPP_FE25519_RADIX51)
+
+        /* Bit offset of limb i: 0, 51, 102, 153, 204. */
+        constexpr int OFFSET[Fe25519::LIMBS] = { 0, 51, 102, 153, 204 };
+
+        constexpr int64_t MASK51 = (int64_t(1) << 51) - 1;
+
+        /* One carry pass over five signed 51-bit limbs, ending with limb 4's overflow folded back
+         * into limb 0 as a factor of 19, because 2^255 == 19 mod p.
+         *
+         * The shifts are arithmetic, which is what lets a negative limb -- the ordinary result of
+         * sub() -- propagate correctly without a borrow branch. That is the same property the
+         * 2^25.5 path relies on, and the reason both layouts keep signed limbs rather than
+         * adding a multiple of p before every subtraction.
+         *
+         * Left as a loop for the same reason as the 2^25.5 version: unrolling it was measured and
+         * changed nothing inside the run-to-run spread. */
+        void carryPass(int64_t* t) {
+            int64_t carry = 0;
+
+            for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+                t[i] += carry;
+                carry = t[i] >> Fe25519::widthOf(i);
+                t[i] -= carry << Fe25519::widthOf(i);
+            }
+
+            t[0] += carry * 19;
+
+            // Limb 0 may now exceed its width; one short pass settles it.
+            carry = t[0] >> 51;
+            t[0] -= carry << 51;
+            t[1] += carry;
+        }
+
+        void store(Fe25519& out, const int64_t* t) {
+            for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+                out.limbs[i] = t[i];
+            }
+        }
+
+        void load(int64_t* t, const Fe25519& in) {
+            for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+                t[i] = in.limbs[i];
+            }
+        }
+
+        /* The same carry pass, over 128-bit accumulators.
+         *
+         * mulA24() needs it: 121665 * (2^51 - 1) is 2^68, which does not fit an int64_t. The
+         * 2^25.5 path never had this problem because 121665 * (2^26 - 1) is 2^43.
+         */
+        void carryPass128(__int128* t) {
+            __int128 carry = 0;
+
+            for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+                t[i] += carry;
+                carry = t[i] >> 51;
+                t[i] -= carry << 51;
+            }
+
+            t[0] += carry * 19;
+
+            carry = t[0] >> 51;
+            t[0] -= carry << 51;
+            t[1] += carry;
+        }
+
+        /* The 5x5 product, accumulated as explicit (hi, lo) pairs rather than __int128 values.
+         *
+         * --> This is the second version of this function, and the first one was correct and not
+         * faster, which is worth saying plainly. Written with a __int128 accumulator array, it
+         * passed every test and produced exactly the Ed25519 signing time the 2^25.5 layout did.
+         * The reason is in the generated code, not the arithmetic: `t[k] >> 51` on a __int128 is
+         * a double-precision shift, which x86-64 has no single instruction for, so every one
+         * lowers to shrd+sar. Eight of those per round over three rounds is 48 instructions of
+         * shifting to fold 25 products, and the whole function came out at 495 instructions for
+         * 25 multiplies -- 195 of them moves, 80 shift halves, 25 imuls doing the actual work.
+         *
+         * So: each accumulator is a pair of 64-bit words and every carry is a 64-bit shift. The
+         * products are still native 64x64->128; only the arithmetic around them changes.
+         */
+        struct Acc {
+            uint64_t lo;
+            uint64_t hi;
+        };
+
+        /* Adds one native 64x64->128 product into an accumulator.
+         *
+         * A single product, taken apart once. >> 64 on a __int128 is a register copy of the high
+         * word, not a shift, so this is still one instruction's worth of multiply work plus two
+         * moves -- not the two separate multiplies an earlier version of this did by computing
+         * the low half a second time as a plain 64-bit product.
+         */
+        inline void accumulate(Acc& into, uint64_t a, uint64_t b) {
+            const unsigned __int128 product = (unsigned __int128)a * b;
+
+            const uint64_t s = into.lo + (uint64_t)product;
+            into.hi += (uint64_t)(product >> 64) + (s < (uint64_t)product ? 1ull : 0ull);
+            into.lo = s;
+        }
+
+        /* into += 19 * src, for a src that the carry chain has already reduced to 51 bits.
+         *
+         * The product 19 * src is two words wide in general and three words wide at the very top,
+         * which is why the low half is taken as a 64-bit product and only its carry -- never the
+         * full 128-bit value -- is added to the scaled high half.
+         */
+        inline void foldIn(Acc& into, const Acc& src) {
+            const unsigned __int128 low = (unsigned __int128)src.lo * 19ull;
+            const unsigned __int128 high = (unsigned __int128)src.hi * 19ull + (low >> 64);
+
+            const uint64_t s = into.lo + (uint64_t)low;
+            into.hi += (uint64_t)high + (s < (uint64_t)low ? 1ull : 0ull);
+            into.lo = s;
+        }
+
+        /* Folds the ten 51-bit accumulators a 5x5 product lands in down to the five limbs an
+         * element actually has.
+         *
+         * The product reaches bit 459 and an element holds 255 of them, so everything from limb 5
+         * up has to come back down by 2^255 == 19 mod p. It comes down four limbs at a time, one
+         * factor of 19 per limb -- NOT as 19 times the whole upper half, because 19 * (t8 * 2^153)
+         * overflows the __int128 these are held in. Folding a limb at a time is what P4's two
+         * failed attempts did not do.
+         *
+         * Three rounds because each shrinks the carry by about 2^51: the first leaves the top
+         * limb near 2^59, the second near 2^8, the third exact. That is an argument, not a proof;
+         * the proof is tests/crypto/asyms/fe25519.cpp checking every operation against CBigNum,
+         * which is the check that would catch this being wrong rather than merely wrong-looking.
+         */
+        void reduce9(Acc* t, int64_t* out) {
+            // --> t[0..9], not t[0..8]. The carry chain has to normalize t[8] as well, or the
+            // 19x fold below reads its un-reduced pair -- up to 2^105 with the high word holding
+            // bits 64..105 -- and treats it as if it were a 51-bit limb. An earlier version ran
+            // the chain only to k = 7 and was right on every product below 2^408 and wrong on
+            // every one above it: 2^254 * 2^254, (p-1)^2 and (2^251+9)^2.
+            for (int round = 0; round < 3; ++round) {
+                // Carry limb k upward. The carry out of a 128-bit accumulator shifted right by 51
+                // is (hi << 13) | (lo >> 51) in the low word and hi >> 51 in the high one --
+                // both halves, which an earlier version of this dropped by zeroing hi and so
+                // lost the upper half of every limb. Two shifts and an or, against the shrd+sar
+                // pair the __int128 version needed, but with nothing written to memory.
+                for (int k = 0; k < 9; ++k) {
+                    const uint64_t carryLo = (t[k].lo >> 51) | (t[k].hi << 13);
+                    const uint64_t carryHi = t[k].hi >> 51;
+                    t[k].lo &= (uint64_t)MASK51;
+                    t[k].hi = 0;
+
+                    const uint64_t s = t[k + 1].lo + carryLo;
+                    t[k + 1].hi += carryHi + (s < carryLo ? 1ull : 0ull);
+                    t[k + 1].lo = s;
+                }
+
+                // Everything from limb 5 up is above 2^255, so it folds back by 19 -- limb by
+                // limb, one per destination, because 19 times the whole upper half would not fit
+                // in 64 bits. Limb k folds into limb k - 5.
+                for (int k = 5; k < 10; ++k) {
+                    foldIn(t[k - 5], t[k]);
+                    t[k].lo = 0;
+                    t[k].hi = 0;
+                }
+            }
+
+            for (int k = 0; k < 5; ++k) {
+                out[k] = int64_t(t[k].lo);
+            }
+        }
+
+#else
+
         /* Bit offset of limb i: 0, 26, 51, 77, 102, 128, 153, 179, 204, 230. */
         constexpr int OFFSET[Fe25519::LIMBS] = { 0, 26, 51, 77, 102, 128, 153, 179, 204, 230 };
 
@@ -47,6 +217,8 @@ namespace crypto {
                 t[i] = in.limbs[i];
             }
         }
+
+#endif // CERTPP_FE25519_RADIX51
 
         /* out250 = a^(2^250 - 1) and out11 = a^11.
          *
@@ -169,22 +341,26 @@ namespace crypto {
         std::memcpy(masked, in, BYTES);
         masked[31] = uint8_t(masked[31] & 0x7Fu);
 
-        // Sliced bit by bit, so the alternating 26/25 widths need no per-limb byte arithmetic.
-        // Not the fastest way to unpack, but this runs once per scalar multiplication rather
-        // than once per ladder step.
-        auto bitAt = [&](size_t bit) -> uint32_t {
-            return uint32_t((masked[bit >> 3] >> (bit & 7u)) & 1u);
+        // Sliced bit by bit, so the mixed limb widths need no per-limb byte arithmetic. Not the
+        // fastest way to unpack, but this runs once per scalar multiplication rather than once
+        // per ladder step.
+        auto bitAt = [&](size_t bit) -> uint64_t {
+            return uint64_t((masked[bit >> 3] >> (bit & 7u)) & 1u);
         };
 
         for (size_t i = 0; i < LIMBS; ++i) {
             const int width = widthOf(i);
-            int32_t value = 0;
+
+            // --> int64_t on both layouts. The 2^25.5 limbs fit an int32_t and always did; a
+            // 51-bit limb does not, and truncating one would decode a field element to a
+            // different one.
+            int64_t value = 0;
 
             for (int b = 0; b < width; ++b) {
-                value |= int32_t(bitAt(size_t(OFFSET[i] + b))) << b;
+                value |= int64_t(bitAt(size_t(OFFSET[i] + b))) << b;
             }
 
-            limbs[i] = value;
+            limbs[i] = Limb(value);
         }
     }
 
@@ -202,12 +378,50 @@ namespace crypto {
         // representative in [p, 2^255) for some inputs, which still decodes back to the same
         // field element -- so no round-trip test would notice, and only a check against the
         // canonical bytes catches it.
+#if defined(CERTPP_FE25519_RADIX51)
+        // --> The same subtraction in the 51-bit layout, derived rather than recalled.
+        //
+        // After the two carry passes above every limb is in [0, 2^51) and limb 4 holds weight
+        // 2^204, so the value x is in [0, 2^255). Reducing it means x - p = (x + 19) - 2^255,
+        // and both halves of that are one carry cascade:
+        //
+        //   u = x + 19, carried limb by limb, with the bit that leaves limb 4 being the 2^255
+        //       that has to go. Call that bit c. c is 1 exactly when x + 19 >= 2^255, i.e.
+        //       exactly when x >= p.
+        //   So u represents x + 19 - c*2^255 = x - c*p, which is the answer when c is 1 and
+        //       is not the answer when c is 0 -- and when c is 0 nothing overflowed, so u is
+        //       x + 19 rather than x, and the select has to pick the untouched limbs.
+        //
+        // The select is a mask rather than a branch, so the encoded bytes do not depend on a
+        // comparison anywhere. An earlier version of this used ref10's (19*v[4] + 2^50) >> 51
+        // form and adjusted the top limb by q - 2^51; it produced non-canonical bytes for values
+        // at or above p, which tests/crypto/asyms/fe25519.cpp's encoding test caught against
+        // CBigNum.
+        int64_t u[LIMBS];
+
+        u[0] = t[0] + 19;
+        int64_t c = u[0] >> 51;
+        u[0] -= c << 51;
+
+        for (size_t i = 1; i < LIMBS; ++i) {
+            u[i] = t[i] + c;
+            c = u[i] >> 51;
+            u[i] -= c << 51;
+        }
+        // c is now the 2^255 bit of (x + 19): 1 when x >= p, 0 otherwise.
+
+        const int64_t select = -c; // 0 or all-ones
+        for (size_t i = 0; i < LIMBS; ++i) {
+            t[i] = (u[i] & select) | (t[i] & ~select);
+        }
+#else
         int64_t q = (19 * t[9] + (int64_t(1) << 24)) >> 25;
         for (size_t i = 0; i < LIMBS; ++i) {
             q = (t[i] + q) >> widthOf(i);
         }
 
         t[0] += 19 * q;
+#endif // CERTPP_FE25519_RADIX51
 
         int64_t carry = 0;
         for (size_t i = 0; i < LIMBS; ++i) {
@@ -215,7 +429,9 @@ namespace crypto {
             carry = t[i] >> widthOf(i);
             t[i] -= carry << widthOf(i);
         }
-        // `carry` here is the 2^255 bit, and dropping it completes the subtraction.
+        // `carry` here is the 2^255 bit, and dropping it completes the subtraction. On the
+        // 51-bit path the equivalent adjustment already happened above, where limb 4 takes
+        // q - 2^51 rather than q; this pass then has nothing left to carry.
 
         std::memset(out, 0, BYTES);
 
@@ -256,6 +472,44 @@ namespace crypto {
 
     /* out = a * b. */
     void Fe25519::mul(Fe25519& out, const Fe25519& a, const Fe25519& b) {
+#if defined(CERTPP_FE25519_RADIX51)
+        // 5x5 = 25 products, each a native 64x64->128 that the compiler emits as one MUL r64 on
+        // x86-64 and one UMULL on AArch64. Signed, because a limb can be negative after sub() and
+        // an unsigned multiply of a negative limb would be silently wrong -- the same reason the
+        // 2^25.5 path multiplies in int64_t rather than uint64_t.
+        //
+        // Bounds, so the reduction's three rounds are an argument rather than a guess: limbs are
+        // carry-reduced on every entry point so each is under 2^51, each product is under 2^102,
+        // and t[k] takes at most five of them, so t[k] < 2^105 before reduce9() and every
+        // intermediate after it stays inside __int128.
+        Acc t[10];
+        for (size_t i = 0; i < 10; ++i) { t[i].lo = 0; t[i].hi = 0; }
+
+        const uint64_t f0 = uint64_t(a.limbs[0]), f1 = uint64_t(a.limbs[1]);
+        const uint64_t f2 = uint64_t(a.limbs[2]), f3 = uint64_t(a.limbs[3]);
+        const uint64_t f4 = uint64_t(a.limbs[4]);
+        const uint64_t g0 = uint64_t(b.limbs[0]), g1 = uint64_t(b.limbs[1]);
+        const uint64_t g2 = uint64_t(b.limbs[2]), g3 = uint64_t(b.limbs[3]);
+        const uint64_t g4 = uint64_t(b.limbs[4]);
+
+        accumulate(t[0], f0, g0);
+        accumulate(t[1], f0, g1); accumulate(t[1], f1, g0);
+        accumulate(t[2], f0, g2); accumulate(t[2], f1, g1); accumulate(t[2], f2, g0);
+        accumulate(t[3], f0, g3); accumulate(t[3], f1, g2);
+        accumulate(t[3], f2, g1); accumulate(t[3], f3, g0);
+        accumulate(t[4], f0, g4); accumulate(t[4], f1, g3);
+        accumulate(t[4], f2, g2); accumulate(t[4], f3, g1); accumulate(t[4], f4, g0);
+        accumulate(t[5], f1, g4); accumulate(t[5], f2, g3);
+        accumulate(t[5], f3, g2); accumulate(t[5], f4, g1);
+        accumulate(t[6], f2, g4); accumulate(t[6], f3, g3); accumulate(t[6], f4, g2);
+        accumulate(t[7], f3, g4); accumulate(t[7], f4, g3);
+        accumulate(t[8], f4, g4);
+
+        int64_t r[5];
+        reduce9(t, r);
+        carryPass(r);
+        store(out, r);
+#else
         // Generated from the rule validated against exact arithmetic: a doubling when
         // both limb indices are odd, and a factor of 19 when the product lands at 2^255
         // or above. Pre-scaling the operands folds both constants out of the inner
@@ -347,6 +601,7 @@ namespace crypto {
         carryPass(t);
         carryPass(t);
         store(out, t);
+#endif // CERTPP_FE25519_RADIX51
     }
 
     /* out = a^2. */
@@ -376,6 +631,29 @@ namespace crypto {
 
     /* out = a * 121665. */
     void Fe25519::mulA24(Fe25519& out, const Fe25519& a) {
+#if defined(CERTPP_FE25519_RADIX51)
+        // --> 128-bit accumulators here, where the 2^25.5 path gets away with int64_t: 121665 *
+        // (2^51 - 1) is 2^68, which does not fit in 64 bits. That overflow is the whole reason
+        // this operation cannot share its body between the two layouts.
+        __int128 t[LIMBS];
+
+        for (size_t i = 0; i < LIMBS; ++i) {
+            t[i] = __int128(a.limbs[i]) * 121665;
+        }
+
+        carryPass128(t);
+        carryPass128(t);
+
+        // --> Narrow rather than reinterpret: both carryPasses leave each limb under 2^51, so
+        // the conversion is value-preserving, and a __int128 array has no int64_t layout to alias
+        // even if it did.
+        int64_t r[LIMBS];
+        for (size_t i = 0; i < LIMBS; ++i) {
+            r[i] = int64_t(t[i]);
+        }
+
+        store(out, r);
+#else
         int64_t t[LIMBS];
 
         for (size_t i = 0; i < LIMBS; ++i) {
@@ -385,6 +663,7 @@ namespace crypto {
         carryPass(t);
         carryPass(t);
         store(out, t);
+#endif // CERTPP_FE25519_RADIX51
     }
 
     /* out = -a. */
@@ -450,10 +729,17 @@ namespace crypto {
     void Fe25519::condSwap(uint32_t mask, Fe25519& a, Fe25519& b) {
         // --> In a Montgomery ladder the condition is a bit of the private scalar, so this has
         // to be arithmetic rather than an `if`. Every limb is read and written on both paths.
-        const int32_t m = int32_t(mask);
+        //
+        // The mask is a 32-bit one by the documented contract (0 or 0xFFFFFFFF, anything else
+        // mixing the two element-wise), so it is sign-extended to the limb width rather than
+        // zero-extended. Zero-extending would be the subtle wrong answer: on the 51-bit layout
+        // 0xFFFFFFFF widened that way is 0x00000000FFFFFFFF, which swaps the low half of every
+        // limb and leaves the rest -- a swap that half-happens. An unconditional mask means the
+        // two layouts need different code here, which is why this is not shared.
+        const Limb m = Limb(static_cast<int64_t>(static_cast<int32_t>(mask)));
 
         for (size_t i = 0; i < LIMBS; ++i) {
-            const int32_t difference = (a.limbs[i] ^ b.limbs[i]) & m;
+            const Limb difference = (a.limbs[i] ^ b.limbs[i]) & m;
             a.limbs[i] = a.limbs[i] ^ difference;
             b.limbs[i] = b.limbs[i] ^ difference;
         }

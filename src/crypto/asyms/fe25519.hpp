@@ -3,6 +3,27 @@
 
 #include <certpp/common.hpp>
 
+#include <certpp/arch.hpp>
+
+// --> Radix 2^51 needs a native 64x64->128, and certpp/arch.hpp says whether this target has one.
+// Measured, that accumulation is 4.6--4.9x cheaper than the 2^25.5 one it replaces, and
+// `Fe25519::mul` is 75.8% of Ed25519 signing -- so it is most of that algorithm's 4.5x gap.
+//
+// The decision lives here rather than in fe25519.cpp because this header is what chooses LIMBS
+// and the limb type; putting it in the .cpp would mean two files each deciding it.
+//
+// It is a gate rather than a second implementation for a measured reason: MSVC has no __int128 on
+// x86-64 either, and a 64x64->128 assembled from `_umul128` measures 6.5--7.0x the native one --
+// 66--69 ns against the 43--45 ns of the 2^25.5 layout it would replace. One 2^51 implementation
+// everywhere would therefore make MSVC slower than it is today, which is also what P4's recorded
+// "22% for the radix change" turns out to have been measuring.
+#if defined(CERTPP_ENABLE_FE25519_RADIX51)
+    #if !defined(CERTPP_ARCH_NATIVE_64x64_TO_128)
+        #error "CERTPP_ENABLE_FE25519_RADIX51 needs a target with a native 64x64->128; see certpp/arch.hpp"
+    #endif
+    #define CERTPP_FE25519_RADIX51 1
+#endif
+
 namespace certpp {
 namespace crypto {
 
@@ -28,17 +49,37 @@ namespace crypto {
      * for, it is a live side channel. Here the limb count is fixed at ten regardless of the
      * value, so the work is identical for every input.
      *
-     * **Why radix 2^25.5 rather than 2^51.** A 51-bit radix is the faster layout and what most
-     * 64-bit implementations use, but its products need 128-bit arithmetic, and MSVC has no
-     * `__int128`. With alternating 26- and 25-bit limbs every product fits comfortably in
-     * `int64_t`: the worst-case multiply accumulator is 10 * (2^26-1)^2 * 38, which is 2^60 --
-     * three bits of headroom, verified rather than estimated. This is ref10's 32-bit layout.
+     * **Which radix, and why 2^25.5 is the default.** Two layouts are here, selected at compile
+     * time, and they are not interchangeable:
      *
-     * **Limbs are signed, and that is load-bearing.** It means `sub()` needs no borrow
-     * handling: a limb simply goes negative and the next carry pass propagates it through an
-     * arithmetic shift. Making them unsigned would require either adding a multiple of p before
-     * every subtraction or branching on the sign, and the second is exactly what this class
-     * exists to avoid.
+     * - **Radix 2^51, five limbs, opt-in via `CERTPP_ENABLE_FE25519_RADIX51` and OFF by
+     *   default.** A 5x5 multiply is 25 products, each a 64x64->128 that is one `mulq` on
+     *   x86-64, and measured against the 2^25.5 layout's 100 products the product accumulation
+     *   *in isolation* is **4.6--4.9x cheaper**. It is still not faster here, end to end: see
+     *   below, and `docs/roadmap.md`. It is kept because it is correct and because it is the
+     *   thing that has to be re-measured before anyone concludes the layout is the problem.
+     * - **Radix 2^25.5, ten limbs, everywhere else.** Alternating 26- and 25-bit limbs, so every
+     *   product fits in `int64_t`: the worst-case accumulator is 10 * (2^26-1)^2 * 38 = 2^60,
+     *   three bits of headroom, verified rather than estimated. This is ref10's 32-bit layout.
+     *
+     * The gate is `__int128`, and it is not a preference. Measured: a 64x64->128 built from
+     * `_umul128` -- what MSVC has -- costs **6.5--7.0x** the native one, which lands the
+     * emulated 2^51 multiply at 66--69 ns against the 43--45 ns of the 2^25.5 one this file
+     * used to use unconditionally. A single 2^51 implementation would therefore make MSVC
+     * *slower than it is today*, and P4's recorded "22%" for the radix change is what that
+     * emulation costs, measured on the one toolchain that lacks the native instruction.
+     *
+     * Both paths are the same class with the same public API and the same algorithms; only the
+     * representation and the four operations that touch limbs directly differ. The rest --
+     * `invert()`, `squareRoot()`, `neg()`, `isZero()`, `isEqual()`, `isOdd()` -- compose from
+     * those and are written once.
+     *
+     * **Limbs are signed, and that is load-bearing, on both paths.** It means `sub()` needs no
+     * borrow handling: a limb simply goes negative and the next carry pass propagates it
+     * through an arithmetic shift. Making them unsigned would require either adding a multiple
+     * of p before every subtraction or branching on the sign, and the second is exactly what
+     * this class exists to avoid. The 2^51 multiply uses signed `__int128` products for the
+     * same reason: an unsigned multiply of a negative limb would be wrong.
      *
      * Every entry point leaves limbs carry-reduced, so a product of two of them stays inside
      * the bound above. That costs a carry pass on `add()`/`sub()` that a bounds-tracking
@@ -48,19 +89,40 @@ namespace crypto {
      */
     class Fe25519 {
     public:
-        /** Limbs per element. */
-        static constexpr size_t LIMBS = 10;
+        /**
+         * Limbs per element: five at radix 2^51 where __int128 is native, ten at radix 2^25.5
+         * otherwise.
+         */
+        static constexpr size_t LIMBS =
+#if defined(CERTPP_FE25519_RADIX51)
+            5;
+#else
+            10;
+#endif
 
         /** Encoded length in bytes. */
         static constexpr size_t BYTES = 32;
 
-        /** Limb i holds this many bits: 26 for even i, 25 for odd. */
+        /** Limb i holds this many bits: 51 throughout, or 26 for even i and 25 for odd. */
         static constexpr int widthOf(size_t index) {
+#if defined(CERTPP_FE25519_RADIX51)
+            (void)index;
+            return 51;
+#else
             return (index % 2 == 0) ? 26 : 25;
+#endif
         }
 
+        /** The type one limb is stored in. */
+        using Limb =
+#if defined(CERTPP_FE25519_RADIX51)
+            int64_t;
+#else
+            int32_t;
+#endif
+
     public:
-        int32_t limbs[LIMBS];
+        Limb limbs[LIMBS];
 
     public:
         /**
