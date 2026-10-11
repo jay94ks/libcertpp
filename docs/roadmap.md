@@ -575,3 +575,33 @@ first and cleanly.
   revocation, and the decision of whether the root at the end is one the caller
   trusts. An ordered chain out of this library is a validator's input, not its
   verdict.
+
+### DES measured: the permutation was already unrolled, and the change broke a table
+
+`examples/05_benchmark` puts DES-CBC at 5.1 MiB/s and 3DES-CBC at 1.7 MiB/s against AES-256-CBC
+at 1313, which reads as the largest outlier in the library. Decomposed, the cipher is the whole of
+it -- `processBlock()` alone measures 1,484.9 ns against 4.8 MiB/s end to end, so there is no
+interface overhead to remove, unlike AES-CBC before it.
+
+The source suggested a specific cause. `DesCore::permute()` extracts one bit at a time through a
+variable shift, and `feistel()` calls it twice per round: 208 iterations per block. Making the
+tables `constexpr` and the permutation a template on the table should turn every shift amount into
+an immediate and let the loop unroll.
+
+**It did not.** `feistel()` is 175 instructions before and after, with an identical mix -- 34
+`andl`, 21 `movl`, 16 `shrb`, 16 `movzbl`, 15 `sall`, 15 `orl`. GCC was already inlining
+`permute()` into `feistel()` and constant-folding it; the twenty-instruction loop body in the
+generated `permute` symbol was the out-of-line copy that nothing called. The variable shift I was
+looking at was not in the executed path.
+
+What the change did break was a table. Transcribing PC1 into the header swapped its last two rows,
+and the classic FIPS 46-3 worked example failed at once -- `CHECK( memcmp(out, EXPECTED, 8) == 0
+)` returning 71. Caught by the existing test, which is what it is for. Reverted in full; the
+measured performance is unchanged because there was never any to gain.
+
+**So DES stays at 5.1 MiB/s, and the reason is now known rather than guessed.** The block is
+~2,800 instructions at IPC 0.63, and the cost is the eight S-box lookups per round -- data-dependent
+byte loads from a 512-byte table, 128 of them per block -- plus the permutations, both of which
+the compiler has already shaped as well as this formulation allows. Closing it means bit-slicing,
+which is a rewrite of the core rather than an optimisation of it, and DES is a legacy cipher kept
+for PKCS#12 compatibility. Recorded and closed, the same shape as ARIA.
