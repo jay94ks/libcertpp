@@ -464,3 +464,64 @@ TEST_CASE("CChaCha20Poly1305: a counter-nonce record stream over HKDF-derived ke
                                     readOf(sealed[0]), readOf(tags[0]),
                                     SByteSpan(out.data(), sealed[0].size())));
 }
+
+// Messages long enough to reach the eight-blocks-at-a-time path (128 bytes in one push), with the
+// tags generated in Python. The published vectors in this file are all short -- RFC 8439 2.5.2's
+// message is 34 bytes -- so without this the vector path is never exercised by a KAT and a
+// limb-width error that only shows on long input would pass everything.
+TEST_CASE("CPoly1305: long messages, through the eight-block path") {
+    // A fixed key, so the expectations are stable.
+    const std::vector<uint8_t> key = [] {
+        std::vector<uint8_t> k(32);
+        for (size_t i = 0; i < k.size(); ++i) { k[i] = uint8_t(i); }
+        return k;
+    }();
+
+    // Lengths around and beyond the group boundaries: exactly one group, one plus a remainder,
+    // two groups, and a multiple of the group plus one block.
+    struct { size_t len; const char* tag; } cases[] = {
+        {  128, "b5e01cc71741efa530dd0d81289005d6" },
+        {  129, "e19a1d658680a8e84230734d0d05081c" },
+        {  144, "a9dc681dc66c093dc0c2bda9df549357" },
+        {  256, "35465bc16a5e9712dc4e6a07fb3a36b9" },
+        {  512, "bcdbcbca129802c91b77dcec6709914d" },
+        { 1024, "20b5d6b537a7bab41dc1e3363fb1ca39" },
+        { 4096, "f1c7fc34b9b3e13d76ac71c582618c84" },
+        { 4104, "614539e6446dd2c3a9a4661b6f5667cd" },
+    };
+
+    for (const auto& c : cases) {
+        // The same message material the Python generation used.
+        std::vector<uint8_t> message(c.len);
+        for (size_t i = 0; i < message.size(); ++i) { message[i] = uint8_t((i * 37 + 11) & 0xFF); }
+        const std::vector<uint8_t> expected = fromHex(c.tag);
+
+        // One push, which is what takes the vector path.
+        std::vector<uint8_t> tag(16);
+        REQUIRE(CPoly1305::compute(readOf(key), readOf(message),
+                                   SByteSpan(tag.data(), tag.size())));
+        CHECK(tag == expected);
+
+        // And the same message in many chunk sizes, which does not. The two routes have to agree
+        // exactly: this is what separates "the vector path is wrong" from "Poly1305 is wrong",
+        // since a bug in either would show here as a disagreement between two chunkings of the
+        // same bytes.
+        for (size_t chunk : { size_t(1), size_t(7), size_t(16), size_t(17), size_t(127),
+                              size_t(128), size_t(129), size_t(255) }) {
+            CPoly1305 mac;
+            REQUIRE(mac.reset(readOf(key)));
+
+            size_t offset = 0;
+            while (offset < message.size()) {
+                const size_t take = (message.size() - offset < chunk)
+                    ? (message.size() - offset) : chunk;
+                REQUIRE(mac.push(SReadOnlyByteSpan(message.data() + offset, take)) == take);
+                offset += take;
+            }
+
+            std::vector<uint8_t> streamed(16);
+            REQUIRE(mac.finish(SByteSpan(streamed.data(), streamed.size())));
+            CHECK(streamed == expected);
+        }
+    }
+}

@@ -1,6 +1,7 @@
 #ifndef __INCLUDE_CERTPP_CRYPTO_POLY1305_HPP__
 #define __INCLUDE_CERTPP_CRYPTO_POLY1305_HPP__
 
+#include <certpp/arch.hpp>
 #include <certpp/common.hpp>
 #include <certpp/io/span.hpp>
 
@@ -36,6 +37,17 @@ namespace crypto {
         uint8_t _buffer[16];
         size_t _buffered;
         bool _keyed;
+
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        /* r^1..r^8 as 26-bit limbs, for the eight-blocks-at-a-time path. Filled on first use
+         * rather than at reset(): seven 130-bit multiplies is real cost on a 64-byte record, and
+         * the vector path would never earn it back there. */
+        uint32_t _powers[8][5];
+        bool _powersReady;
+
+        /* Fills _powers the first time eight whole blocks are pushed. */
+        void preparePowers();
+#endif
 
     public:
         /** Key length in bytes: 16 for r, 16 for s. */

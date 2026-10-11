@@ -4414,3 +4414,58 @@ SHA3-256 moves from 0.72x to roughly 0.94x OpenSSL, and SHAKE-128 passes it.
 
 `include/certpp/arch.hpp` gains `CERTPP_ARCH_HAS_ANDN`, the same shape as `CERTPP_ARCH_HAS_MULX`
 beside it.
+
+## Poly1305 on AVX512-IFMA: +20% on the MAC, +19% on ChaCha20-Poly1305
+
+Roadmap item 4 said AVX512IFMA for Poly1305, and this is the one time a named mechanism in this
+file turned out to be the actual bottleneck. Decomposed at 64 KiB, every part on the same scale:
+ChaCha20's `xorStream` is 2492 MiB/s and Poly1305's MAC is 1196.9, so Poly1305 is two thirds of
+the AEAD's cost. Against OpenSSL's 12633.4 -- the largest single gap in the survey, 0.09x.
+
+Eight blocks at a time, eight lanes, one block per lane. The recurrence becomes
+
+    a <- a * r^8 + sum_{i=1..8} n_i * r^{9-i}
+
+so the eight multiplies the scalar path does serially happen in parallel, as twenty-five
+`vpmadd52luq` for the 5x5 limb cross-products, then one horizontal sum per limb. Every limb
+product stays under 2^52 -- 26 bits times 26 bits -- so the `luq` channel alone carries it; the
+`huq` channel would give `((a*b)>>52) + c`, which for 26-bit operands is just `c`.
+
+The powers r^2..r^8 are built the first time a whole group of eight turns up, not at reset():
+seven 130-bit multiplies is real cost on a 64-byte record, and the vector path would never earn
+it back there.
+
+**Three bugs, all found by the new test and none by the published vectors.** The RFC 8439 2.5.2
+message is 34 bytes, so every existing KAT stops short of the 128 bytes one push needs -- a
+vector path that only runs on long input and is wrong on long input would have passed all of
+them. The new test uses Python-generated expectations at lengths on and around the group
+boundaries, and pushes each one in many chunk sizes so the two paths are held against each other:
+
+1. The blocks were loaded without the 2^128 Poly1305 appends above a full block.
+2. The lane-to-power map was reversed -- lane 0 carries the *oldest* block, which takes the
+   *largest* power, so the index is `7 - j` and not `j`.
+3. `reduce9` double-counted the low 26 bits of the top limb into the wrong place.
+
+The first run of the vector path was also **slower than the scalar one, by 42.7%**, which is how
+the third redundant-work pattern showed up again: `blockLimbs()` was called forty times per group
+for the thirty-two limbs of eight blocks. Moving it out of the limb loop took that off, and the
+remaining gap is the design's own -- nine horizontal sums and one scalar 130-bit multiply per
+group -- which is why the gain is 20% rather than the 3x the instruction mix suggests.
+
+Measured, interleaved over ten rounds with ChaCha20 as the control (it moved +0.5%):
+
+    Poly1305 MAC             1087.6 -> 1312.6 MiB/s   +20.7%
+    ChaCha20-Poly1305          715.2 ->  853.3 MiB/s   +19.3%
+
+The arithmetic is worth recording because it cost a wrong conclusion earlier: these instructions
+are not "52-bit multiply-add" with masking. `vpmadd52lo` gives bits 0..51 of `a*b + c` and
+`vpmadd52hi` gives `((a*b)>>52) + c` **without** masking its result. Verified against 128-bit
+arithmetic over the 26x26 case the algorithm uses, and the CPUID bit (leaf 7 sub-leaf 0, EBX bit
+21) read off the machine rather than recalled -- leaf 7 sub-leaf 1 reports nothing here, and a
+wrong bit either misses the feature or SIGILLs on a CPU without it.
+
+`include/certpp/arch.hpp` gains `CERTPP_ARCH_HAS_IFMA_POLY1305`, a separate gate from
+`CERTPP_ARCH_HAS_ANDN`'s because AVX512-IFMA is rare and independent of BMI1 -- one gate covering
+both would SIGILL on the many CPUs with BMI1 and no IFMA.
+
+130/130 on GCC Release+ASan, GCC ASan, MSVC Release and MSVC Debug.

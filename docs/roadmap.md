@@ -348,7 +348,7 @@ already done.
 | 1 | Ed25519 field to radix 2^51, native `__int128` | 4.5x | **measured; negative** |
 | 2 | SHA-512 message schedule on AVX2 | 0.51x | **measured; wrong target** |
 | 3 | P2 (GHASH via VPCLMULQDQ/GFNI) | -- | **measured; closed positive** |
-| 4 | Poly1305 on AVX512IFMA | -- | re-opened by hardware presence |
+| 4 | Poly1305 on AVX512IFMA | -- | **measured; +21% on the MAC** |
 | 5 | SHA3/SHAKE on AVX2 | 0.72x | **partially closed; +28% measured** |
 | -- | ARIA-256-CBC | 0.26x | not closable; recorded and closed |
 

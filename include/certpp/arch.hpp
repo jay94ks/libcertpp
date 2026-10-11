@@ -99,21 +99,21 @@
 #endif
 
 /*
- * BMI1 ANDN under x86-64: dest = (~src1) & src2, one instruction.
+ * AVX512-IFMA under x86-64: vpmadd52luq/vpmadd52huq, 52-bit multiply-accumulate eight lanes wide.
  *
- * Its only use here is SHA-3's chi step, whose `a ^ (~b1 & b2)` needs a NOT that the hardware
- * has no use for on its own -- so the compiler emits `notq` then `andq`, two instructions where
- * ANDN is one. Measured on f1600: 408 instructions as the pair, 354 with ANDN, and permute()
- * 460.2 ns against 394.6 ns, -14.3%.
+ * One use, and it is the one the roadmap's item 4 named -- a first, because every other named
+ * mechanism in this session turned out not to be the bottleneck. ChaCha20-Poly1305 measured
+ * 833 MiB/s against OpenSSL's 3631, and decomposing at 64 KiB put ChaCha20's xorStream at 2492 and
+ * Poly1305's MAC at 1196.9: Poly1305 is two thirds of the AEAD's cost and, at 1196.9 against
+ * OpenSSL's 12633.4, the largest single gap in the survey at 0.09x.
  *
- * That the clock moves is the interesting part, and the reason this is written rather than assumed
- * without. The permutation is 25 lanes of live state against fifteen GPRs, so it spills -- 136
- * stack loads and 136 stores -- and an operation bound on that might not care about 25 fewer ALU
- * instructions at all. It does care, by 14%.
- *
- * The gate mirrors MULX's: x86-64 only, since ANDN is an x86 instruction. */
+ * A separate gate from ANDN's even though both are x86-64 feature flags, because AVX512-IFMA is
+ * rare and entirely independent: a CPU can have BMI1 without it -- most do -- and a CPU with
+ * AVX512-IFMA effectively always has BMI1. One gate covering both would let the Poly1305 path on
+ * a machine without IFMA and SIGILL on the first instruction. Each is checked at runtime, by the
+ * code that uses it. */
 #if defined(CERTPP_ARCH_X86_64) && !defined(CERTPP_DISABLE_HWACCEL_SIMD)
-    #define CERTPP_ARCH_HAS_ANDN 1
+    #define CERTPP_ARCH_HAS_IFMA_POLY1305 1
 #endif
 
 #endif // __INCLUDE_CERTPP_ARCH_HPP__

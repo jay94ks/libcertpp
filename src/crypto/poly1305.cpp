@@ -1,6 +1,16 @@
 #include <certpp/crypto/poly1305.hpp>
+#include <certpp/arch.hpp>
 #include <certpp/utils/secure.hpp>
 #include <cstring>
+
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
 
 namespace certpp {
 namespace crypto {
@@ -21,12 +31,253 @@ namespace crypto {
 
     } // namespace
 
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        /* A 130-bit value in five 26-bit limbs: v = limb[0] + limb[1]*2^26 + ... + limb[4]*2^104. */
+        struct SLimbs {
+            uint32_t v[5];
+        };
+
+        /* Whether this CPU has AVX512-IFMA (CPUID.7.0:EBX.AVX512IFMA, bit 21) and AVX-512F to go
+         * with it. The bit was read off the machine, not recalled: leaf 7 sub-leaf 1 reports
+         * nothing on this CPU, and a wrong bit either misses the feature or SIGILLs on a CPU
+         * without it. */
+        bool hasIfma() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 21)) != 0;
+#else
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 21)) != 0;
+#endif
+            }();
+            return supported;
+        }
+
+        /* The limbs of a 16-byte block plus the bit appended above it (RFC 8439 2.5): a full
+         * block gets 2^128, which is exactly 2^24 * 2^104 -- i.e. bit 24 of limb 4 -- and a short
+         * final block gets the bit just above the bytes it holds, which for fewer than 16 bytes
+         * is always inside bits 0..127. */
+        SLimbs blockLimbs(const uint8_t block[16], uint32_t high) {
+            uint64_t lo = 0, hi = 0;
+            std::memcpy(&lo, block, 8);
+            std::memcpy(&hi, block + 8, 8);
+
+            // --> Spread the 128-bit little-endian value across 26-bit limbs.
+            SLimbs out;
+            out.v[0] = uint32_t(lo) & 0x3FFFFFFu;
+            out.v[1] = uint32_t(lo >> 26) & 0x3FFFFFFu;
+            out.v[2] = uint32_t(lo >> 52) | (uint32_t(hi) << 12);
+            out.v[2] &= 0x3FFFFFFu;
+            out.v[3] = uint32_t(hi >> 14) & 0x3FFFFFFu;
+            out.v[4] = uint32_t(hi >> 40) & 0x3FFFFFFu;
+            out.v[4] += high;
+            return out;
+        }
+
+        /* Reduces nine 26-bit-carry limbs to five.
+         *
+         * The nine limbs hold V = sum_{k=0..8} in[k] * 2^(26k), and the field's modulus is
+         * 2^130 - 5, so 2^130 == 5 and each limb at position k >= 5 folds back as five times its
+         * value at position k-5. Every limb here is a sum of at most five products of two values
+         * under 2^26 -- so under 5*2^52, about 2^54.3 -- which is why each `r` is a uint64 and why
+         * the carries are propagated by hand rather than assumed to fit.
+         *
+         * The reduction is not canonical -- the result can be >= p, as the portable path's own
+         * accumulator is between blocks -- and only finish() needs it canonical. */
+        void reduce9(const uint64_t in[9], uint32_t out[5]) {
+            uint64_t r[5];
+            for (int k = 0; k < 5; ++k) {
+                r[k] = in[k];
+            }
+            // --> The limbs above bit 130 fold back in, five times their value, five places down:
+            // in[5] lands on limb 0, in[8] on limb 3.
+            for (int k = 5; k < 9; ++k) {
+                r[k - 5] += 5u * in[k];
+            }
+
+            // --> Carry up from the bottom.
+            for (int k = 0; k < 4; ++k) {
+                const uint64_t c = r[k] >> 26;
+                r[k] &= 0x3FFFFFFu;
+                r[k + 1] += c;
+            }
+
+            // --> And wrap the top: whatever is above limb 4's 26 bits is another five.
+            uint64_t c = r[4] >> 26;
+            r[4] &= 0x3FFFFFFu;
+            r[0] += 5u * c;
+            c = r[0] >> 26;
+            r[0] &= 0x3FFFFFFu;
+            r[1] += c;
+
+            for (int i = 0; i < 5; ++i) {
+                out[i] = uint32_t(r[i]);
+            }
+        }
+
+        /* The five limbs of a * b, nine of them unreduced, by the same schoolbook the portable
+         * path uses. This is the scalar half of the powers-of-r precomputation. */
+        void mulLimbs(const uint32_t a[5], const uint32_t b[5], uint64_t out[9]) {
+            for (int k = 0; k < 9; ++k) {
+                uint64_t acc = 0;
+                for (int i = 0; i < 5; ++i) {
+                    const int j = k - i;
+                    if (j < 0 || j > 4) { continue; }
+                    acc += uint64_t(a[i]) * b[j];
+                }
+                out[k] = acc;
+            }
+        }
+
+        /* r^1 .. r^8 in limb form, from r itself.
+         *
+         * Squaring where it helps: r^2, r^4 and r^8 each take one multiply, and r^3, r^5, r^6 and
+         * r^7 one more each -- seven in all rather than eight sequential ones, and each is exact
+         * because the result is reduced before the next. Computed once per message, and only when
+         * eight whole blocks actually turn up, because seven 130-bit multiplies is real cost on a
+         * 64-byte record and the vector path would never pay for it. */
+        void computePowers(const uint32_t r[5], uint32_t powers[8][5]) {
+            uint64_t t[9];
+            uint32_t tmp[5];
+
+            for (int i = 0; i < 5; ++i) { powers[0][i] = r[i]; }                 // r^1
+
+            mulLimbs(r, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[1][i] = tmp[i]; }                // r^2
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[2][i] = tmp[i]; }                // r^3
+
+            mulLimbs(powers[1], powers[1], t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[3][i] = tmp[i]; }                // r^4
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[4][i] = tmp[i]; }                // r^5
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[5][i] = tmp[i]; }                // r^6
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[6][i] = tmp[i]; }                // r^7
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            for (int i = 0; i < 5; ++i) { powers[7][i] = tmp[i]; }                // r^8
+        }
+        /* Sums the eight lanes of a vector into one integer.
+         *
+         * Every lane is under 2^58, so the total is under 2^61 and no overflow is possible in the
+         * 64-bit adds. A reduction in this shape costs several shuffle-add steps, which is why it
+         * is done nine times per group rather than once per block: the whole point is that eight
+         * multiplies share one set of them. */
+        inline uint64_t horizontalSum(__m512i v);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+        __attribute__((target("avx512ifma,avx512f")))
+#endif
+        inline uint64_t horizontalSumImpl(__m512i v) {
+            alignas(64) uint64_t lanes[8];
+            _mm512_store_epi64(lanes, v);
+            uint64_t total = 0;
+            for (int i = 0; i < 8; ++i) { total += lanes[i]; }
+            return total;
+        }
+
+        inline uint64_t horizontalSum(__m512i v) {
+            return horizontalSumImpl(v);
+        }
+
+        /* Eight whole blocks at once: sum_{i=1..8} n_i * r^{9-i}, nine limbs of it, reduced to
+         * five and added to the accumulator along with a * r^8.
+         *
+         * Lane j carries block j+1, so the multiply each lane performs is by a *different*
+         * power -- lane 0 by r^8, lane 7 by r^1 -- which is why the powers arrive five-wide per
+         * limb rather than broadcast. A single broadcast would compute n_i * r^k for the same k
+         * on every lane, which is a different sum. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+        __attribute__((target("avx512ifma,avx512f")))
+#endif
+        void absorb8(uint32_t accumulator[5], const uint32_t powers[8][5],
+                     const uint8_t blocks[8][16]) {
+            // --> The eight blocks' limbs, one lane each: n[m] lane j is limb m of block j+1.
+            // --> Limbs are taken once per block, into the five registers. The first version of
+            // this called blockLimbs() inside the limb loop -- forty calls per group for the
+            // thirty-two limbs of eight blocks, which is the redundant-work pattern and cost more
+            // than everything else here together.
+            alignas(64) SLimbs bl[8];
+            for (int j = 0; j < 8; ++j) { bl[j] = blockLimbs(blocks[j], 1u << 24); }
+
+            __m512i n[5];
+            {
+                alignas(64) uint64_t lanes[8];
+                for (int m = 0; m < 5; ++m) {
+                    for (int j = 0; j < 8; ++j) { lanes[j] = bl[j].v[m]; }
+                    n[m] = _mm512_load_epi64(lanes);
+                }
+            }
+
+            // --> The powers: P[m] lane j is limb m of r^{8-j}. The index is 7-j rather than j
+            // because lane 0 carries the OLDEST block, which takes the largest power -- reading
+            // powers[j] would give every lane the power matching its own position, a different and
+            // wrong sum. The first version had it the other way, and the long-message KAT caught it.
+            __m512i p[5];
+            {
+                alignas(64) uint64_t lanes[8];
+                for (int m = 0; m < 5; ++m) {
+                    for (int j = 0; j < 8; ++j) {
+                        lanes[j] = powers[7 - j][m];
+                    }
+                    p[m] = _mm512_load_epi64(lanes);
+                }
+            }
+
+            // --> The nine limbs of the per-lane product. Each is a sum of at most five products
+            // of two values under 2^26, so under 2^52 each, and adding eight lanes keeps it under
+            // 2^58 -- comfortably inside a 64-bit lane.
+            uint64_t sum[9];
+            for (int k = 0; k < 9; ++k) {
+                __m512i acc = _mm512_setzero_si512();
+                for (int i = 0; i < 5; ++i) {
+                    const int j = k - i;
+                    if (j < 0 || j > 4) {
+                        continue;
+                    }
+                    acc = _mm512_add_epi64(acc, _mm512_madd52lo_epu64(_mm512_setzero_si512(),
+                                                                      n[i], p[j]));
+                }
+                sum[k] = horizontalSum(acc);
+            }
+
+            // --> a * r^8, the serial half, done scalarly -- this library's own mulLimbs().
+            uint32_t r8[5];
+            for (int i = 0; i < 5; ++i) { r8[i] = powers[7][i]; }
+            uint64_t prod[9];
+            mulLimbs(accumulator, r8, prod);
+
+            // --> Add the two nine-limb values and reduce to five.
+            for (int k = 0; k < 9; ++k) { prod[k] += sum[k]; }
+            reduce9(prod, accumulator);
+        }
+#endif // CERTPP_ARCH_HAS_IFMA_POLY1305
+
     /* Constructs an unkeyed instance. */
-    CPoly1305::CPoly1305() : _buffered(0), _keyed(false) {
+    CPoly1305::CPoly1305()
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        : _buffered(0), _keyed(false), _powersReady(false)
+#else
+        : _buffered(0), _keyed(false)
+#endif
+    {
         std::memset(_r, 0, sizeof(_r));
         std::memset(_s, 0, sizeof(_s));
         std::memset(_accumulator, 0, sizeof(_accumulator));
         std::memset(_buffer, 0, sizeof(_buffer));
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        std::memset(_powers, 0, sizeof(_powers));
+#endif
     }
 
     /* Clears the key and accumulator. */
@@ -35,6 +286,10 @@ namespace crypto {
         CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(_s), sizeof(_s)));
         CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(_accumulator), sizeof(_accumulator)));
         CSecure::zero(SByteSpan(_buffer, sizeof(_buffer)));
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        // --> The powers are derived from r, which is key material.
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(_powers), sizeof(_powers)));
+#endif
     }
 
     /* Keys this instance and starts a fresh message. */
@@ -67,6 +322,9 @@ namespace crypto {
         std::memset(_accumulator, 0, sizeof(_accumulator));
         std::memset(_buffer, 0, sizeof(_buffer));
         _buffered = 0;
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        _powersReady = false;
+#endif
         _keyed = true;
 
         return true;
@@ -129,6 +387,14 @@ namespace crypto {
 
     } // namespace
 
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+    /* Builds r^1..r^8 for the eight-blocks-at-a-time path. */
+    void CPoly1305::preparePowers() {
+        computePowers(_r, _powers);
+        _powersReady = true;
+    }
+#endif
+
     /* Absorbs message bytes. */
     size_t CPoly1305::push(const SReadOnlyByteSpan& buf) {
         if (!_keyed || buf.size == 0) {
@@ -155,6 +421,23 @@ namespace crypto {
             }
         }
 
+        // --> Eight at a time first, where this CPU can. The tail -- anything left after the
+        // groups of eight, and any final partial block -- still goes through absorbBlock(), so the
+        // two paths have to agree exactly and the short-message result is unchanged. The powers of
+        // r are built only once there is a whole group to use them, so a message too short never
+        // pays for seven 130-bit multiplies it cannot amortise.
+#if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
+        if (hasIfma() && buf.size - consumed >= 8 * BLOCK_BYTES) {
+            if (!_powersReady) {
+                preparePowers();
+            }
+            while (buf.size - consumed >= 8 * BLOCK_BYTES) {
+                absorb8(_accumulator, _powers,
+                        reinterpret_cast<const uint8_t (*)[16]>(buf.data + consumed));
+                consumed += 8 * BLOCK_BYTES;
+            }
+        }
+#endif
         while (buf.size - consumed >= BLOCK_BYTES) {
             absorbBlock(_accumulator, _r, buf.data + consumed, 1u << 24);
             consumed += BLOCK_BYTES;
