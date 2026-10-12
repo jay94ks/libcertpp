@@ -723,3 +723,88 @@ Linux in general. The harness is single-threaded and CPU-bound, so the hyperviso
 be small, but this run did not quantify it in either direction. And "Release" is not one setting:
 CMake's defaults are `/O2` for MSVC and `-O3` for GCC, so toolchain and optimization level are
 varied together.
+
+### Why the gaps exist: instructions per byte, ours against OpenSSL
+
+Every remaining ratio was explained by counting instructions rather than by timing, because a
+throughput ratio on a machine with a competing job measures the machine. The count is a property of
+the emitted code, so its ratio is the ceiling on what the implementation can explain, and anything
+left over is the microarchitecture.
+
+| | throughput ratio | instruction ratio | conclusion |
+|---|---|---|---|
+| SHA-256 | 0.98x | 1.07x | parity -- both call SHA-NI |
+| SHA-1 | 0.95x | 1.23x | 23% more instructions, in the code |
+| MD5 | 0.85x | 1.14x | 14% more instructions, in the code |
+| **SHA-512** | 0.56x | **1.99x** | two causes, both measured |
+| **ChaCha20** | 0.48x | **2.7x** | in the code |
+| AES-256-CBC | 0.93x | -- | both call AES-NI |
+
+For the hashes the instruction ratio and the throughput ratio agree closely, so **the hashes' gaps
+are in the code, not in the machine.** That is the answer to the question, and it is the same for
+all of them.
+
+#### SHA-512: two independent causes, separated by masking OpenSSL's capabilities
+
+| OpenSSL's SHA-512 | instructions/KiB |
+|---|---|
+| as built | 19342 |
+| `OPENSSL_ia32cap=0` -- vector features masked off | 28530 |
+| **certpp** | **38839** |
+
+So the 1.79x throughput ratio is two effects multiplying:
+
+1. **1.36x -- OpenSSL's portable C is 36% lighter than ours.** 3566 instructions per block against
+   our 4855. Both are scalar C, so this is codegen and not hardware.
+2. **1.32x -- OpenSSL vectorises the message schedule.** Masking its vector features costs it 32%
+   more instructions, and ours does not vectorise it at all.
+
+Per 128-byte block against the algorithmic floor (80 rounds x ~19 ops plus 64 schedule words x ~10):
+
+    certpp              4855    2.25x the floor
+    OpenSSL scalar      3566    1.65x
+    OpenSSL vector      2418    1.12x
+
+OpenSSL's vector path is essentially at the floor. Ours is at 2.25x of it.
+
+Where our extra 2695 instructions go: 89 of `transform()`'s 201 are `movq`, and a third of the round
+body is copies of its own live word -- three `movq %rsi, %rXX` before three `rorq` of that same
+register, because ROR is destructive and each rotate needs its own copy. It is not the `w[80]`
+array, which is only 16% of the function's stack traffic.
+
+#### The actionable finding: BMI2's RORX is worth 10.9% on SHA-512
+
+RORX is three-operand and reads its source unmodified, so those copies should not exist. Measured:
+
+    SHA-512, as built        38839 instructions/KiB
+    SHA-512, with BMI2       34999 instructions/KiB     -9.9%
+
+and it reaches the clock, interleaved over six rounds:
+
+    SHA-512   348.1 -> 386.1 MiB/s    +10.9%
+    SHA-256  1480.6 -> 1462.0          -1.3%   (noise; both sides call SHA-NI)
+    SHA-1     1684.8 -> 1639.2          -2.7%   (noise)
+    MD5        678.2 -> 676.3           -0.3%   (noise)
+
+**This corrects an earlier wrong conclusion in this file.** An earlier pass looked at the round
+function, saw that its rotates were already single instructions (`ror`/`rol`), and concluded there
+was nothing to gain. That was true of the rotate and wrong about what it cost -- the cost was the
+copy the destructive form forces, which is not visible when looking at the rotate rather than at
+what surrounds it. It is the second instruction-level finding this session that a count found and
+an inspection did not.
+
+The remaining 1.36x is OpenSSL's portable C being lighter than ours, and that is a different piece
+of work -- register allocation and codegen, not a missing instruction.
+
+#### What the others are
+
+- **SHA-512's schedule**: Ours computes `w[80]` into a 640-byte array and reads it back. That is
+  only 3% of the instructions, so it is not the reason OpenSSL's scalar path is lighter; the reason
+  is the round body's copies above, and OpenSSL's schedule is vectorised on top of that.
+- **ChaCha20 (2.7x more instructions)**: Our AVX2 path is eight blocks at a time; OpenSSL's is
+  wider. This is the P3 item's other half.
+- **AES-256-CBC and ARIA are excluded from the table above.** Counting them required an EVP stream
+  on one side and a persistent transformer on the other, and the first version of that measurement
+  put context creation inside the loop on the OpenSSL side -- reporting AES at 0.57x ours and ARIA
+  at 3.40x, which measured the per-call setup rather than either cipher. Both sides call AES-NI for
+  AES, so that row is parity; ARIA's gap is recorded and closed under ARIA.
