@@ -4469,3 +4469,51 @@ wrong bit either misses the feature or SIGILLs on a CPU without it.
 both would SIGILL on the many CPUs with BMI1 and no IFMA.
 
 130/130 on GCC Release+ASan, GCC ASan, MSVC Release and MSVC Debug.
+
+## SHA-512 on BMI2's RORX: the copies the destructive rotate forced are gone
+
+The investigation into why the gaps exist found that SHA-512's round body copies its live word
+three times before its three rotates: `movq %rsi, %rXX` before `rorq` of that same register, because
+ROR is destructive and each rotate needs its own copy. 89 of `transform()`'s 201 instructions are
+movq and this is a third of the round body.
+
+RORX is three-operate and reads its source unmodified, so those copies should not exist, and they
+stop existing:
+
+    instructions per KiB     38839 -> 36135    -7.0%
+    throughput (median of 10 alternating rounds, spread 4.9%)
+
+        SHA-512   353.7 -> 380.4 MiB/s    +7.5%
+        SHA-256   1425.3 -> 1441.7       +1.2%    (noise -- both sides call SHA-NI)
+        SHA-1      1644.2 -> 1641.8       -0.1%    (noise)
+        MD5         676.9 -> 673.1       -0.6%    (noise)
+
+Instruction counts are the load-bearing figure here; the machine had a competing GitHub Actions
+runner for much of the window, and a single best-of-six throughput run had SHA-256 falling 19.5% on
+a change that cannot touch it. The counts do not move with the machine, and the medians confirm
+the direction.
+
+**This captures 7 of the ~9.9 instruction points a whole-TU `-mbmi2` build gets, and the reason is
+worth recording.** The rotate has to be inline assembly, because `_rorx_u64()` is only declared in a
+translation unit already built with BMI2 and this file deliberately is not -- the library targets
+baseline x86-64 and gains features at runtime. An opaque `__asm__` is something GCC can neither
+schedule around nor keep in registers, and the static instruction count of the BMI2 instantiation
+at first came out *higher* than the scalar one's (235 against 201) even though the dynamic count
+fell. Capturing the rest would mean compiling this one translation unit with `-mbmi2`, which is a
+build change rather than a code change.
+
+**The construction, and a bug in the first version of it.** The attribute cannot sit on the rotate
+helper: GCC refuses to inline a function whose target differs from its caller's, and at six rotates
+a round for eighty rounds that is 480 calls a block -- the trap already hit on Keccak's ANDN. So
+the compression function is a template on which rotate to use, the attribute sits on the BMI2
+instantiation, and the CPUID check happens once per block.
+
+The first version then gated the rotate on the *build macro* rather than on the template
+parameter, which meant `transformRounds<false>` -- the path that exists for a CPU without BMI2 --
+also emitted RORX. It was caught by diffing the two instantiations, which came out of the compiler
+identical apart from label names. Fixed, and the property is now checked in the shipped object
+rather than in the source: `transformRounds<true>` has 22 `rorx`, `transformRounds<false>` has none.
+
+`arch.hpp` gains `CERTPP_ARCH_HAS_BMI2_ROTR`, beside `CERTPP_ARCH_HAS_ANDN`'s.
+
+130/130 on GCC Release+ASan, GCC ASan, MSVC Release and MSVC Debug.

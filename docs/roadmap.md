@@ -786,6 +786,15 @@ and it reaches the clock, interleaved over six rounds:
     SHA-1     1684.8 -> 1639.2          -2.7%   (noise)
     MD5        678.2 -> 676.3           -0.3%   (noise)
 
+**Shipped: +7.5%, not +10.9%.** Implemented, RORX has to be inline assembly because `_rorx_u64()`
+is only declared in a unit already built with BMI2 and this one deliberately is not, and an opaque
+`__asm__` is something GCC can neither schedule around nor keep in registers. The dynamic
+instruction count falls 7.0% (38839 -> 36135 per KiB) and throughput 7.5% by median of ten
+alternating rounds, with SHA-256/SHA-1/MD5 at +1.2%/-0.1%/-0.6%. Capturing the rest means compiling
+this one translation unit with `-mbmi2`, a build change rather than a code change. See the
+changelog for the full account, including a gate that was wrong on the first attempt and would
+have SIGILLed the fallback path.
+
 **This corrects an earlier wrong conclusion in this file.** An earlier pass looked at the round
 function, saw that its rotates were already single instructions (`ror`/`rol`), and concluded there
 was nothing to gain. That was true of the rotate and wrong about what it cost -- the cost was the

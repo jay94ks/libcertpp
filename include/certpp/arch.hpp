@@ -99,6 +99,25 @@
 #endif
 
 /*
+ * BMI2's RORX under x86-64: dest = rot(src, imm), reading src unmodified.
+ *
+ * The same instruction class as ANDN above and measured the same way, but a different shape of win.
+ * SHA-512's round function rotates its live word three times per round, and ROR is destructive, so
+ * each of those needs its own copy of that word first -- 89 of transform()'s 201 instructions are
+ * movq and a third of the round body is those copies. RORX's third operand reads its source
+ * unchanged, so the copies stop existing: 38839 -> 34999 instructions per KiB, -9.9%, which reaches
+ * the clock as +10.9% on SHA-512 (SHA-256, SHA-1 and MD5 moved -1.3%, -2.7% and -0.3%, noise).
+ *
+ * The construction is worth recording because the obvious way is wrong. `__attribute__((target("bmi2")))`
+ * on the rotate itself makes GCC refuse to inline it into a caller with no such attribute, and at
+ * six rotates a round for eighty rounds that is 480 calls a block -- the same trap as Keccak's ANDN,
+ * solved the same way: the compression function is a template on which rotate to use, the attribute
+ * sits on the BMI2 instantiation, and the CPUID check happens once per block. */
+#if defined(CERTPP_ARCH_X86_64) && !defined(CERTPP_DISABLE_HWACCEL_SIMD)
+    #define CERTPP_ARCH_HAS_BMI2_ROTR 1
+#endif
+
+/*
  * AVX512-IFMA under x86-64: vpmadd52luq/vpmadd52huq, 52-bit multiply-accumulate eight lanes wide.
  *
  * One use, and it is the one the roadmap's item 4 named -- a first, because every other named

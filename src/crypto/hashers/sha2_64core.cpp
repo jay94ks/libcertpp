@@ -3,8 +3,39 @@
 namespace certpp {
 namespace crypto {
 
-    /* Runs the SHA-384/SHA-512 compression function over one 128-byte block. */
-    void Sha2_64Core::transform(uint64_t state[8], const uint8_t block[128]) {
+#if defined(CERTPP_ARCH_HAS_BMI2_ROTR)
+        /* Whether this CPU has BMI2 (CPUID.7.0:EBX.BMI2, bit 8). Checked once per block rather
+         * than once per rotate: six rotates per round for eighty rounds is 480 reads of a guarded
+         * static where one will do -- the same defect already fixed in GHASH this session. */
+        bool hasBmi2() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 7);
+                return (info[1] & (1 << 8)) != 0;
+#else
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 8)) != 0;
+#endif
+            }();
+            return supported;
+        }
+#endif
+
+    /* Runs the SHA-384/SHA-512 compression function over one 128-byte block.
+     *
+     * --> Templated on whether the rotates use BMI2's RORX, so the choice is made once per block
+     * rather than once per round, and the BMI2 case is compiled with BMI2 enabled -- which is what
+     * lets the target-attributed rotate inline into it. The attribute cannot sit on the rotate
+     * itself: GCC refuses to inline a function whose target differs from its caller's, and there
+     * would be 480 calls a block instead of none. (This is the second of those this session; the
+     * first was Keccak's ANDN.) */
+    template <bool UseBmi2Rotr>
+    void Sha2_64Core::transformRounds(uint64_t state[8], const uint8_t block[128]) {
+        (void)UseBmi2Rotr;
         /* Round constants: the first 64 bits of the fractional parts of the cube roots of the
          * first 80 primes. */
         static constexpr uint64_t K[80] = {
@@ -38,8 +69,8 @@ namespace crypto {
         }
 
         for (size_t i = 16; i < 80; ++i) {
-            uint64_t s0 = rotr(w[i - 15], 1) ^ rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
-            uint64_t s1 = rotr(w[i - 2], 19) ^ rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
+            uint64_t s0 = rotr<UseBmi2Rotr>(w[i - 15], 1) ^ rotr<UseBmi2Rotr>(w[i - 15], 8) ^ (w[i - 15] >> 7);
+            uint64_t s1 = rotr<UseBmi2Rotr>(w[i - 2], 19) ^ rotr<UseBmi2Rotr>(w[i - 2], 61) ^ (w[i - 2] >> 6);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
 
@@ -47,7 +78,7 @@ namespace crypto {
         uint64_t e = state[4], f = state[5], g = state[6], h = state[7];
 
         for (uint32_t i = 0; i < 80; ++i) {
-            uint64_t s1 = rotr(e, 14) ^ rotr(e, 18) ^ rotr(e, 41);
+            uint64_t s1 = rotr<UseBmi2Rotr>(e, 14) ^ rotr<UseBmi2Rotr>(e, 18) ^ rotr<UseBmi2Rotr>(e, 41);
 
             // --> Ch(e, f, g) == (e & f) ^ (~e & g), which costs a NOT the hardware does not
             // have. The form below is the same function -- g ^ (e & (f ^ g)) -- in three
@@ -57,7 +88,7 @@ namespace crypto {
             // this exact shape costing more than they saved.
             uint64_t ch = g ^ (e & (f ^ g));
             uint64_t temp1 = h + s1 + ch + K[i] + w[i];
-            uint64_t s0 = rotr(a, 28) ^ rotr(a, 34) ^ rotr(a, 39);
+            uint64_t s0 = rotr<UseBmi2Rotr>(a, 28) ^ rotr<UseBmi2Rotr>(a, 34) ^ rotr<UseBmi2Rotr>(a, 39);
             uint64_t maj = ((a | b) & c) | (a & b);
             uint64_t temp2 = s0 + maj;
 
@@ -79,6 +110,29 @@ namespace crypto {
         state[5] += f;
         state[6] += g;
         state[7] += h;
+        } // end transformRounds
+
+#if defined(CERTPP_ARCH_HAS_BMI2_ROTR)
+    /* The BMI2-enabled instantiation. The attribute has to sit here, on a function compiled as a
+     * whole with BMI2, rather than on the rotate helper inside it -- see the note on
+     * transformRounds(). */
+#  if defined(__GNUC__) && !defined(_MSC_VER)
+    __attribute__((target("bmi2")))
+#  endif
+    void Sha2_64Core::transformRoundsBmi2(uint64_t state[8], const uint8_t block[128]) {
+        transformRounds<true>(state, block);
+    }
+#endif
+
+    /* Runs the SHA-384/SHA-512 compression function over one 128-byte block. */
+    void Sha2_64Core::transform(uint64_t state[8], const uint8_t block[128]) {
+#if defined(CERTPP_ARCH_HAS_BMI2_ROTR)
+        if (hasBmi2()) {
+            transformRoundsBmi2(state, block);
+            return;
+        }
+#endif
+        transformRounds<false>(state, block);
     }
 
 } // namespace crypto
