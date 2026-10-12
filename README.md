@@ -228,13 +228,13 @@ not the algorithm's speed.
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
 | SHA-256, 64 KiB | 1490 MiB/s | 1550 MiB/s | 0.97x |
-| SHA-1, 64 KiB | 1710 MiB/s | 1820 MiB/s | 0.95x |
+| SHA-1, 64 KiB | 1720 MiB/s | 1820 MiB/s | 0.95x |
 | MD5, 64 KiB | 690 MiB/s | 795 MiB/s | 0.87x |
 | SHA3-256, 64 KiB | 380 MiB/s | 410 MiB/s | 0.93x |
 | SHAKE-256, 64 KiB | 375 MiB/s | 405 MiB/s | 0.92x |
 | SHA-512, 64 KiB | 385 MiB/s | 655 MiB/s | 0.58x |
 | AES-256-CBC, 64 KiB | 1280 MiB/s | 1350 MiB/s | 0.95x |
-| ARIA-256-CBC, 64 KiB | 27 MiB/s | 104 MiB/s | 0.26x |
+| ARIA-256-CBC, 64 KiB | 27 MiB/s | 103 MiB/s | 0.26x |
 | Ed25519 sign | 0.162 ms | 0.036 ms | 4.5x slower |
 
 SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.58x is the clearest row
@@ -445,17 +445,17 @@ caveat on the GCC column.
 
 | | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 751.0 MiB/s | **841.2 MiB/s** |
-| XChaCha20-Poly1305 | 749.2 MiB/s | **841.5 MiB/s** |
-| AES-256-GCM | 371.6 MiB/s | **465.3 MiB/s** |
+| ChaCha20-Poly1305, 64 KiB | 999 MiB/s | 835 MiB/s | 1.19x |
+| XChaCha20-Poly1305, 64 KiB | 1005 MiB/s | 840 MiB/s | 1.20x |
+| AES-256-GCM, 64 KiB | 520 MiB/s | 465 MiB/s | 1.11x |
 
 #### AEAD seal, 64 B, per record
 
 | | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | **410 ns** | 338 ns |
-| XChaCha20-Poly1305 | **545 ns** | 446 ns |
-| AES-256-GCM | 220 ns | **234 ns** |
+| ChaCha20-Poly1305 | 400 ns | 330 ns | 1.21x |
+| XChaCha20-Poly1305 | 400 ns | 450 ns | 0.89x |
+| AES-256-GCM | 215 ns | 235 ns | 0.93x |
 
 
 The GCC figures were measured **under WSL2** -- a real Linux kernel inside a VM, not bare metal
