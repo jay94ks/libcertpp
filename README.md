@@ -227,18 +227,18 @@ not the algorithm's speed.
 
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
-| SHA-256, 64 KiB | 1524 MiB/s | 1550 MiB/s | 0.98x |
-| SHA-1, 64 KiB | 1678 MiB/s | 1773 MiB/s | 0.95x |
-| MD5, 64 KiB | 673 MiB/s | 790 MiB/s | 0.85x |
-| SHA3-256, 64 KiB | 370 MiB/s | 400 MiB/s | 0.93x |
-| SHAKE-256, 64 KiB | 363 MiB/s | 392 MiB/s | 0.93x |
-| SHA-512, 64 KiB | 362 MiB/s | 649 MiB/s | 0.56x |
-| AES-256-CBC, 64 KiB | 1249 MiB/s | 1350 MiB/s | 0.93x |
-| ARIA-256-CBC, 64 KiB | 26 MiB/s | 101 MiB/s | 0.26x |
-| Ed25519 sign | 0.163 ms | 0.037 ms | 4.5x slower |
+| SHA-256, 64 KiB | 1490 MiB/s | 1550 MiB/s | 0.97x |
+| SHA-1, 64 KiB | 1710 MiB/s | 1820 MiB/s | 0.95x |
+| MD5, 64 KiB | 690 MiB/s | 795 MiB/s | 0.87x |
+| SHA3-256, 64 KiB | 380 MiB/s | 410 MiB/s | 0.93x |
+| SHAKE-256, 64 KiB | 375 MiB/s | 405 MiB/s | 0.92x |
+| SHA-512, 64 KiB | 385 MiB/s | 655 MiB/s | 0.58x |
+| AES-256-CBC, 64 KiB | 1280 MiB/s | 1350 MiB/s | 0.95x |
+| ARIA-256-CBC, 64 KiB | 27 MiB/s | 104 MiB/s | 0.26x |
+| Ed25519 sign | 0.162 ms | 0.036 ms | 4.5x slower |
 
-SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.56x is the clearest row
-where neither does.
+SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.58x is the clearest row
+where neither does. The gap narrowed from 0.51x after BMI2 RORX optimization (+7.5% SHA-512).
 
 **What each remaining gap actually is, which ones have been closed and why, and the decompositions
 behind the ones that have not are in

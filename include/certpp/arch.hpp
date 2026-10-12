@@ -135,4 +135,22 @@
     #define CERTPP_ARCH_HAS_IFMA_POLY1305 1
 #endif
 
+/*
+ * AVX-512F under x86-64: the foundation of the AVX-512 instruction set.
+ * Required for ChaCha20's 16-block vector path (xorStream16).
+ * Gate mirrors the others: x86-64 only, not disabled, GCC/Clang only.
+ */
+#if defined(CERTPP_ARCH_X86_64) && !defined(CERTPP_DISABLE_HWACCEL_SIMD) &&     (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#  define CERTPP_ARCH_HAS_AVX512F 1
+#endif
+
+/*
+ * AVX-512VL under x86-64: vector length extensions for 256-bit operations on AVX-512.
+ * Required for ChaCha20's per-lane rotate (vprold).
+ * Gate mirrors AVX-512F: same conditions.
+ */
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+#  define CERTPP_ARCH_HAS_AVX512VL 1
+#endif
+
 #endif // __INCLUDE_CERTPP_ARCH_HPP__

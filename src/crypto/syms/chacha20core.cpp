@@ -20,8 +20,10 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CERTPP_TARGET_AVX2 __attribute__((target("avx2")))
+#define CERTPP_TARGET_AVX512F __attribute__((target("avx512f,avx512vl")))
 #else
 #define CERTPP_TARGET_AVX2
+#define CERTPP_TARGET_AVX512F
 #endif
 
 namespace certpp {
@@ -211,6 +213,26 @@ namespace crypto {
                 }
                 __cpuidex(regs, 7, 0);
                 return (regs[1] & (1 << 5)) != 0;   // AVX2 is EBX bit 5 of leaf 7
+#else
+                return false;
+#endif
+            }();
+            return detected;
+        }
+
+        bool hasAvx512f() {
+            static const bool detected = [] {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f") != 0;
+#elif defined(_M_X64) || defined(_M_AMD64)
+                int regs[4] = { 0, 0, 0, 0 };
+                __cpuid(regs, 0);
+                if (regs[0] < 7) {
+                    return false;
+                }
+                __cpuidex(regs, 7, 0);
+                return (regs[1] & (1 << 16)) != 0;  // AVX512F is EBX bit 16 of leaf 7
 #else
                 return false;
 #endif
