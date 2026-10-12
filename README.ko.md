@@ -236,7 +236,7 @@ OpenSSL은 생성자를 게으르게 해석해서 64 KiB SHA-256 첫 호출이 �
 | MD5, 64 KiB | 673 MiB/s | 790 MiB/s | 0.85배 |
 | SHA3-256, 64 KiB | 370 MiB/s | 400 MiB/s | 0.93배 |
 | SHAKE-256, 64 KiB | 363 MiB/s | 392 MiB/s | 0.93배 |
-| SHA-512, 64 KiB | 362 MiB/s | 649 MiB/s | 0.56배 |
+| SHA-512, 64 KiB | 385 MiB/s | 655 MiB/s | 0.58배 |
 | AES-256-CBC, 64 KiB | 1249 MiB/s | 1350 MiB/s | 0.93배 |
 | ARIA-256-CBC, 64 KiB | 26 MiB/s | 101 MiB/s | 0.26배 |
 | Ed25519 서명 | 0.163 ms | 0.037 ms | 4.5배 느림 |
@@ -422,7 +422,7 @@ GCC 열에 대한 WSL2 주의사항과 함께.
 | SHA-224 | **1552.2 MiB/s** | 1544.4 MiB/s |
 | SHA-256 | **1556.5 MiB/s** | 1438.9 MiB/s |
 | SHA-384 | 349.2 MiB/s | **361.3 MiB/s** |
-| SHA-512 | 352.2 MiB/s | **359.0 MiB/s** |
+| SHA-512 | 385 MiB/s | **361 MiB/s** |
 | SHA3-256 | 107.7 MiB/s | **309.4 MiB/s** |
 | SHA3-512 | 57.0 MiB/s | **163.6 MiB/s** |
 | SHAKE-128 | 132.9 MiB/s | **381.3 MiB/s** |
@@ -448,17 +448,17 @@ GCC 열에 대한 WSL2 주의사항과 함께.
 
 | | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | 751.0 MiB/s | **841.2 MiB/s** |
-| XChaCha20-Poly1305 | 749.2 MiB/s | **841.5 MiB/s** |
-| AES-256-GCM | 371.6 MiB/s | **465.3 MiB/s** |
+| ChaCha20-Poly1305 | 999 MiB/s | 835 MiB/s | 1.19x |
+| XChaCha20-Poly1305 | 1005 MiB/s | 840 MiB/s | 1.20x |
+| AES-256-GCM | 520 MiB/s | 465 MiB/s | 1.13x |
 
 #### AEAD seal, 64 B, 레코드당
 
 | | MSVC | GCC |
 |---|---|---|
-| ChaCha20-Poly1305 | **410 ns** | 338 ns |
-| XChaCha20-Poly1305 | **545 ns** | 446 ns |
-| AES-256-GCM | 220 ns | **234 ns** |
+| ChaCha20-Poly1305 | 400 ns | 330 ns | 1.21x |
+| XChaCha20-Poly1305 | 400 ns | 450 ns | 0.89x |
+| AES-256-GCM | 215 ns | 235 ns | 0.93x |
 
 
 GCC 수치는 **WSL2 아래**에서 얻었습니다 — 베어 메탈이 아니라 VM 안의 실제 Linux
