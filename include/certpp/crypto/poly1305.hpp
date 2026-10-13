@@ -41,8 +41,15 @@ namespace crypto {
 #if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
         /* r^1..r^8 as 26-bit limbs, for the eight-blocks-at-a-time path. Filled on first use
          * rather than at reset(): seven 130-bit multiplies is real cost on a 64-byte record, and
-         * the vector path would never earn it back there. */
-        uint32_t _powers[8][5];
+         * the vector path would never earn it back there.
+         *
+         * Laid out limb-major as [5][8] rather than power-major as [8][5], and widened to
+         * uint64_t, because this is the layout `absorb8()` consumes: lane j needs limb m of
+         * power (7 - j), so [5][8] is five aligned 64-byte loads. Storing it power-major meant
+         * rebuilding that every group of eight blocks with forty scalar stores and five
+         * loads, to re-lay-out a table computed exactly once per message. Measured at 10.11 ns
+         * -> 1.96 ns per group, which is 10.3% of a group's total. */
+        alignas(64) uint64_t _powers[5][8];
         bool _powersReady;
 
         /* Fills _powers the first time eight whole blocks are pushed. */

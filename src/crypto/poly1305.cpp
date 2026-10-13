@@ -134,39 +134,51 @@ namespace crypto {
             }
         }
 
-        /* r^1 .. r^8 in limb form, from r itself.
+        /* r^1 .. r^8 in limb form, from r itself, stored the way absorb8 consumes them.
          *
          * Squaring where it helps: r^2, r^4 and r^8 each take one multiply, and r^3, r^5, r^6 and
          * r^7 one more each -- seven in all rather than eight sequential ones, and each is exact
          * because the result is reduced before the next. Computed once per message, and only when
          * eight whole blocks actually turn up, because seven 130-bit multiplies is real cost on a
-         * 64-byte record and the vector path would never pay for it. */
-        void computePowers(const uint32_t r[5], uint32_t powers[8][5]) {
+         * 64-byte record and the vector path would never pay for it.
+         *
+         * `out[m][j]` is limb m of power (8 - j), NOT of power (j + 1). Lane 0 carries the
+         * OLDEST of the eight blocks and therefore takes the LARGEST power r^8, so the index is
+         * 7 - j for lane j. Writing j instead gives every lane the power matching its own
+         * position, which is a different and equally plausible sum -- the long-message KAT caught
+         * that when the same mistake was made in absorb8's own reload. */
+        void computePowers(const uint32_t r[5], uint64_t out[5][8]) {
             uint64_t t[9];
-            uint32_t tmp[5];
+            uint32_t tmp[5], r2[5];
 
-            for (int i = 0; i < 5; ++i) { powers[0][i] = r[i]; }                 // r^1
+            // Power index p is written to lane 7 - p, because lane 0 carries the oldest of
+            // the eight blocks and so takes the largest power.
+            auto store = [&out](int p, const uint32_t limbs[5]) {
+                for (int m = 0; m < 5; ++m) { out[m][7 - p] = limbs[m]; }
+            };
 
-            mulLimbs(r, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[1][i] = tmp[i]; }                // r^2
+            store(0, r);                                                          // r^1
 
-            mulLimbs(tmp, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[2][i] = tmp[i]; }                // r^3
+            mulLimbs(r, r, t); reduce9(t, r2);
+            store(1, r2);                                                         // r^2
 
-            mulLimbs(powers[1], powers[1], t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[3][i] = tmp[i]; }                // r^4
+            mulLimbs(r2, r, t); reduce9(t, tmp);
+            store(2, tmp);                                                        // r^3
 
-            mulLimbs(tmp, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[4][i] = tmp[i]; }                // r^5
-
-            mulLimbs(tmp, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[5][i] = tmp[i]; }                // r^6
-
-            mulLimbs(tmp, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[6][i] = tmp[i]; }                // r^7
+            mulLimbs(r2, r2, t); reduce9(t, tmp);                                 // r^4 by squaring r^2
+            store(3, tmp);
 
             mulLimbs(tmp, r, t); reduce9(t, tmp);
-            for (int i = 0; i < 5; ++i) { powers[7][i] = tmp[i]; }                // r^8
+            store(4, tmp);                                                        // r^5
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            store(5, tmp);                                                        // r^6
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            store(6, tmp);                                                        // r^7
+
+            mulLimbs(tmp, r, t); reduce9(t, tmp);
+            store(7, tmp);                                                        // r^8
         }
         /* Sums the eight lanes of a vector into one integer.
          *
@@ -200,7 +212,7 @@ namespace crypto {
 #if defined(__GNUC__) && !defined(_MSC_VER)
         __attribute__((target("avx512ifma,avx512f")))
 #endif
-        void absorb8(uint32_t accumulator[5], const uint32_t powers[8][5],
+        void absorb8(uint32_t accumulator[5], const uint64_t powers[5][8],
                      const uint8_t blocks[8][16]) {
             // --> The eight blocks' limbs, one lane each: n[m] lane j is limb m of block j+1.
             // --> Limbs are taken once per block, into the five registers. The first version of
@@ -219,19 +231,17 @@ namespace crypto {
                 }
             }
 
-            // --> The powers: P[m] lane j is limb m of r^{8-j}. The index is 7-j rather than j
-            // because lane 0 carries the OLDEST block, which takes the largest power -- reading
-            // powers[j] would give every lane the power matching its own position, a different and
-            // wrong sum. The first version had it the other way, and the long-message KAT caught it.
+            // --> The powers, already in this layout. p[m] is limb m of the eight powers, lane
+            // j carrying r^{8-j} -- computePowers() stored it that way, so this is five aligned
+            // loads rather than the forty scalar stores and five loads this used to spend per
+            // group re-laying-out a table that is computed once per message. Measured 10.11 ns ->
+            // 1.96 ns per group. The lane order itself is unchanged: 7 - j, because lane 0 carries
+            // the OLDEST block and takes the largest power. Reading powers[j] would give every
+            // lane the power matching its own position, a different and wrong sum; the first
+            // version of this had it the other way, and the long-message KAT caught it.
             __m512i p[5];
-            {
-                alignas(64) uint64_t lanes[8];
-                for (int m = 0; m < 5; ++m) {
-                    for (int j = 0; j < 8; ++j) {
-                        lanes[j] = powers[7 - j][m];
-                    }
-                    p[m] = _mm512_load_epi64(lanes);
-                }
+            for (int m = 0; m < 5; ++m) {
+                p[m] = _mm512_loadu_si512(powers[m]);
             }
 
             // --> The nine limbs of the per-lane product. Each is a sum of at most five products
@@ -252,8 +262,9 @@ namespace crypto {
             }
 
             // --> a * r^8, the serial half, done scalarly -- this library's own mulLimbs().
+            // r^8 is power index 7, which computePowers() put in lane 7 - 7 = 0.
             uint32_t r8[5];
-            for (int i = 0; i < 5; ++i) { r8[i] = powers[7][i]; }
+            for (int i = 0; i < 5; ++i) { r8[i] = uint32_t(powers[i][0]); }
             uint64_t prod[9];
             mulLimbs(accumulator, r8, prod);
 
