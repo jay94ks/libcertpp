@@ -295,19 +295,24 @@ namespace crypto {
 
     /* Y <- (Y ^ block) * H, one step of SP 800-38D 6.4's recurrence. */
     void Ghash::absorb(const uint8_t* block) {
-        for (size_t i = 0; i < BLOCK_BYTES; ++i) {
-            _y[i] ^= block[i];
-        }
-
-        // --> The prepared copy rather than multiply(): H is already in the right basis, and
-        // re-reflecting it here is the twenty instructions per block this used to spend. Which
-        // of the accelerated paths applies was decided in reflectSubkey(), once.
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
         if (_accelerated) {
+            // --> Y ^= block as one 16-byte operation. This was a byte-at-a-time loop, which is
+            // sixteen loads, sixteen xors and sixteen stores per block -- and because both
+            // operands are uint8_t* the compiler has to assume they may alias, so it cannot
+            // vectorise the loop either. Measured at 48.5 cycles/block for push() against 20.0
+            // for multiply() alone: roughly 28 cycles a block of loop, and the multiply itself
+            // is already close to the floor for a serial PCLMULQDQ chain.
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(_y),
+                _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(_y)),
+                              _mm_loadu_si128(reinterpret_cast<const __m128i*>(block))));
             multiplyCore(_y, _hReflected, _useGfni);
             return;
         }
 #endif
+        for (size_t i = 0; i < BLOCK_BYTES; ++i) {
+            _y[i] ^= block[i];
+        }
         multiply(_y, _h);
     }
 
