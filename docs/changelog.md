@@ -1837,19 +1837,114 @@ makes. It made **no** difference, inside a run-to-run spread of about 11% —
 doing it. The loop is back, with the negative result recorded in a comment so
 nobody repeats it.
 
-A dedicated squaring was *not* written, deliberately. It would halve the
-partial products of the four squarings per ladder iteration — perhaps 30% — but
+A dedicated squaring was *not* written at this point, deliberately. It would halve
+the partial products of the four squarings per ladder iteration — perhaps 30% — but
 it is a second 100-term expression with its own doubling rules interacting with
 the radix's, and the ladder would still agree with itself if it were wrong.
 Left until the gain can be attributed rather than assumed.
+
+That reasoning turned out to be right and the conclusion drawn from it turned out
+to be premature, which is a combination worth recording because the error was not
+in the caution. The squaring was eventually written — see *`Fe25519`: a dedicated
+squaring, generated rather than derived* below — and it is correct. What was
+missing was not confidence but a mechanism: the merged factors had to come from
+somewhere other than a human reading a 100-term expression, and until they came
+from a program that checks itself against `mul()`, "deliberately not written" was
+the only responsible option available. The negative result recorded here was
+about the *method*, not about the operation.
 
 ### What remains for 100 µs
 
 derive is 1.7x off. The dominant remaining cost is that a 2^25.5 radix needs
 **100** limb multiplies, where a 2^51 radix needs 25 — that is the real 4x, and
 it is why 64-bit implementations use it. It needs 128-bit products, which MSVC
-can do via `_umul128` even without `__int128`. With that plus a squaring,
-100 µs is comfortably reachable; without it, it is not.
+can do via `_umul128` even without `__int128`.
+
+The squaring half of that is now done, at radix 2^25.5, so what remains is the
+radix half — and the radix half is gated on `_umul128` measuring 6.5--7.0x the
+native multiply, which makes a single 2^51 implementation everywhere *slower on
+MSVC than the 2^25.5 code it would replace*. It is a gate rather than a
+migration for that reason, and 100 µs is reachable on the native-`__int128`
+toolchains by turning it on, not by rewriting it.
+
+## `Fe25519`: a dedicated squaring, generated rather than derived
+
+`Fe25519::square()` called `mul(a, a)` from the day the field landed, and
+`docs/roadmap.md` carried "the dedicated square half is still a negative result"
+in two places — both of which this entry supersedes. A squaring is not half of a
+multiplication, it is 55 products against 100, because each of the 45
+off-diagonal pairs appears twice and can be computed once.
+
+### Why it took a generator
+
+Two attempts at writing the merged factors by hand were both wrong, and the
+reason is the interesting part. The 2^25.5 radix applies its corrections
+**asymmetrically**: the odd-index doubling belongs to the first operand and the
+19-fold to the second. The product matrix is therefore symmetric in value but
+not in correction, so the merged factor for an off-diagonal pair is the **sum** of
+the two single-term factors, not twice one of them — and every factor in the
+expression depends on that distinction.
+
+The part that is easy to get wrong even having noticed all of that: reading
+`mul()`'s expressions, `f` is doubled when the index is odd **and the output limb
+is even**. Both halves of the condition are load-bearing. `mul()`'s even output
+limbs (t0, t2, t4, t6, t8) double f1..f9; its odd output limbs (t1, t3, t5, t7,
+t9) double nothing at all. "Doubled when the index is odd" is true of half the
+rows and yields a `square()` that is wrong for every input.
+
+So `tools/fe_square_gen.cpp` transcribes `mul()`'s own per-term rule, checks that
+the rule reproduces `mul()` on all ten limbs over 200 random inputs, checks the
+merged form the same way over 20,000, and only then emits the expressions. A
+wrong factor cannot pass either check, so it cannot reach the library. It is
+documented in `CLAUDE.md` as a hand-edit-the-generator-never-the-squaring tool,
+because the generated block and the tool are only useful together.
+
+Three factors, so the shape is checkable by eye: `1*s0*s0` (diagonal, even, no
+wrap), `38*s5*s5` (diagonal, odd, wraps at 2×5 = 10 → 2 × 19), `76*s1*s9` (both
+odd → (2 + 2) × 19).
+
+### Measured
+
+Same process, same operands:
+
+    mul()               36.87 ns/call
+    square()            29.48 ns/call     -20.0%
+    products only       31.19 ns/call     84.6% of mul
+
+End to end, by instruction count — this machine moves Ed25519 between 3.6x and
+5.5x of OpenSSL across identical wall-clock runs, which cannot resolve a change
+this size, so the count is the honest instrument:
+
+    baseline   2,236,950 instructions per signature
+    this       2,187,443                          -2.21%
+    OpenSSL      602,948 (control, unchanged)
+
+**The end-to-end wall-clock effect is not established** and is not claimed. It is
+below this machine's noise floor.
+
+### Why `mul()` itself was left alone
+
+At 31.19 ns for 100 `imul`s on a ~3.5 GHz part, the product accumulation is at
+about **91% of the imul throughput floor** (100 cycles ≈ 28.6 ns). The remaining
+15% is two carry passes, and two is structural: the first pass's limb-9 carry
+folds back into limb 0 through ×19, so it cannot be folded into a single pass.
+There is no headroom there to optimize, which makes the product *count* the only
+lever — and that is what the squaring takes.
+
+Karatsuba, which would take 100 products to 75, was considered and rejected on
+arithmetic rather than taste. It would lower the floor to about 21 ns, roughly
+10 ns saved, against 5-limb additions, subtractions and a materially wider carry
+that would eat much of it. More seriously the accumulator bound goes to zero: the
+`(a0+a1)(b0+b1)` middle term has 27-bit limbs, 54-bit products, and accumulates
+into five positions, which is ≈2^63 — exactly `int64_t`'s limit. The current code
+carries three bits of headroom (2^60) and the test asserts that bound. A MAC that
+is wrong only for some inputs is worse than one that is wrong for all of them.
+
+Radix 2^51 keeps `mul(a, a)`: merging 25 products to 10 is a small win for a
+second generated form to keep correct.
+
+Verified: 130/130 on the default build, and `fe25519`/`ed25519`/`x25519` also
+pass under `CERTPP_ENABLE_FE25519_RADIX51`.
 
 ## AES-GCM and unpadded CBC, for an IKEv2 consumer
 
