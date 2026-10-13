@@ -216,44 +216,54 @@ re-measured on bare-metal Linux before the gap is called a GCC bug.
 
 ## Closing the gap to OpenSSL
 
-Re-measured 2026-10-11 with `examples/06_openssl_compare.cpp` against OpenSSL 3.0.13,
-GCC Release under WSL2, on the i7-11370H this file's other figures come from. The
-recorded ratios reproduce, so nothing below rests on a stale number.
+Re-measured 2026-10-13 against OpenSSL 3.0.13, GCC Release under WSL2, on the i7-11370H this
+file's other figures come from. Every figure below is a **median of 15 batches of 200**, taken
+over three separate process invocations, so the spread is visible rather than assumed away.
 
-Two runs of the same binary, one after the other, which is also the noise floor:
+Three runs of the same binary, which is also the noise floor:
 
-| | run 1 | run 2 |
-|---|---|---|
-| SHA-256, 64 KiB | 0.97x | 0.97x |
-| SHA-1, 64 KiB | 0.97x | 0.93x |
-| MD5, 64 KiB | 0.89x | 0.92x |
-| AES-256-CBC, 64 KiB | 0.95x | 0.93x |
-| SHA3-256, 64 KiB | 0.66x | 0.72x |
-| SHAKE-256, 64 KiB | 0.66x | 0.72x |
-| SHA-512, 64 KiB | 0.51x | 0.51x |
-| ARIA-256-CBC, 64 KiB | 0.26x | 0.26x |
-| Ed25519 sign | 4.51x slower | 4.43x slower |
+| | certpp | OpenSSL | run 1 | run 2 | run 3 |
+|---|---|---|---|---|---|
+| SHA-256, 64 KiB | 1479 MiB/s | 1403 MiB/s | 1.04x | 1.02x | 1.06x |
+| SHA-1, 64 KiB | 1598 MiB/s | 1741 MiB/s | 0.92x | 0.92x | 0.95x |
+| MD5, 64 KiB | 673 MiB/s | 706 MiB/s | 1.05x | 0.88x | 0.92x |
+| AES-256-CBC, 64 KiB | 1205 MiB/s | 1284 MiB/s | 0.98x | 0.89x | 0.91x |
+| SHA3-256, 64 KiB | 309 MiB/s | 388 MiB/s | 0.90x | 0.91x | 0.77x |
+| SHAKE-256, 64 KiB | 343 MiB/s | 371 MiB/s | 0.89x | 1.00x | 0.97x |
+| SHA-512, 64 KiB | 364 MiB/s | 629 MiB/s | 0.55x | 0.59x | 0.60x |
+| ARIA-256-CBC, 64 KiB | 26.0 MiB/s | 100.8 MiB/s | 0.26x | 0.26x | 0.24x |
+| Ed25519 sign | 0.167 ms | 0.036 ms | 4.64x slower | 4.54x slower | 5.06x slower |
 
-Only three of those moved at all between runs, and by less than this machine's
-20--30% spread. That is the honest reading, and it is the one to carry: SHA-512,
-ARIA and Ed25519 reproduce to within 2%, and the rows that wobbled are wobbling
-inside noise, not trending.
+That ratio is certpp over OpenSSL, so **higher is our favour**; Ed25519 is quoted the other way
+because that is the only row where we lose.
+
+The honest reading is that **ARIA and SHA-512 reproduce tightly** -- ARIA to within 2% and SHA-512
+to within 4% across three invocations -- while **SHA-1, MD5, AES-CBC and the Keccak pair move by
+10--15% between runs**, which is this machine's noise, not a trend. Two rows changed materially
+against the 2026-10-11 figures in this file: SHA-512 has gone from 0.51x to about **0.58x** (the
+BMI2 RORX work landed), and SHA3-256/SHAKE-256 from 0.66x to about **0.90x**. Both are
+improvements, and both were measured, not inferred.
 
 ### Classifying the gaps by kind, because the kind decides whether they can close
 
 The four remaining gaps are not four instances of one problem, and treating them
 as one is how the previous pass spent six of seven changes.
 
-**1. Ed25519 signing, 4.5x -- a work-volume gap, now decomposed for the first time.**
+**1. Ed25519 signing, 4.6x -- a work-volume gap, now decomposed for the first time.**
 
 This had never been profiled, and the only hypothesis on file could not account
 for it. Measured, per signature:
 
 | | certpp | OpenSSL |
 |---|---|---|
-| instructions retired | 2,262,504 | 609,642 (**3.71x**) |
+| instructions retired | 2,238,542 | 602,948 (**3.71x**) |
 | cycles | 702,145 | 157,278 (4.47x) |
 | IPC | 3.22 | 3.88 |
+
+Instruction counts re-measured 2026-10-13 by the same two-point slope; the **3.71x ratio
+reproduces exactly** while both absolute counts came in about 1.1% lower than recorded above
+(2,262,504 and 609,642), which is within this machine's drift. The cycle and IPC rows are carried
+from the original profiling run and were not re-taken.
 
 The instruction count is where the gap is. IPC differs by 20%, which is inside
 this machine's spread; **certpp is not slower because its code runs worse, it is
@@ -303,7 +313,7 @@ Expected, if the arithmetic holds: signing from 0.19 ms toward ~0.08 ms, i.e.
 4.5x to roughly 2.5x of OpenSSL. That is a prediction from an isolated kernel
 measurement, not a result, and it is falsified or confirmed by one A/B run.
 
-**2. SHA-512, 0.51x -- the largest hash gap, and it is not vectorisation-bound
+**2. SHA-512, 0.58x -- the largest hash gap, and it is not vectorisation-bound
 either.** SHA-NI covers SHA-1 and SHA-256 and there is no SHA-512 equivalent, so
 both sides run scalar code and the SHA-256/SHA-512 split the README describes
 stands. What is untested is whether an **AVX2** path pays here: SHA-512's message
@@ -312,7 +322,7 @@ unlike the changes that failed before, the input *does* fill the lanes. This
 machine has AVX2. Expected 1.5--2x if it works; unmeasured, so it is a
 proposal with a verification method, not a plan with a result.
 
-**3. SHA3-256 / SHAKE-256, 0.66x -- a real gap with an awkward shape.** Keccak-f[1600]
+**3. SHA3-256 / SHAKE-256, 0.90x -- a real gap with an awkward shape.** Keccak-f[1600]
 is 25 lanes of 64 bits. AVX2 carries 4 lanes, so 25 = 6x4 + 1: six of every seven
 iterations fill the registers and one does not. That raggedness is the same
 failure mode as the seven closed items, in a milder form, and it is why this is
@@ -345,12 +355,16 @@ already done.
 
 | | Item | Gap | State |
 |---|---|---|---|
-| 1 | Ed25519 field to radix 2^51, native `__int128` | 4.5x | **measured; negative** |
-| 2 | SHA-512, BMI2 RORX | 0.51x | **measured; +7.5%** |
-| 3 | P2 (GHASH via GFNI) | 0.09x | **measured; closed positive** |
-| 4 | Poly1305 on AVX512IFMA | 0.09x | **measured; +21% on the MAC** |
-| 5 | SHA3/SHAKE on AVX2 | 0.72x | **partially closed; +28% measured** |
+| 1 | Ed25519 field to radix 2^51, native `__int128` | 4.6x | **measured; negative** |
+| 2 | SHA-512, BMI2 RORX | 0.58x | **measured; +7.5%** |
+| 3 | P2 (GHASH via GFNI) | 0.05x | **measured; closed positive** |
+| 4 | Poly1305 on AVX512IFMA | 0.10x | **measured; +21% on the MAC** |
+| 5 | SHA3/SHAKE on AVX2 | 0.90x | **partially closed; +28% measured** |
 | -- | ARIA-256-CBC | 0.26x | not closable; recorded and closed |
+
+Gaps re-measured 2026-10-13. Ed25519, SHA-512 and ARIA reproduce tightly; SHA3/SHAKE and the GHASH
+and Poly1305 rows moved, and all three moved *our way* -- 0.72x to 0.90x for Keccak, and the
+GFNI and Poly1305 gaps now quoted against freshly measured OpenSSL baselines rather than October's.
 
 Items 1--3 are now measured and written up below. The ordering held up: item 1 had the
 largest gap and the finished decomposition, and items 2 and 3 were the two whose stated
@@ -367,14 +381,24 @@ previous seven items were really about and the one P8 finally answered.
 
 ### What would falsify this section
 
-Every ratio above is one run of fastest-of-five on one machine under WSL2, and
-this file already records that WSL2 is a VM. Before any of this is treated as
-settled, re-run on bare-metal Linux: the two GCC-only gaps (DSA-2048, GF(2^m))
-have never been reproduced off a VM, and an AVX512 result measured inside one may
-not be a result at all. The Ed25519 decomposition is less exposed -- it is an
-instruction count, not a time -- but the predicted end-to-end outcome is, and it
-has no KAT behind it until item 1 is implemented and the field's known-answer
-tests pass.
+Every ratio above is still one machine under WSL2, and this file already records that WSL2 is a
+VM. The 2026-10-13 pass tightened the *method* -- median of 15x200, three process invocations,
+two-point instruction slopes, and OpenSSL cross-checked against `openssl speed` where a whole-AEAD
+figure was load-bearing -- but it did not change the machine. Before any of this is treated as
+settled, re-run on bare-metal Linux: the two GCC-only gaps (DSA-2048, GF(2^m)) have never been
+reproduced off a VM, and an AVX512 result measured inside one may not be a result at all.
+
+The Ed25519 decomposition is less exposed -- it is an instruction count, not a time -- but the
+predicted end-to-end outcome is, and it has no KAT behind it until item 1 is implemented and the
+field's known-answer tests pass.
+
+What the 2026-10-13 pass could **not** re-take, and why, so that its silence is not read as
+agreement: the GHASH per-block counts (167.8 / 179.7 / 310.9) and the SHA-512 ns-per-block
+decomposition (18.7 / 73.7 / 278.4) describe code states that no longer exist -- GFNI and BMI2
+RORX have since replaced them, so re-measuring would produce a different number about a different
+binary rather than a check on the old one. The field-kernel figures (43.2--44.6 ns against
+9.1--9.4 ns) need the isolated kernel probe this file does not carry, and the radix-2^51 A/B needs
+a build with `CERTPP_ENABLE_FE25519_RADIX51`. Those remain as recorded, from October.
 
 ### Item 1 measured: a negative result, and the reason is not the radix
 
@@ -468,7 +492,7 @@ The rounds are 75%, and they are a serial dependency chain -- round *i*'s `e`, `
 round *i-1*'s `a`, `b` and `c`. The critical path is roughly seven dependent operations per round
 with a one-cycle latency each, which is close to what the measurement shows: 278 ns for 80 rounds
 is about 12 cycles per round. Vectorising a 20% component against a 75% latency-bound one cannot
-be the 2x that closes 0.51x.
+be the 2x that closes 0.58x.
 
 **So the item is closed as proposed, and the diagnosis is kept.** What the decomposition did find
 is that the packing -- 5% of the work, and the only part that was not doing real work -- built
@@ -578,7 +602,7 @@ first and cleanly.
 
 ### DES measured: the permutation was already unrolled, and the change broke a table
 
-`examples/05_benchmark` puts DES-CBC at 5.1 MiB/s and 3DES-CBC at 1.7 MiB/s against AES-256-CBC
+`examples/05_benchmark` puts DES-CBC at 5.2 MiB/s and 3DES-CBC at 1.7 MiB/s against AES-256-CBC
 at 1313, which reads as the largest outlier in the library. Decomposed, the cipher is the whole of
 it -- `processBlock()` alone measures 1,484.9 ns against 4.8 MiB/s end to end, so there is no
 interface overhead to remove, unlike AES-CBC before it.
@@ -599,7 +623,7 @@ and the classic FIPS 46-3 worked example failed at once -- `CHECK( memcmp(out, E
 )` returning 71. Caught by the existing test, which is what it is for. Reverted in full; the
 measured performance is unchanged because there was never any to gain.
 
-**So DES stays at 5.1 MiB/s, and the reason is now known rather than guessed.** The block is
+**So DES stays at 5.2 MiB/s, and the reason is now known rather than guessed.** The block is
 ~2,800 instructions at IPC 0.63, and the cost is the eight S-box lookups per round -- data-dependent
 byte loads from a 512-byte table, 128 of them per block -- plus the permutations, both of which
 the compiler has already shaped as well as this formulation allows. Closing it means bit-slicing,
@@ -637,39 +661,49 @@ as closed as it was recorded.
 Reverted in full. ARIA stays at 0.26x, now with the reason known rather than guessed, which is the
 third item this session to end that way.
 
-### ChaCha20-Poly1305 decomposed: Poly1305 is two thirds of it, and 10.5x behind OpenSSL
+### ChaCha20-Poly1305 decomposed: Poly1305 is two thirds of it, and about 10x behind OpenSSL
 
 The last unexamined item was ChaCha20-Poly1305, at 833 MiB/s against OpenSSL's 3,631. Decomposed
 at 64 KiB so every figure is on the same scale -- measuring the two halves at 64-byte granularity
 while the AEAD is measured at 64 KiB compares per-call overhead against throughput and reports
-the AEAD as *faster* than one of its parts, which is how the first version of this probe read:
+the AEAD as *faster* than one of its parts, which is how the first version of this probe read.
+Re-measured 2026-10-13 as medians of 15 x 200 over three process invocations:
 
-| | certpp | OpenSSL | ratio |
-|---|---|---|---|
-| ChaCha20 `xorStream` | 2492 MiB/s | 5142.8 MiB/s | 0.48x |
-| Poly1305 MAC | 1196.9 MiB/s | 12633.4 MiB/s | **0.09x** |
-| the AEAD | 833 MiB/s | 3631.3 MiB/s | 0.23x |
+| | certpp | OpenSSL | ratio | 2026-10-11 |
+|---|---|---|---|---|
+| ChaCha20 `xorStream` | 2428 MiB/s | 6200 MiB/s | **0.39x** | 0.48x |
+| Poly1305 MAC | 1537 MiB/s | 15017 MiB/s | **0.10x** | 0.09x |
+| the AEAD | 912 MiB/s | 4355 MiB/s | **0.21x** | 0.23x |
 
-So Poly1305 is two thirds of the AEAD's cost, and it is 10.5x behind -- the largest gap found in
-this whole survey, six times ARIA's and larger than Ed25519's. OpenSSL is using AVX512-IFMA
+So Poly1305 is two thirds of the AEAD's cost, and it is about 10x behind -- the largest gap found
+in this whole survey, six times ARIA's and larger than Ed25519's. OpenSSL is using AVX512-IFMA
 (`vpmadd52luq`/`vpmadd52huq`), and this machine has `avx512ifma`. **The roadmap's item 4 named the
 right feature, which is a first.**
 
-#### That 0.23x, corroborated by a second harness
+Two reproducibility notes, because both cost a wrong number to get past. OpenSSL 3.0.13 exposes
+**no Poly1305 `EVP_MD` digest at all** -- `EVP_MD_fetch(NULL, "POLY1305", NULL)` returns NULL, as
+does `EVP_get_digestbyname`. Poly1305 is reachable only inside the ChaCha20-Poly1305 AEAD or
+through the `EVP_MAC` API, and a probe written against `EVP_poly1305()` measures nothing at all
+while appearing to run. And the keystream row moved from 0.48x to 0.39x, which is the AVX-512
+`xorStream16` path landing; the other two reproduce their earlier values to within 10%.
 
-The 0.23x above is the single most consequential number in this file, and it was measured with one
-process and one loop shape. Re-measured on a different day, with two independent harnesses:
+#### That 0.21x, corroborated by a second harness
+
+The 0.21x above is the single most consequential number in this file, and it was measured with one
+process and one loop shape. Corroborated on a different day by a second, unrelated harness:
 
 | | certpp | OpenSSL | ratio |
 |---|---|---|---|
 | in-process, median of 15 x 200 | 812 MiB/s | 4080 MiB/s | **0.20x** |
 | `openssl speed -evp`, 64 KiB | -- | 4000 MiB/s | -- |
+| 2026-10-13, median of 15 x 200 | 912 MiB/s | 4355 MiB/s | **0.21x** |
 
 Two harnesses that share no code agree on OpenSSL to within 2% (4080 in-process, 4000 from
-`openssl speed`), and the certpp side reproduces the 0.23x as 0.20x. The IFMA premise is confirmed
-directly: `/proc/cpuinfo` and OpenSSL's own `OPENSSL_ia32cap` both carry `avx512f`, `avx512ifma`,
-`avx512vl`, `gfni` and `vpclmulqdq`. **This gap is real and is not a harness artefact**, which is
-the opposite of what the SHA-512 and Ed25519 rows turned out to be earlier in this file.
+`openssl speed`), and the certpp side reproduces across two sessions at 0.20x and 0.21x. The IFMA
+premise is confirmed directly: `/proc/cpuinfo` and OpenSSL's own `OPENSSL_ia32cap` both carry
+`avx512f`, `avx512ifma`, `avx512vl`, `gfni` and `vpclmulqdq`. **This gap is real and is not a
+harness artefact**, which is the opposite of what the SHA-512 and Ed25519 rows turned out to be
+earlier in this file.
 
 The spread within a single run is worth recording, because it bounds what any of these numbers can
 claim: median-to-max on one row reached **+521%** (5989..37200 ns on OpenSSL AES-256-GCM), and the
@@ -763,31 +797,59 @@ left over is the microarchitecture.
 
 | | throughput ratio | instruction ratio | conclusion |
 |---|---|---|---|
-| SHA-256 | 0.98x | 1.07x | parity -- both call SHA-NI |
-| SHA-1 | 0.95x | 1.23x | 23% more instructions, in the code |
-| MD5 | 0.85x | 1.14x | 14% more instructions, in the code |
-| **SHA-512** | 0.56x | **1.99x** | two causes, both measured |
-| **ChaCha20** | 0.48x | **2.7x** | in the code |
-| AES-256-CBC | 0.93x | -- | both call AES-NI |
+| SHA-256 | 1.04x | 1.09x | parity -- both call SHA-NI |
+| SHA-1 | 0.92x | 1.28x | 28% more instructions, in the code |
+| MD5 | 0.92x | 1.14x | 14% more instructions, in the code |
+| **SHA-512** | 0.58x | **1.87x** | two causes, both measured |
+| **ChaCha20** | 0.39x | **3.31x** | in the code |
+| AES-256-CBC | 0.91x | -- | both call AES-NI |
 
-For the hashes the instruction ratio and the throughput ratio agree closely, so **the hashes' gaps
-are in the code, not in the machine.** That is the answer to the question, and it is the same for
-all of them.
+Re-counted 2026-10-13. Instruction counts come from a two-point slope rather than a single run:
+running the same body at 100 and 700 iterations and solving `b = (I(700) - I(100)) / 600` cancels
+perf's startup, context creation and every other fixed cost exactly, without having to enumerate
+them. The raw counts, in instructions per KiB:
+
+| | certpp | OpenSSL | ratio |
+|---|---|---|---|
+| SHA-256 | 3041 | 2789 | 1.09x |
+| SHA-1 | 2624 | 2050 | 1.28x |
+| MD5 | 11192 | 9832 | 1.14x |
+| SHA-512 | 36127 | 19341 | 1.87x |
+| ChaCha20 keystream | 3968 | 1199 | 3.31x |
+
+**Two rows here were stale and are now corrected.** SHA-512 was quoted at a 1.99x instruction
+ratio, but that was measured at 38839 instructions/KiB -- the count *before* the BMI2 RORX work
+landed. The shipped build measures 36127, which is within 0.02% of the 36135 this file records for
+the post-RORX state, so 1.99x was double-counting an optimization already banked. ChaCha20 moved the
+other way, 2.7x to 3.31x, because the AVX-512 path is wider and this is the count that says so.
+
+For the hashes the instruction ratio and the throughput ratio now agree closely, so **the hashes'
+gaps are in the code, not in the machine.** That is the answer to the question, and it is the same
+for all of them.
 
 #### SHA-512: two independent causes, separated by masking OpenSSL's capabilities
 
 | OpenSSL's SHA-512 | instructions/KiB |
 |---|---|
-| as built | 19342 |
-| `OPENSSL_ia32cap=0` -- vector features masked off | 28530 |
-| **certpp** | **38839** |
+| as built | 19341 |
+| `OPENSSL_ia32cap=0` -- vector features masked off | 28541 |
+| **certpp** | **36127** |
 
-So the 1.79x throughput ratio is two effects multiplying:
+Re-counted 2026-10-13; the 19342 and 28530 figures this table carried before reproduce to within
+0.01% and 0.04%. The certpp figure does not, and the reason matters: it was 38839, which is the
+count from *before* BMI2 RORX shipped. The build measures 36127 now, matching the 36135 recorded
+below for the shipped state.
 
-1. **1.36x -- OpenSSL's portable C is 36% lighter than ours.** 3566 instructions per block against
+So the throughput ratio is two effects multiplying:
+
+1. **1.32x -- OpenSSL vectorises the message schedule.** Masking its vector features costs it 48%
+   more instructions (19341 -> 28541), and ours does not vectorise it at all.
+2. **1.36x -- OpenSSL's portable C is 36% lighter than ours.** 3566 instructions per block against
    our 4855. Both are scalar C, so this is codegen and not hardware.
-2. **1.32x -- OpenSSL vectorises the message schedule.** Masking its vector features costs it 32%
-   more instructions, and ours does not vectorise it at all.
+
+These two were quoted as 1.32x and 1.36x before; both survive re-measurement, with the vectorised
+component's "32% more instructions" now measured at 48% off the re-counted baseline. The product is
+1.87x against the throughput ratio of 0.58x, and the residue is microarchitecture.
 
 Per 128-byte block against the algorithmic floor (80 rounds x ~19 ops plus 64 schedule words x ~10):
 
