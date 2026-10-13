@@ -185,6 +185,18 @@ python tools/exsplit.py                                           # -> examples/
 python tools/wikigen.py emit <path to the wiki clone>
 ```
 
+[`tools/fe_square_gen.cpp`](tools/fe_square_gen.cpp) generates and verifies the merged
+factors in `Fe25519::square()`, and refuses to emit until it has checked itself against
+`mul()` numerically on all ten limbs. Those factors were written by hand twice before and
+were wrong both times — the 2^25.5 radix applies its corrections asymmetrically, so an
+off-diagonal pair's factor is the *sum* of the two single-term factors, not twice one of
+them. Hand-edit the generator, never the squaring:
+
+```sh
+g++ -O2 -std=c++17 tools/fe_square_gen.cpp -Iinclude -Isrc -o /tmp/fe_square_gen
+/tmp/fe_square_gen
+```
+
 **A new public type needs an example before the wiki is regenerated.**
 `wikigen.py` reports any type that has none, and a reference page with no
 example is the one thing in this scheme that is worse than no page — it implies

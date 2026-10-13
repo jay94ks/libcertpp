@@ -606,27 +606,62 @@ namespace crypto {
 
     /* out = a^2. */
     void Fe25519::square(Fe25519& out, const Fe25519& a) {
-        // --> Still mul(a, a) rather than a dedicated squaring. A squaring halves the
-        // partial products -- 100 becomes 55 -- because every off-diagonal term appears
-        // twice and can be computed once and doubled. Worth roughly 12% of X25519,
-        // measured, which is the smaller half of P4 and the one with the more subtle
-        // arithmetic.
-        //
-        // Two attempts to derive the merged form were made and both were wrong, and the
-        // reason is worth recording because it is not the obvious one. The 2^25.5 radix
-        // applies its corrections *asymmetrically*: the odd-index doubling belongs to the
-        // first operand and the 19-fold to the second. So the product matrix is symmetric
-        // in value but not in correction, and the merged factor for a pair is the SUM of
-        // the two single-term factors, not twice one of them. Deriving that sum requires
-        // tracking which operand position each correction belongs to through the merge,
-        // which is exactly the kind of error that produces a square() that agrees with
-        // itself and with nothing else -- the failure mode this class exists to prevent.
-        //
-        // The safe route is to leave this calling mul(a, a) until the merged factors can
-        // be derived by a tool that checks them against mul() mechanically rather than by
-        // hand. The performance cost is known and bounded: about 12% of X25519, i.e. well
-        // under 1% of a TLS handshake.
+#if defined(CERTPP_FE25519_RADIX51)
+        // 5x5 = 25 products, of which the 15 off-diagonal pairs each appear twice and merge
+        // to 1, so a dedicated squaring here would be 10. The asymmetry that makes the
+        // 2^25.5 merge delicate is much weaker at radix 2^51 -- the 19-fold applies to limb
+        // 4 on both sides alike -- but the win is small enough that leaving this as mul(a, a)
+        // costs less than a second generated form to keep correct. The 2^25.5 path, which is
+        // the default and the one MSVC takes, has the real 100 -> 45 reduction below.
         mul(out, a, a);
+#else
+        // --> A dedicated squaring: 55 products against mul()'s 100, because each of the 45
+        // off-diagonal pairs appears twice and is computed once.
+        //
+        // The merged factors are GENERATED, not written by hand, and this is the whole point.
+        // Two earlier attempts at deriving them by hand were both wrong, and docs/roadmap.md
+        // names the reason: the 2^25.5 radix applies its corrections *asymmetrically*, so the
+        // matrix is symmetric in value but not in correction and the merged factor for a pair
+        // is the SUM of the two single-term factors rather than twice one of them. Deriving
+        // that sum by hand is exactly what produces a square() that agrees with itself and
+        // with nothing else -- the failure mode this class exists to prevent.
+        //
+        // So the factors below come from `tools/fe_square_gen.cpp`, which reads mul()'s own
+        // per-term rule (f doubled when the index is odd AND the output limb is even; g
+        // scaled by 19 when the term wraps, i.e. i + j >= 10), checks that rule reproduces
+        // mul() on all ten limbs over 200 random inputs, checks the merged form the same way
+        // over 20,000, and only then emits these expressions. Regenerate with that tool
+        // rather than editing here.
+        //
+        // Worked examples of the three distinct factors, so the shape is checkable by eye:
+        //   1*s0*s0  diagonal, even index, no wrap          -> 1
+        //   38*s5*s5 diagonal, odd index, 2*5 = 10 wraps   -> 2 * 19
+        //   76*s1*s9 both odd, so 2 + 2 from the two sides -> (2 + 2) * 19
+        //   38*s2*s8 both even, so 1 + 1                   -> (1 + 1) * 19
+        const int64_t s0 = a.limbs[0], s1 = a.limbs[1], s2 = a.limbs[2];
+        const int64_t s3 = a.limbs[3], s4 = a.limbs[4], s5 = a.limbs[5];
+        const int64_t s6 = a.limbs[6], s7 = a.limbs[7], s8 = a.limbs[8];
+        const int64_t s9 = a.limbs[9];
+
+        int64_t t0 = 1*s0*s0 + 76*s1*s9 + 38*s2*s8 + 76*s3*s7 + 38*s4*s6 + 38*s5*s5;
+        int64_t t1 = 2*s0*s1 + 38*s2*s9 + 38*s3*s8 + 38*s4*s7 + 38*s5*s6;
+        int64_t t2 = 2*s0*s2 + 2*s1*s1 + 76*s3*s9 + 38*s4*s8 + 76*s5*s7 + 19*s6*s6;
+        int64_t t3 = 2*s0*s3 + 2*s1*s2 + 38*s4*s9 + 38*s5*s8 + 38*s6*s7;
+        int64_t t4 = 2*s0*s4 + 4*s1*s3 + 1*s2*s2 + 76*s5*s9 + 38*s6*s8 + 38*s7*s7;
+        int64_t t5 = 2*s0*s5 + 2*s1*s4 + 2*s2*s3 + 38*s6*s9 + 38*s7*s8;
+        int64_t t6 = 2*s0*s6 + 4*s1*s5 + 2*s2*s4 + 2*s3*s3 + 76*s7*s9 + 19*s8*s8;
+        int64_t t7 = 2*s0*s7 + 2*s1*s6 + 2*s2*s5 + 2*s3*s4 + 38*s8*s9;
+        int64_t t8 = 2*s0*s8 + 4*s1*s7 + 2*s2*s6 + 4*s3*s5 + 1*s4*s4 + 38*s9*s9;
+        int64_t t9 = 2*s0*s9 + 2*s1*s8 + 2*s2*s7 + 2*s3*s6 + 2*s4*s5;
+
+        int64_t t[LIMBS] = { t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 };
+
+        // Same two passes mul() uses: the first brings limbs into range, the second settles
+        // the 19x fold-back out of limb 0.
+        carryPass(t);
+        carryPass(t);
+        store(out, t);
+#endif // CERTPP_FE25519_RADIX51
     }
 
     /* out = a * 121665. */
