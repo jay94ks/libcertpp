@@ -446,19 +446,19 @@ GCC 열에 대한 WSL2 주의사항과 함께.
 
 #### AEAD seal, 64 KiB
 
-| | MSVC | GCC |
-|---|---|---|
-| ChaCha20-Poly1305 | 999 MiB/s | 835 MiB/s | 1.19x |
-| XChaCha20-Poly1305 | 1005 MiB/s | 840 MiB/s | 1.20x |
-| AES-256-GCM | 520 MiB/s | 465 MiB/s | 1.13x |
+| | MSVC | GCC | MSVC/GCC |
+|---|---|---|---|
+| ChaCha20-Poly1305 | **999 MiB/s** | 835 MiB/s | 1.20x |
+| XChaCha20-Poly1305 | **1005 MiB/s** | 840 MiB/s | 1.20x |
+| AES-256-GCM | **520 MiB/s** | 465 MiB/s | 1.12x |
 
 #### AEAD seal, 64 B, 레코드당
 
-| | MSVC | GCC |
-|---|---|---|
-| ChaCha20-Poly1305 | 400 ns | 330 ns | 1.21x |
-| XChaCha20-Poly1305 | 400 ns | 450 ns | 0.89x |
-| AES-256-GCM | 215 ns | 235 ns | 0.93x |
+| | MSVC | GCC | MSVC/GCC |
+|---|---|---|---|
+| ChaCha20-Poly1305 | **400 ns** | 330 ns | 1.21x |
+| XChaCha20-Poly1305 | 400 ns | **450 ns** | 0.89x |
+| AES-256-GCM | 215 ns | **235 ns** | 0.91x |
 
 
 GCC 수치는 **WSL2 아래**에서 얻었습니다 — 베어 메탈이 아니라 VM 안의 실제 Linux

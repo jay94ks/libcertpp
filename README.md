@@ -443,19 +443,19 @@ caveat on the GCC column.
 
 #### AEAD seal, 64 KiB
 
-| | MSVC | GCC |
-|---|---|---|
-| ChaCha20-Poly1305, 64 KiB | 999 MiB/s | 835 MiB/s | 1.19x |
-| XChaCha20-Poly1305, 64 KiB | 1005 MiB/s | 840 MiB/s | 1.20x |
-| AES-256-GCM, 64 KiB | 520 MiB/s | 465 MiB/s | 1.11x |
+| | MSVC | GCC | MSVC/GCC |
+|---|---|---|---|
+| ChaCha20-Poly1305 | **999 MiB/s** | 835 MiB/s | 1.20x |
+| XChaCha20-Poly1305 | **1005 MiB/s** | 840 MiB/s | 1.20x |
+| AES-256-GCM | **520 MiB/s** | 465 MiB/s | 1.12x |
 
 #### AEAD seal, 64 B, per record
 
-| | MSVC | GCC |
-|---|---|---|
-| ChaCha20-Poly1305 | 400 ns | 330 ns | 1.21x |
-| XChaCha20-Poly1305 | 400 ns | 450 ns | 0.89x |
-| AES-256-GCM | 215 ns | 235 ns | 0.93x |
+| | MSVC | GCC | MSVC/GCC |
+|---|---|---|---|
+| ChaCha20-Poly1305 | **400 ns** | 330 ns | 1.21x |
+| XChaCha20-Poly1305 | 400 ns | **450 ns** | 0.89x |
+| AES-256-GCM | 215 ns | **235 ns** | 0.91x |
 
 
 The GCC figures were measured **under WSL2** -- a real Linux kernel inside a VM, not bare metal

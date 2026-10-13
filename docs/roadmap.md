@@ -655,6 +655,36 @@ this whole survey, six times ARIA's and larger than Ed25519's. OpenSSL is using 
 (`vpmadd52luq`/`vpmadd52huq`), and this machine has `avx512ifma`. **The roadmap's item 4 named the
 right feature, which is a first.**
 
+#### That 0.23x, corroborated by a second harness
+
+The 0.23x above is the single most consequential number in this file, and it was measured with one
+process and one loop shape. Re-measured on a different day, with two independent harnesses:
+
+| | certpp | OpenSSL | ratio |
+|---|---|---|---|
+| in-process, median of 15 x 200 | 812 MiB/s | 4080 MiB/s | **0.20x** |
+| `openssl speed -evp`, 64 KiB | -- | 4000 MiB/s | -- |
+
+Two harnesses that share no code agree on OpenSSL to within 2% (4080 in-process, 4000 from
+`openssl speed`), and the certpp side reproduces the 0.23x as 0.20x. The IFMA premise is confirmed
+directly: `/proc/cpuinfo` and OpenSSL's own `OPENSSL_ia32cap` both carry `avx512f`, `avx512ifma`,
+`avx512vl`, `gfni` and `vpclmulqdq`. **This gap is real and is not a harness artefact**, which is
+the opposite of what the SHA-512 and Ed25519 rows turned out to be earlier in this file.
+
+The spread within a single run is worth recording, because it bounds what any of these numbers can
+claim: median-to-max on one row reached **+521%** (5989..37200 ns on OpenSSL AES-256-GCM), and the
+certpp ChaCha20-Poly1305 row moved 749..883 MiB/s across four process invocations. A ratio computed
+from one unreplicated run is not a result. Anything quoted from here should be a median over
+repeated batches, and the README's GCC column should be read with the same suspicion.
+
+One harness trap, recorded because it cost a wrong conclusion and has no other symptom.
+`CChaCha20Poly1305::seal()` requires `out` to be **exactly** `in.size()`; on a size mismatch it
+fails closed, returns `false`, and leaves the output buffer untouched. A benchmark that passes
+`size + 32` and discards the return value is timing the error path -- and reports **15,375,153
+MiB/s** for a 64 KiB seal, a figure so absurd that it reads like a bug in the harness rather than
+the obvious thing it is. The check belongs in the harness: run each body once and require the
+ciphertext to actually change before its timing is trusted.
+
 One thing to say about the arithmetic, because it cost a wrong conclusion on the way: these
 instructions are not "52-bit multiply-add". `vpmadd52lo` gives bits 0..51 of `a*b + c`;
 `vpmadd52huq` gives `((a*b) >> 52) + c` and does **not** mask its result to 52 bits -- a test that
