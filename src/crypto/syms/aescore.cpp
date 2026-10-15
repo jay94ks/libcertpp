@@ -54,7 +54,7 @@ namespace crypto {
          * sequence, via AESKEYGENASSIST, produces byte-identical round keys), so
          * AESENC/AESENCLAST can consume them directly -- no separate hardware key schedule
          * needed. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("aes,sse2")))
 #endif
         void encryptBlockAccelerated(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
@@ -78,7 +78,7 @@ namespace crypto {
          * the fly here, once per round per call, rather than cached as a separate decrypt key
          * schedule, since it's a single cheap instruction and keeps this stateless and symmetric
          * with encryptBlockAccelerated() above. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("aes,sse2")))
 #endif
         void decryptBlockAccelerated(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
@@ -381,7 +381,8 @@ namespace crypto {
      * Without AES-NI this is the per-block loop below, which is why the caller need not
      * check -- a caller that does not know whether AES-NI is available gets correct output
      * either way. */
-#if defined(__GNUC__) && !defined(_MSC_VER) && defined(CERTPP_AES_HWACCEL_AVAILABLE)
+#if defined(CERTPP_AES_HWACCEL_AVAILABLE) && \
+    (defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER)))
         __attribute__((target("aes,sse2")))
 #endif
     void AesCore::encryptCbcBulk(

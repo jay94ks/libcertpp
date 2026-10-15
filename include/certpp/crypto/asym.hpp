@@ -334,6 +334,36 @@ namespace crypto {
         }
 
         /**
+         * Signs into an owning byte string allocated from sizeOfSign().
+         * @param digest The digest or message expected by the concrete algorithm.
+         * @param out Receives the exact signature bytes and is cleared on failure.
+         * @return ERET_OK on success; ERET_NOMEM on allocation failure; another code otherwise.
+         */
+        inline ERetCode sign(const SReadOnlyByteSpan& digest, COctet& out) {
+            TArray<uint8_t> buffer;
+            if (sizeOfSign() == 0 || !buffer.resize(sizeOfSign())) {
+                out.clear();
+                return sizeOfSign() == 0 ? ERET_KEY_EMPTY : ERET_NOMEM;
+            }
+
+            SByteSpan written(buffer.begin(), buffer.size());
+            const ERetCode result = sign(digest, written);
+            if (result != ERET_OK) {
+                out.clear();
+                return result;
+            }
+            if (!out.store(written.data, written.size)) {
+                out.clear();
+                return ERET_NOMEM;
+            }
+            return ERET_OK;
+        }
+
+        inline ERetCode sign(const COctet& digest, COctet& out) {
+            return sign(digest.toSpan(), out);
+        }
+
+        /**
          * Verifies a signature over a message digest with the bound public key. Not every
          * algorithm supports verification; the default implementation reports ERET_NOTSUP.
          *
@@ -374,6 +404,28 @@ namespace crypto {
             const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, SByteSpan& out
         ) {
             return ERET_NOTSUP;
+        }
+
+        /** Allocating RSASSA-PSS signing overload; see signPss() above. */
+        inline ERetCode signPss(
+            const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, COctet& out
+        ) {
+            TArray<uint8_t> buffer;
+            if (sizeOfSign() == 0 || !buffer.resize(sizeOfSign())) {
+                out.clear();
+                return sizeOfSign() == 0 ? ERET_KEY_EMPTY : ERET_NOMEM;
+            }
+            SByteSpan written(buffer.begin(), buffer.size());
+            const ERetCode result = signPss(digest, hashAlg, saltLen, written);
+            if (result != ERET_OK) {
+                out.clear();
+                return result;
+            }
+            if (!out.store(written.data, written.size)) {
+                out.clear();
+                return ERET_NOMEM;
+            }
+            return ERET_OK;
         }
 
         /**

@@ -10,11 +10,24 @@
 | `CERTPP_WITHOUT_JSON`  | `OFF`   | Excludes the JSON utility implementation and umbrella-header include, omits its header from installation, skips its test executable, and propagates `CERTPP_WITHOUT_JSON` to consumers. |
 | `CERTPP_BUILD_TESTS`   | `ON`    | Builds the test executables under `tests/` and registers them with CTest. |
 | `CERTPP_BUILD_EXAMPLES` | `ON`   | Builds the programs under `examples/` as `certpp_example_<name>` executables. They are not registered with CTest (they write certificates to `examples/output/` and are meant to be run by hand, in order); see [`examples/README.md`](../../examples/README.md). |
+| `CERTPP_BUILD_FUZZERS` | `OFF` | Builds the five Clang/libFuzzer parser targets under `fuzz/` with AddressSanitizer and UndefinedBehaviorSanitizer. |
+| `CERTPP_BUILD_AUDIT_TOOLS` | `OFF` | Builds manual security-review tools, currently `certpp_mldsa_timing_audit`. These are measurements, not pass/fail unit tests. |
 | `CERTPP_RNG_FALLBACK`  | `OFF`   | Lets `crypto::CRng::fill()` fall back to `std::random_device` if the OS CSPRNG (`BCryptGenRandom` on Windows; `getrandom(2)` falling back to `/dev/urandom` on Linux; `/dev/urandom` on other POSIX platforms) is unavailable; default `OFF` compiles the fallback out and `fill()` returns `ERET_NOTSUP` in that case instead -- turn it on only as a stopgap for an environment that genuinely lacks an OS-level CSPRNG, since `std::random_device` is not guaranteed to be cryptographically secure on every standard library. |
 | `CERTPP_ENABLE_FE25519_RADIX51` | `OFF` | Selects the five-limb radix-2^51 `Fe25519` layout instead of the default ten-limb radix-2^25.5 layout. It requires native 64x64-to-128 multiplication and is off because the supported GCC measurement was not faster end to end. |
-| `CERTPP_DISABLE_HWACCEL_SIMD` | `OFF` | Disables the non-AES/SHA-extension paths: ADX/BMI2 in `CBigNum`, PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, SSE2/AVX2 ChaCha20, BMI1 ANDN in Keccak, BMI2 RORX in SHA-384/SHA-512, and AVX512-IFMA in Poly1305. Portable implementations remain available. |
+| `CERTPP_DISABLE_HWACCEL_SIMD` | `OFF` | Disables the non-AES/SHA-extension paths: ADX/BMI2 in `CBigNum`, PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, SSE2/AVX2/AVX-512F ChaCha20, BMI1 ANDN in Keccak, BMI2 RORX in SHA-384/SHA-512, and AVX512-IFMA in Poly1305. Portable implementations remain available. |
+| `CERTPP_DISABLE_HWACCEL_AVX512` | `OFF` | Disables only AVX-512F ChaCha20 and AVX512-IFMA Poly1305, retaining the narrower SIMD paths. Use this to compare AVX2/SSE2 against AVX-512 or to support an environment that saves only the narrower vector state. |
 | `CERTPP_DISABLE_HWACCEL_SHA` | `OFF` | Disables only the SHA-NI compression paths for SHA-1 and SHA-224/SHA-256. SHA-384/SHA-512's BMI2 RORX and SHA-3/SHAKE's BMI1 ANDN paths are governed by `CERTPP_DISABLE_HWACCEL_SIMD`. |
-| `CERTPP_DISABLE_HWACCEL_AES` | `OFF` | Disables `AesCore`'s AES-NI acceleration -- so both the `AES` block cipher and the AES-GCM AEAD built on it -- always using the portable round functions instead. x86-64-only either way; `DES`/`TripleDES` have no hardware-accelerated path regardless of this option (no mainstream x86 extension covers them), so it has no effect on those. `ChaCha20` uses SSE2 and AVX2 instead and is governed by `CERTPP_DISABLE_HWACCEL_SIMD`. |
+| `CERTPP_DISABLE_HWACCEL_AES` | `OFF` | Disables `AesCore`'s AES-NI acceleration -- so both the `AES` block cipher and the AES-GCM AEAD built on it -- always using the portable round functions instead. x86-64-only either way; `DES`/`TripleDES` have no hardware-accelerated path regardless of this option. `ChaCha20` uses SSE2, AVX2, and AVX-512F instead and is governed by the SIMD switches. |
+
+## Supported build contract
+
+The maintained build contract is CMake 3.15 or newer, C++17, Windows with
+MSVC, and Linux with GCC. Clang is also required for the optional libFuzzer
+targets. A change that touches public headers, exports, platform branches, or
+installed metadata must keep the default shared build, the static build, the
+portable hardware-acceleration-disabled build, and the installed consumer
+test working. Automated CI and a broader platform matrix remain future work;
+see [Plans](../PLANS.md).
 
 ## Install
 
@@ -35,6 +48,12 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
 with `-DCMAKE_PREFIX_PATH=<prefix>` if the prefix is not already searched.
 The version file is `SameMajorVersion`, matching the shared object's
 `SOVERSION`.
+
+When tests are enabled, the `install_consumer` CTest case installs the current
+build into a temporary prefix, configures a separate `find_package(certpp)`
+project, links and runs it, and compares `HEADER_VERSION` with
+`GetLibraryVersion()`. This is the release-facing check for missing installed
+headers, exports, transitive link requirements, and version skew.
 
 Note that a *static* certpp must be consumed with a matching MSVC runtime —
 installing a Release build and linking it into a Debug consumer produces

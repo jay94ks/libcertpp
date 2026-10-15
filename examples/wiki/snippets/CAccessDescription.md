@@ -9,7 +9,7 @@ if (!aia) {
 
 CString ocspUrl;
 for (const CAccessDescription& desc : aia->descriptions()) {
-    if (desc.accessMethod() == CString(CAiaExtension::OID_OCSP_METHOD)
+    if (desc.accessMethod() == COid(CAiaExtension::OID_OCSP_METHOD)
         && desc.accessLocation().type() == EGNAME_URI)
     {
         ocspUrl = desc.accessLocation().text();

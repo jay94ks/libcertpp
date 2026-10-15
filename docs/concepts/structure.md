@@ -58,6 +58,7 @@ include/
         streebog512.hpp             # Streebog512: GOST R 34.11-2012 with a 512-bit hash code (RFC 6986)
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey interfaces, SKeyPair; EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (the parallel KEM key family)
       kem.hpp                     # IKem/IKemContext: KEM counterpart of asym.hpp -- encapsulate()/decapsulate() in place of sign/verify/encrypt/decrypt, because a KEM produces a ciphertext and a fresh secret together rather than encrypting a plaintext the caller chose
+      policy.hpp                  # CAlgorithmPolicy/EAlgorithmPolicy: centralized defaults and explicit legacy-generation opt-in
       kems/                        # concrete IKem implementations, one file each (mirrors asyms/)
         mlkem.hpp                     # CMlKem/SMlKemParams/SMlKemPoly/CMlKemSampler: ML-KEM (FIPS 203, post-quantum) over raw spans, K-PKE plus the FO transform with implicit rejection; and MLKEM, the same three parameter sets as an IKem
       rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
@@ -109,6 +110,8 @@ include/
         cp.hpp                                 # CPoliciesExtension
         nc.hpp                                  # CNameConstraintsExtension
       cert.hpp                        # CCert: parses a DER X.509 Certificate, EKeyUsages re-exported via exts/ku.hpp; CCertBuilder: builds + self-signs one
+      kemspki.hpp                     # CKemSubjectPublicKeyInfo: RFC 9935 ML-KEM SubjectPublicKeyInfo import/export
+      validator.hpp                   # CTrustStore/CPathValidator and explicit core-validation policy/result/status types
       crl.hpp                          # CCrlReader/CCrlWriter: parse/build a DER X.509 CertificateList (CRL); CCrlRevokationInfo: one revoked-certificate entry
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: parse/build an OCSPRequest; COcspResponse: parse+build an OCSPResponse; COcspCertId (CertID), COcspEntry (SingleResponse)
       csr.hpp                            # CCertRequest/CCertRequestBuilder: parse (verifying the self-signature) / build + self-sign a PKCS#10 CertificationRequest; SCertRequestAttribute: one Attribute, PKCS#9 extensionRequest decoded into extensions
@@ -187,6 +190,7 @@ src/
       streebog512.cpp                   # Streebog-512: own IV (0^512), own context/padding, emits the whole final state
     keys.cpp                  # SKeySizeSpec::compare() -- IPublicKey/IPrivateKey themselves are pure-virtual, SKeyPair a plain struct, nothing else out-of-line
     kem.cpp                    # IKem::builtIn(): dispatches EKems to a concrete kems/ implementation
+    policy.cpp                 # CAlgorithmPolicy process-wide generation policy
     kems/                       # concrete IKem implementations, one file each
       mlkemring.hpp / .cpp          # MlKemRing: private, R_q = Z_q[X]/(X^256 + 1) with q = 3329; NTT/inverse NTT/base-case multiply, twiddles derived from ZETA rather than transcribed
       mlkemcodec.hpp / .cpp          # MlKemCodec: private, FIPS 203's ByteEncode/ByteDecode and Compress/Decompress, plus isCanonical12() -- ByteDecode_12 reduces mod q and so is not injective, which IS the encapsulation-key validity check
@@ -257,6 +261,8 @@ src/
     exts/                          # one .cpp per exts/ header, same abbreviated filenames
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     cert.cpp                        # CCert implementation: importDer()/importPem()/importFrom(), lazy publicKey()/privateKey(), extension<T>() callers; CCertBuilder::build()/subjectFrom(); the shared encode/decode/sign/verify statics crl.cpp/ocsp.cpp/csr.cpp reach through friendship
+    kemspki.cpp                     # RFC 9935 ML-KEM SubjectPublicKeyInfo codec
+    validator.cpp                   # explicit-trust X.509 core path validation
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo implementation, built on CCert's own private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() (friend access)
     ocsp.cpp                          # COcsp*/CCert friend-access implementation (RFC 6960); own file-local GeneralizedTime-only time encode/decode, distinct from CCert's own UTCTime|GeneralizedTime CHOICE helpers
     csr.cpp                            # CCertRequest/CCertRequestBuilder implementation (RFC 2986), built entirely on CCert's own encodeName()/encodeAlgorithmIdentifier()/encode+decodeSubjectPublicKeyInfo()/encodeExtensions()/parseExtensions()/signTbs()/verifySignedBlob() (friend access); own X.690 11.6 SET-OF ordering for the Attributes SET
@@ -267,7 +273,7 @@ src/
   dnssec/
     name.cpp                    # CDnsName implementation; one shared walk() so a malformed name is rejected identically whichever operation hit it
     records.cpp                  # SDnskey/SDsRecord/SRrsig implementation; big-endian field helpers (unlike Poly1305/ChaCha20 next door, which are little-endian)
-    keys.cpp                      # CDnssecKeys implementation; the RSA direction also swaps field order, since DNS writes exponent-then-modulus and this library's DER wants modulus-then-exponent
+    keys.cpp                      # CDnssecKeys implementation for RSA/ECDSA/EdDSA and RFC 9558 GOST 2012; the RSA direction also swaps exponent/modulus field order
 ```
 
 ## Names and distinguished names

@@ -68,11 +68,11 @@ quietly misbehaves.
 
 Worth knowing up front, so you do not go looking:
 
-- **No certification-path validation.** `CCert::verifyBy()` checks one
-  signature, one link. Validity periods, `basicConstraints`, name constraints,
-  policy constraints, revocation and trust-anchor selection are all yours.
-  `x509/chain.hpp` orders certificates into a chain and says plainly that
-  ordering is not validating.
+- **No revocation or RFC 5280 policy-tree processing.** `CPathValidator`
+  validates a path to an explicit trust store, including time, signatures,
+  CA/key constraints, supported name constraints, path length, optional EKU,
+  and critical extensions. Asking it to require revocation or policy-tree
+  processing returns an explicit unavailable status.
 - **No revocation checking against a live responder.** CRLs and OCSP responses
   can be parsed and built; fetching and deciding is yours.
 - **No audited constant-time guarantee.** Parts are constant-time by

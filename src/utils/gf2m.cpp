@@ -53,7 +53,7 @@ namespace certpp {
          * __attribute__((target(...))) lets GCC/Clang emit PCLMULQDQ in just this one function
          * regardless of the translation unit's default -march (MSVC needs no equivalent -- see
          * the identical note on bignum.cpp's mulAccelerated()). */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("pclmul,sse2")))
 #endif
         void CGf2m::wideProductAccelerated(uint64_t* wide, const uint64_t* a, const uint64_t* b) {

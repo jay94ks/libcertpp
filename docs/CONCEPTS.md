@@ -50,10 +50,20 @@ NameConstraints). Single-link signature verification exists for all three
 (`CCert::verifyBy(issuer)`, `CCrlReader::verifyBy(issuer)`,
 `COcspRequest`/`COcspResponse::verifySignature()`). `CCertCollection::buildChain()`
 orders certificates by issuer/subject names and `verifyLinks()` checks link
-signatures, but there is no certification-path validation engine: validity
-windows, BasicConstraints, KeyUsage, NameConstraints, policies, revocation,
-and trust-anchor decisions are not enforced. See
+signatures. `CPathValidator` adds explicit trust anchors and typed
+diagnostics, and enforces time validity, issuer names, signatures,
+BasicConstraints, path length, KeyUsage, ExtendedKeyUsage, supported
+NameConstraints, and unknown critical-extension rejection. Revocation and
+full certificate-policy processing are explicit unavailable policy
+capabilities and are not implied by a successful core result. See
 [Extension points and scope](concepts/scope.md#extension-points-and-scope).
+
+The integration surface also includes RFC 9215 GOST 2012 certificate and CSR
+key/signature encodings, RFC 9558 DNSSEC algorithm 23, and
+`CKemSubjectPublicKeyInfo` for RFC 9935 ML-KEM public-key import/export. Common
+hash, signature, and KEM outputs have allocation-owning `COctet` overloads;
+`CAlgorithmPolicy` classifies algorithms for new generation without disabling
+legacy parsing.
 
 Certificates and their keys can be carried as a container: `x509/chain.hpp`'s
 `CCertCollection` holds them with the PKCS#9 attributes that pair them and

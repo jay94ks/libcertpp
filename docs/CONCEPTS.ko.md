@@ -47,10 +47,19 @@ AuthorityInformationAccess, CertificatePolicies, NameConstraints)이
 있습니다. 링크 하나 단위의 서명 검증은 셋 모두에 있지만
 (`CCert::verifyBy(issuer)`, `CCrlReader::verifyBy(issuer)`,
 `COcspRequest`/`COcspResponse::verifySignature()`). `CCertCollection::buildChain()`은
-발급자/주체 이름으로 인증서 순서를 잡고 `verifyLinks()`는 링크 서명을 검사하지만,
-인증 경로 검증 엔진은 없습니다. 유효 기간, BasicConstraints, KeyUsage,
-NameConstraints, 정책, 폐지, 신뢰 앵커 판단을 강제하지 않습니다.
+발급자/주체 이름으로 인증서 순서를 잡고 `verifyLinks()`는 링크 서명을 검사합니다.
+`CPathValidator`는 명시적인 trust anchor와 타입이 있는 진단을 더하고, 유효
+기간, 발급자 이름, 서명, BasicConstraints, 경로 길이, KeyUsage,
+ExtendedKeyUsage, 지원하는 NameConstraints, 알 수 없는 critical 확장 거부를
+강제합니다. 폐지 확인과 완전한 인증서 정책 처리는 명시적인 미지원 정책 기능이며,
+core 성공 결과에 포함되지 않습니다.
 [확장 지점과 범위](concepts/scope.ko.md#확장-지점과-범위)를 참고하십시오.
+
+통합 표면에는 RFC 9215 GOST 2012 인증서와 CSR 키/서명 인코딩, RFC 9558
+DNSSEC 알고리즘 23, RFC 9935 ML-KEM 공개키 import/export용
+`CKemSubjectPublicKeyInfo`도 포함됩니다. 일반 해시·서명·KEM 출력에는 메모리를
+소유하는 `COctet` overload가 있으며, `CAlgorithmPolicy`는 레거시 파싱을 막지
+않으면서 새 출력에 사용할 알고리즘을 분류합니다.
 
 인증서와 그 키는 컨테이너로 담을 수 있습니다. `x509/chain.hpp`의
 `CCertCollection`이 그것들을 짝지어 주는 PKCS#9 속성과 함께 보유하고

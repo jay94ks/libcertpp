@@ -75,7 +75,7 @@ namespace certpp {
          * see gf2m.cpp's identical guard (which this must match exactly) for the full rationale. */
         static bool hasPclmul();
 
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("pclmul,sse2")))
 #endif
         static void wideProductAccelerated(uint64_t* wide, const uint64_t* a, const uint64_t* b);

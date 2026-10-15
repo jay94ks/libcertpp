@@ -93,6 +93,28 @@ PEM file carries one.
 ERetCode rc = leaf.verifyBy(issuer);
 ```
 
+For full path checks, use explicit trust anchors and inspect the diagnostic:
+
+```cpp
+CTrustStore trust;
+trust.add(root);
+
+CCertCollection intermediates;
+size_t ignored = 0;
+intermediates.add(intermediate, ignored);
+
+SPathValidationPolicy policy;
+policy.requiredExtendedKeyPurpose = COid::PURPOSE_SERVER_AUTH;
+SPathValidationResult result = CPathValidator::validate(
+    leaf, intermediates, trust, policy);
+if (!result) {
+    // result.status and result.certificateIndex identify the failure.
+}
+```
+
+`EPATH_OK` covers the checks named by `SPathValidationPolicy`; it never implies
+live revocation or RFC 5280 policy-tree processing.
+
 ## Sign and verify data with a certificate's key
 
 ```cpp
@@ -128,8 +150,8 @@ IHasher::create(EHASH_SHA256, hasher);
 hasher->reset();
 hasher->push(SReadOnlyByteSpan(data, length));
 
-uint8_t digest[32];                       // hasher->byteWidth() bytes
-hasher->finish(SByteSpan(digest, sizeof(digest)));
+COctet digest;
+hasher->finish(digest);                   // allocates hasher->byteWidth() bytes
 ```
 
 `push()` may be called repeatedly; the result does not depend on how the input
@@ -199,14 +221,13 @@ algo->generateKeyPair(SKeySize(256), pair);
 IAsymmetricContextPtr ctx = algo->createContext();
 ctx->keyPair(pair);
 
-uint8_t sig[160];
-SByteSpan signature(sig, sizeof(sig));
-ctx->sign(digest, signature);           // ECDSA signs a digest
+COctet signature;
+ctx->sign(digest, signature);             // ECDSA signs a digest
 
 // Verification needs only the public half.
 IAsymmetricContextPtr verifier = algo->createContext();
 verifier->keyPair(pair.publicKey, nullptr);
-verifier->verify(digest, SReadOnlyByteSpan(signature.data, signature.size));
+verifier->verify(digest.toSpan(), signature.toSpan());
 ```
 
 `generateKeyPair()` is strict about the size in bits: Ed448 wants 456, not 448.
@@ -250,17 +271,13 @@ IKemPtr kem = IKem::builtIn(EKEM_MLKEM768);
 SKemKeyPair pair;
 kem->generateKeyPair(SKeySize(768), pair);
 
-// Sender:
-uint8_t ct[1088], ss[32];
-SByteSpan ciphertext(ct, sizeof(ct));
-SByteSpan sharedSecret(ss, sizeof(ss));
+// Sender: owning overloads size both outputs from the selected parameter set.
+COctet ciphertext, sharedSecret;
 senderCtx->encapsulate(ciphertext, sharedSecret);
 
 // Receiver:
-uint8_t ss2[32];
-SByteSpan recovered(ss2, sizeof(ss2));
-receiverCtx->decapsulate(SReadOnlyByteSpan(ciphertext.data, ciphertext.size),
-                         recovered);
+COctet recovered;
+receiverCtx->decapsulate(ciphertext, recovered);
 ```
 
 ML-KEM is implicitly rejecting: a corrupted ciphertext yields a *different*
@@ -318,9 +335,8 @@ if (col.buildChain(0, chain) == ECHAINRES_OK) {
     // chain holds indices from the leaf up to a self-issued root
 }
 
-// Ordering is not validating. This checks each link's signature and nothing
-// else -- validity periods, basicConstraints, name constraints, revocation and
-// trust-anchor selection remain yours.
+// Ordering is not validating. This checks only the signatures. Use
+// CPathValidator with an explicit CTrustStore for policy-aware path validation.
 col.verifyLinks(chain);
 
 // Confirm a private key really belongs to its certificate -- by signing, not by

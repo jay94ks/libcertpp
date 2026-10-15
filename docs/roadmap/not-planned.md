@@ -6,14 +6,12 @@
 
 ← [Roadmap](../PLANS.md)
 
-- Path validation. Still deliberately out of scope; see
-  [`CLAUDE.md`](../../CLAUDE.md). `CCertCollection::buildChain()` orders
-  certificates by who issued whom and `verifyLinks()` checks each link's
-  signature. What is absent is everything *else* a validator does: validity
-  periods, `basicConstraints`, `keyUsage`, name constraints, policy constraints,
-  revocation, and the decision of whether the root at the end is one the caller
-  trusts. An ordered chain out of this library is a validator's input, not its
-  verdict.
+- Revocation and full RFC 5280 policy-tree processing. `CPathValidator` now
+  performs the documented core path checks against an explicit `CTrustStore`,
+  but it deliberately returns `EPATH_REVOCATION_UNAVAILABLE` or
+  `EPATH_POLICY_PROCESSING_UNAVAILABLE` when either additional capability is
+  requested. Applications that require them must integrate a dedicated source
+  of revocation state or a fuller policy engine.
 
 ### Sections
 
@@ -335,8 +333,10 @@ of work -- register allocation and codegen, not a missing instruction.
 - **SHA-512's schedule**: Ours computes `w[80]` into a 640-byte array and reads it back. That is
   only 3% of the instructions, so it is not the reason OpenSSL's scalar path is lighter; the reason
   is the round body's copies above, and OpenSSL's schedule is vectorised on top of that.
-- **ChaCha20 (2.7x more instructions)**: Our AVX2 path is eight blocks at a time; OpenSSL's is
-  wider. This is the P3 item's other half.
+- **ChaCha20 (historically 2.7x more instructions)**: This count came from the former eight-block
+  AVX2 path. The current implementation also dispatches to a sixteen-block AVX-512F path; current
+  throughput and the remaining gap are recorded in [`HISTORY.md`](../HISTORY.md) rather than
+  treated as an open P3 item here.
 - **AES-256-CBC and ARIA are excluded from the table above.** Counting them required an EVP stream
   on one side and a persistent transformer on the other, and the first version of that measurement
   put context creation inside the loop on the OpenSSL side -- reporting AES at 0.57x ours and ARIA

@@ -2,23 +2,45 @@
 
 [한국어](maintenance.ko.md)
 
-## Versioning
+## Versioning, ABI, and releases
 
 ← [Project rules](../RULES.md)
 
-- `HEADER_VERSION` (in `version.hpp`) is the single number to bump when the
-  ABI/API changes. `LIBRARY_VERSION` (in `version.cpp`, returned by
-  `GetLibraryVersion()`) is defined *as* `HEADER_VERSION`, so it needs no
-  separate edit — the point is that the value gets baked into the binary at
-  the version of the header the binary was compiled against, while a
-  consumer's `HEADER_VERSION` is whatever header *they* compiled against.
-  Comparing the two at runtime is therefore how a consumer detects a
-  header/binary mismatch, and it works precisely because only one of them
-  is ever written by hand.
-- `CMakeLists.txt`'s `project(certpp VERSION ...)` (which drives the shared
-  library's `VERSION`/`SOVERSION`) is a second, independent copy of the same
-  number, with nothing keeping it in step. Bump it alongside
-  `HEADER_VERSION`.
+The project follows Semantic Versioning. The current line is 1.1.0. Patch
+releases contain compatible fixes, minor releases may add source and ABI
+compatible public API, and a major release is required for a public ABI or
+source compatibility break. The installed CMake package uses
+`SameMajorVersion`; the library `SOVERSION` is the major version. Within a
+major line:
+
+- do not remove or change the type, order, ownership, or semantics of public
+  function parameters and return values;
+- append public enum values rather than reordering or renumbering existing
+  ones;
+- do not change public class layout or virtual tables without a major bump;
+- keep installed headers, `CERTPP_API` exports, and transitive link
+  requirements usable by `certpp::certpp` consumers.
+
+`HEADER_VERSION` in `version.hpp` is the runtime header version. The binary's
+`LIBRARY_VERSION` is compiled from it and returned by `GetLibraryVersion()`.
+`CMakeLists.txt`'s `project(certpp VERSION ...)` is a separate copy and must
+match. A release updates both values together.
+
+### Release checklist
+
+1. Classify public changes under the compatibility rules above and choose the
+   SemVer increment. Update both version declarations.
+2. Update the English and Korean maintained documentation, plans/history, and
+   `docs/INDEX.md` when files are added, moved, or removed.
+3. Run the full test suite in the default shared and static configurations;
+   run the portable acceleration-disabled configuration when cryptographic or
+   platform code changed.
+4. Run `install_consumer` in the release configuration and confirm the
+   installed `find_package(certpp)` project builds and executes.
+5. Run the bounded parser fuzz smoke tests for parser/codec changes and the
+   relevant audit tool for timing-sensitive changes.
+6. Inspect `git diff --check`, repository status, public header diffs, and
+   release notes. Commit, tag, and push only after an explicit user request.
 
 ## Tests
 

@@ -149,6 +149,8 @@ namespace x509 {
         { COid::MLDSA44, "ML-DSA-44",              crypto::EHASH_UNKNOWN },
         { COid::MLDSA65, "ML-DSA-65",              crypto::EHASH_UNKNOWN },
         { COid::MLDSA87, "ML-DSA-87",              crypto::EHASH_UNKNOWN },
+        { COid::GOST3410_2012_256_SIG, "GOST R 34.10-2012-256", crypto::EHASH_STREEBOG256 },
+        { COid::GOST3410_2012_512_SIG, "GOST R 34.10-2012-512", crypto::EHASH_STREEBOG512 },
     };
 
     /* Whether an algorithm signs the message itself rather than a caller-supplied digest. */
@@ -156,6 +158,67 @@ namespace x509 {
         return which == crypto::EASYM_ED25519
             || which == crypto::EASYM_ED448
             || crypto::CMlDsa::isMlDsa(which);
+    }
+
+    namespace {
+        bool isGost2012(crypto::EAsymmetrics which) {
+            return which == crypto::EASYM_GOST256A || which == crypto::EASYM_GOST256B
+                || which == crypto::EASYM_GOST256C || which == crypto::EASYM_GOST256D
+                || which == crypto::EASYM_GOST512A || which == crypto::EASYM_GOST512B
+                || which == crypto::EASYM_GOST512C;
+        }
+
+        bool gostCurveOid(crypto::EAsymmetrics which, COid& oid) {
+            switch (which) {
+                case crypto::EASYM_GOST256A: oid = COid::GOST_CURVE_256A; return true;
+                case crypto::EASYM_GOST256B: oid = COid::GOST_CURVE_256B; return true;
+                case crypto::EASYM_GOST256C: oid = COid::GOST_CURVE_256C; return true;
+                case crypto::EASYM_GOST256D: oid = COid::GOST_CURVE_256D; return true;
+                case crypto::EASYM_GOST512A: oid = COid::GOST_CURVE_512A; return true;
+                case crypto::EASYM_GOST512B: oid = COid::GOST_CURVE_512B; return true;
+                case crypto::EASYM_GOST512C: oid = COid::GOST_CURVE_512C; return true;
+                default: return false;
+            }
+        }
+
+        bool resolveGost2012(
+            const COid& keyOid, const COctet& params, crypto::EAsymmetrics& which
+        ) {
+            const bool is256 = keyOid == COid(COid::GOST3410_2012_256);
+            const bool is512 = keyOid == COid(COid::GOST3410_2012_512);
+            if ((!is256 && !is512) || params.empty()) {
+                return false;
+            }
+
+            CReader reader(params.toSpan(), EAENC_DER);
+            SRawOid rawCurve;
+            if (!reader.readOid(rawCurve)) {
+                return false;
+            }
+            const COid curve(rawCurve);
+            if (is256 && curve == COid(COid::GOST_CURVE_256A)) which = crypto::EASYM_GOST256A;
+            else if (is256 && curve == COid(COid::GOST_CURVE_256B)) which = crypto::EASYM_GOST256B;
+            else if (is256 && curve == COid(COid::GOST_CURVE_256C)) which = crypto::EASYM_GOST256C;
+            else if (is256 && curve == COid(COid::GOST_CURVE_256D)) which = crypto::EASYM_GOST256D;
+            else if (is512 && curve == COid(COid::GOST_CURVE_512A)) which = crypto::EASYM_GOST512A;
+            else if (is512 && curve == COid(COid::GOST_CURVE_512B)) which = crypto::EASYM_GOST512B;
+            else if (is512 && curve == COid(COid::GOST_CURVE_512C)) which = crypto::EASYM_GOST512C;
+            else return false;
+
+            // RFC 9215 permits an optional digestParamSet, but it must match the key width.
+            if (!reader.atEnd()) {
+                SRawOid rawDigest;
+                if (!reader.readOid(rawDigest)) {
+                    return false;
+                }
+                const COid digest(rawDigest);
+                if ((is256 && digest != COid(COid::GOST3411_2012_256))
+                    || (is512 && digest != COid(COid::GOST3411_2012_512))) {
+                    return false;
+                }
+            }
+            return reader.atEnd();
+        }
     }
 
     /* Copy constructor for the X.509 certificate. */
@@ -303,6 +366,16 @@ namespace x509 {
         crypto::EAsymmetrics& outWhich,
         CString& outName
     ) {
+        if (oid == COid(COid::GOST3410_2012_256)
+            || oid == COid(COid::GOST3410_2012_512)) {
+            const bool resolved = resolveGost2012(oid, params, outWhich);
+            outName = resolved
+                ? (outWhich <= crypto::EASYM_GOST256D
+                    ? "GOST R 34.10-2012-256" : "GOST R 34.10-2012-512")
+                : oid.toString();
+            return resolved;
+        }
+
         for (const SKeyAlgo& entry : KEY_ALGOS) {
             if (oid == COid(entry.oid)) {
                 outWhich = entry.which;
@@ -334,6 +407,12 @@ namespace x509 {
     ) {
         outIsDsa = false;
         outIsEc = false;
+
+        if (isGost2012(which)) {
+            outOid = which <= crypto::EASYM_GOST256D
+                ? COid(COid::GOST3410_2012_256) : COid(COid::GOST3410_2012_512);
+            return gostCurveOid(which, outEcCurveOid);
+        }
 
         for (const SKeyAlgo& entry : KEY_ALGOS) {
             if (entry.which == which) {
@@ -705,6 +784,18 @@ namespace x509 {
             return true;
         }
 
+        if (isGost2012(which)) {
+            if (rsaPss) {
+                return false;
+            }
+            outOid = which <= crypto::EASYM_GOST256D
+                ? COid(COid::GOST3410_2012_256_SIG)
+                : COid(COid::GOST3410_2012_512_SIG);
+            outHash = which <= crypto::EASYM_GOST256D
+                ? crypto::EHASH_STREEBOG256 : crypto::EHASH_STREEBOG512;
+            return true;
+        }
+
         if (rsaPss && which != crypto::EASYM_RSA) {
             return false; // --> RSASSA-PSS only makes sense for an RSA key.
         }
@@ -848,13 +939,34 @@ namespace x509 {
             spkiPublicKey = move(serialized);
         }
 
+        const bool keyIsGost = isGost2012(which);
+        if (keyIsGost) {
+            CBuffer wrapped;
+            if (!CDer::appendTlv(wrapped, CTag::STRING_OCTET, spkiPublicKey.toSpan())) {
+                return ERET_NOMEM;
+            }
+            spkiPublicKey = COctet(wrapped.toSpan());
+        }
+
         // algorithm.parameters, built as its own complete TLV so encodeAlgorithmIdentifier() can
         // splice it in the same way it splices a signature algorithm's.
         COctet algoParams;
         {
             CBuffer paramsTlv;
 
-            if (keyIsEc) {
+            if (keyIsGost) {
+                CBuffer paramBody;
+                size_t curveNeeded = CEncoder::encodedOidSize(ecCurveOid.raw());
+                CBuffer curveOidContent;
+                size_t curveWritten = 0;
+                if (!curveNeeded || !curveOidContent.resize(curveNeeded)
+                    || !CEncoder::encodeOid(curveOidContent.toSpan(), ecCurveOid.raw(), curveWritten)
+                    || !CDer::appendTlv(paramBody, CTag::OBJ_ID,
+                        SReadOnlyByteSpan(curveOidContent.toPtr(), curveWritten))
+                    || !CDer::appendSequence(paramsTlv, paramBody.toSpan())) {
+                    return ERET_UNKNOWN;
+                }
+            } else if (keyIsEc) {
                 // ECParameters ::= CHOICE { namedCurve OBJECT IDENTIFIER, ... } -- the only
                 // alternative this library produces (and effectively the only one in practice).
                 size_t curveNeeded = CEncoder::encodedOidSize(ecCurveOid.raw());
@@ -920,16 +1032,34 @@ namespace x509 {
         const COid keyAlgoOid(rawKeyAlgoOid);
 
         // parameters ANY DEFINED BY algorithm OPTIONAL
+        bool haveParams = false;
+        CTag paramTag;
         if (!keyAlgoSeq.atEnd()) {
-            CTag paramTag;
             SReadOnlyByteSpan paramContent;
             if (!keyAlgoSeq.readNextElement(paramTag, paramContent)) {
                 return false;
             }
+            haveParams = true;
             out.algoParams = COctet(paramContent);
         }
 
+        if (!keyAlgoSeq.atEnd()) {
+            return false;
+        }
+
+        const bool gostOid = keyAlgoOid == COid(COid::GOST3410_2012_256)
+            || keyAlgoOid == COid(COid::GOST3410_2012_512);
+        if (gostOid && (!haveParams || paramTag != CTag::SEQ)) {
+            return false;
+        }
+
         out.resolved = resolveKeyAlgo(keyAlgoOid, out.algoParams, out.which, out.algoName);
+        // A known GOST key OID with unknown or inconsistent parameters is malformed, not an
+        // opaque algorithm that callers may safely preserve. Accepting it as unresolved would
+        // silently discard the parameter-set and digest-set checks RFC 9215 requires.
+        if (gostOid && !out.resolved) {
+            return false;
+        }
 
         SReadOnlyByteSpan pkBits;
         uint8_t pkUnusedBits = 0;
@@ -938,7 +1068,16 @@ namespace x509 {
             // count here means malformed input, not a key format this library doesn't support.
             return false;
         }
-        out.publicKey = COctet(pkBits);
+        if (out.resolved && isGost2012(out.which)) {
+            CReader wrapped(pkBits, EAENC_DER);
+            COctet raw;
+            if (!wrapped.readOctetString(raw) || !wrapped.atEnd()) {
+                return false;
+            }
+            out.publicKey = move(raw);
+        } else {
+            out.publicKey = COctet(pkBits);
+        }
 
         return true;
     }
@@ -2283,6 +2422,9 @@ namespace x509 {
             || which == crypto::EASYM_MLDSA87)
         {
             return ERET_NOTSUP;
+        }
+        if (isGost2012(which)) {
+            return ERET_NOTSUP; // RFC 9215 private-key wrapping is not implemented here.
         }
 
         COid keyOid, ecCurveOid;

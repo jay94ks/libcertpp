@@ -33,6 +33,7 @@
 #include <certpp/asn1/der.hpp>
 
 #include <certpp/crypto/hasher.hpp>
+#include <certpp/crypto/policy.hpp>
 #include <certpp/crypto/hashers/md4.hpp>
 #include <certpp/crypto/hashers/md5.hpp>
 #include <certpp/crypto/hashers/sha1.hpp>
@@ -95,10 +96,12 @@
 #include <certpp/x509/exts/cp.hpp>
 #include <certpp/x509/exts/nc.hpp>
 #include <certpp/x509/cert.hpp>
+#include <certpp/x509/kemspki.hpp>
 #include <certpp/x509/crl.hpp>
 #include <certpp/x509/csr.hpp>
 #include <certpp/x509/ocsp.hpp>
 #include <certpp/x509/chain.hpp>
+#include <certpp/x509/validator.hpp>
 #include <certpp/x509/chain/pem.hpp>
 #include <certpp/x509/chain/pfx.hpp>
 #include <certpp/dnssec/name.hpp>

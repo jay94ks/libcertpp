@@ -23,6 +23,7 @@ its purpose:
 - [`specs/README.md`](specs/README.md) is for callers using the library. It is
   useful when a change affects public usage, but it is not the contributor
   guide.
+- [`SECURITY.md`](SECURITY.md) defines responsible vulnerability reporting.
 
 AI coding agents must also read [`AGENTS.md`](AGENTS.md) and follow the
 [agent-specific workflow](CONTRIB.md#for-ai-coding-agents) below.

@@ -315,6 +315,33 @@ void exampleEAsymmetrics() {
     }
 }
 
+// === EAlgorithmPolicy ===
+// Treats the classifier result as generation policy. Compatibility-only algorithms remain
+// readable for interoperability, while new keys, signatures and ciphertexts must use a class
+// that allows generation.
+void exampleEAlgorithmPolicy(crypto::EAsymmetrics requested, crypto::SKeySize keySize) {
+    crypto::EAlgorithmPolicy policy = crypto::CAlgorithmPolicy::classify(requested, keySize);
+    if (!crypto::CAlgorithmPolicy::allowsGeneration(policy)) {
+        return; // report CAlgorithmPolicy::name(policy) to explain the rejected selection
+    }
+}
+
+// === CAlgorithmPolicy ===
+// Applies one central algorithm policy before generating output. Parsing stays separate so old
+// signatures and certificates can still be inspected even when their algorithm is prohibited
+// for new material.
+void exampleCAlgorithmPolicy(crypto::EHashers requestedHash) {
+    crypto::EAlgorithmPolicy policy = crypto::CAlgorithmPolicy::classify(requestedHash);
+    if (!crypto::CAlgorithmPolicy::allowsGeneration(policy)) {
+        return;
+    }
+
+    crypto::IHasherPtr hasher;
+    if (crypto::IHasher::create(requestedHash, hasher) != ERET_OK) {
+        return; // policy acceptance does not replace implementation availability checks
+    }
+}
+
 // === SKeySizeSpec ===
 // Checks a caller-supplied key size against what the algorithm actually accepts, before
 // generateKeyPair() rejects it. A spec built from one size has step 0 and includes() only that

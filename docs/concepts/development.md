@@ -100,7 +100,7 @@ tests/
       aria.cpp                     # ARIA test cases (RFC 5794 Appendix A vectors for all three key sizes, CBC/padding, invalid keys and IVs)
       des.cpp                       # DES test cases (the classic FIPS-46 vector)
       des3.cpp                       # TripleDES test cases (DES-composition cross-check)
-      chacha20.cpp                    # ChaCha20 test cases (RFC 8439 Appendix A.1 block function, chunked keystream)
+      chacha20.cpp                    # ChaCha20 test cases (RFC 8439 Appendix A.1, chunked stream, independent scalar differential across SSE2/AVX2/AVX-512 boundaries)
     aeads/
       chacha20poly1305.cpp          # CPoly1305 + CChaCha20Poly1305 test cases (RFC 8439 2.5.2/2.6.2/2.8.2)
       xchacha20poly1305.cpp          # CXChaCha20Poly1305 test cases (draft-irtf-cfrg-xchacha A.3's vector, the HChaCha20 subkey against A.1, and that a 192-bit nonce whose last 8 bytes repeat does not repeat the keystream)
@@ -108,6 +108,8 @@ tests/
       ghash.cpp                       # Ghash test cases (field identities in GCM's bit order, multiply-by-x against the shift, chunking, portable-vs-PCLMULQDQ differential)
     eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)
     ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, SEC1 encoding, group-order check)
+    policy.cpp                    # CAlgorithmPolicy defaults and legacy-algorithm opt-in behavior
+    safe_api.cpp                  # owning-output overloads and failure-state checks across public crypto APIs
   x509/
     cert.cpp                  # CCert::importDer() test cases (own self-signed RSA/EC/KeyUsage/private-key fixtures), extension<T>() lookup, CCertBuilder::build() (self-signed RSA/DSA/EC/EdDSA, every digestAlgo/rsaPss combination)
     crl.cpp                      # CCrlWriter::add()/remove()/build() + CCrlReader::decode()/find()/check() round-trip test cases (own self-signed CA fixtures)
@@ -118,6 +120,9 @@ tests/
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature() and the CCrlReader equivalents: genuine signatures, wrong-issuer and tampered-byte rejection
     malformed.cpp                 # adversarial/negative x509: trailing bytes, malformed [3] extensions wrapper, inner/outer signature-algorithm mismatch, BIT STRING unused bits, pathLenConstraint range
     chain.cpp                     # CCertCollection test cases against a real three-level hierarchy issued in the test: lookups, findIssuerOf(), buildChain(), verifyLinks(), checkKeyPairing()
+    validator.cpp                 # CPathValidator trust, time, constraints, usage, name constraints, depth, signature, and unavailable-feature results
+    gost.cpp                      # RFC 9215 GOST certificate/CSR SubjectPublicKeyInfo and signature encodings
+    kemspki.cpp                   # RFC 9935 ML-KEM SubjectPublicKeyInfo known answers and malformed-input rejection
     chain/                        # one .cpp per container format
       pem.cpp                       # CPemChainFormat test cases: round-trip, append-not-replace, malformed/truncated/encrypted containers, CRLF and inter-block text, plus certs/openssl-*.pem -- fixtures written by OpenSSL 3.4.0, not by this library
       pfx.cpp                       # CPfxFormat test cases: reads five PFX containers OpenSSL 3 wrote, round-trips its own, the MAC-covered tamper sweep, and the CCert PKCS#8 wrap/unwrap pair
@@ -125,8 +130,8 @@ tests/
     realcerts.cpp                # real commercial certificates on disk under certs/implemented/: github.com, amazon.com, sourceforge.net, a QuoVadis/DigiCert RSASSA-PSS intermediate, and the IdenTrust ML-DSA-87 pilot root whose self-signature verifies end to end
   dnssec/
     name.cpp                      # CDnsName test cases (wire form, case folding, label counting, malformed names, compression-pointer rejection)
-    records.cpp                    # DNSKEY/DS/RRSIG test cases against the published examples in RFC 5702, 6605 and 8080 -- every key tag and DS digest
-    keys.cpp                        # CDnssecKeys test cases (DNSKEY round trips per algorithm, the fixed-width r|s re-padding, and a sign/verify end to end through a converted DNSKEY)
+    records.cpp                    # DNSKEY/DS/RRSIG test cases against published RFC 5702, 6605, 8080, and 9558 artifacts
+    keys.cpp                        # CDnssecKeys tests including RFC 9558 GOST algorithm 23, fixed-width signature re-padding, and end-to-end conversion
 third-party/
   CMakeLists.txt           # exposes vendored deps as CMake targets; add_subdirectory'd only when CERTPP_BUILD_TESTS=ON
   doctest/
@@ -146,17 +151,20 @@ translation units get dllexport), while `__SHARED_LIBCERTPP__` is `PUBLIC`
 so consumers linking against the shared build automatically get
 dllimport-annotated declarations. See [BUILDING.md](../BUILDING.md) for commands.
 
-Hardware acceleration is split into three independent build options, matching
+Hardware acceleration is split into four build options, matching
 the unrelated instruction-set families it draws on -- disabling one never
 affects the others:
 
 - `CERTPP_DISABLE_HWACCEL_SIMD` (`OFF` by default) disables the extended-
   instruction paths independent of AES-NI and SHA-NI: ADX/BMI2 in `CBigNum`,
-  PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, the SSE2/AVX2
+  PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, the SSE2/AVX2/AVX-512F
   ChaCha20 keystream, BMI1 ANDN in Keccak, BMI2 RORX in SHA-384/SHA-512, and
   AVX512-IFMA in Poly1305. Each affected component keeps a portable path;
   runtime CPUID checks select optional instructions, while SSE2 is baseline
   on x86-64.
+- `CERTPP_DISABLE_HWACCEL_AVX512` (`OFF` by default) disables only the
+  sixteen-block ChaCha20 AVX-512F path and the eight-block Poly1305
+  AVX512-IFMA path. AVX2/SSE2 and the other SIMD families remain available.
 - `CERTPP_DISABLE_HWACCEL_SHA` (`OFF` by default) forces `SHA1::transform()`/
   `SHA256::transform()` (`src/crypto/hashers/sha1.cpp`,
   `src/crypto/hashers/sha256.cpp`) to always use their portable compression
@@ -172,12 +180,12 @@ affects the others:
   loop instead of the AES-NI instructions (AESENC/AESENCLAST/AESDEC/
   AESDECLAST/AESIMC), gated on its own runtime CPUID check (`hasAesNi()`,
   leaf 1, ECX bit 25). `DES`/`TripleDES` have no accelerated path and are
-  unaffected; `ChaCha20` uses SSE2/AVX2 rather than an AES extension
+  unaffected; `ChaCha20` uses SSE2/AVX2/AVX-512F rather than an AES extension
   and so answers to `CERTPP_DISABLE_HWACCEL_SIMD` instead -- see the
   `crypto/syms/aes.hpp` bullet above for the Equivalent Inverse Cipher
   construction the decrypt side uses.
 
-All three settings' accelerated and portable paths are expected to produce
+All four settings' accelerated and portable paths are expected to produce
 byte-identical results and are verified against the full test suite before
 any change to either path is considered done; a separate build directory
 (e.g. `build_noaccel/`) is a convenient way to keep an accelerated and a

@@ -9,6 +9,15 @@
 namespace certpp {
 namespace crypto {
 
+    /** Diagnostic counters for the data-dependent ML-DSA signing rejection loop. */
+    struct MlDsaSignMetrics {
+        uint32_t attempts = 0;
+        uint32_t zNormRejections = 0;
+        uint32_t lowBitsRejections = 0;
+        uint32_t t0NormRejections = 0;
+        uint32_t hintWeightRejections = 0;
+    };
+
     /**
      * ML-DSA itself (FIPS 204 5-6): the key and signature encoders of 7.2, and KeyGen/Sign/
      * Verify in both their internal and external forms, over raw byte spans. Private to the
@@ -229,7 +238,8 @@ namespace crypto {
         static bool signInternal(
             const MlDsaParams& params, const SReadOnlyByteSpan& sk,
             const SReadOnlyByteSpan& message, const SReadOnlyByteSpan& externalMu,
-            const SReadOnlyByteSpan& rnd, const SByteSpan& out
+            const SReadOnlyByteSpan& rnd, const SByteSpan& out,
+            MlDsaSignMetrics* metrics = nullptr
         );
 
         /**

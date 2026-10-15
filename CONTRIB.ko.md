@@ -21,6 +21,7 @@
 - [`specs/README.ko.md`](specs/README.ko.md)는 라이브러리를 사용하는 호출자를
   위한 문서입니다. 변경이 공개 사용법에 영향을 줄 때 유용하지만 기여
   가이드는 아닙니다.
+- [`SECURITY.ko.md`](SECURITY.ko.md)는 책임 있는 취약점 제보 절차를 정의합니다.
 
 AI 코딩 에이전트는 [`AGENTS.md`](AGENTS.md)(영문)도 읽고 아래의
 [에이전트 전용 절차](CONTRIB.ko.md#ai-코딩-에이전트용)를 따라야 합니다.

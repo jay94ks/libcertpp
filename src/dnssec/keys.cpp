@@ -123,6 +123,10 @@ namespace dnssec {
                 out = crypto::EASYM_ED448;
                 return true;
 
+            case EDNSALG_ECC_GOST12:
+                out = crypto::EASYM_GOST256A;
+                return true;
+
             // GOST R 34.10-2001 (algorithm 12) has no implementation here, and RFC 8624 forbids
             // it in any case. It is listed in EDnsAlgorithms so a record carrying it can be
             // named and rejected, rather than parsed as something else.
@@ -165,6 +169,10 @@ namespace dnssec {
             case EDNSALG_ED25519:
             case EDNSALG_ED448:
                 out = crypto::EHASH_UNKNOWN;
+                return true;
+
+            case EDNSALG_ECC_GOST12:
+                out = crypto::EHASH_STREEBOG256;
                 return true;
 
             default:
@@ -217,6 +225,15 @@ namespace dnssec {
                 return false;
             }
 
+            out = algorithm->createPublicKey(material);
+            return out != nullptr;
+        }
+
+        if (key.algorithm == EDNSALG_ECC_GOST12) {
+            // RFC 9558 uses the same x || y little-endian representation as CGost3410.
+            if (material.size != 64) {
+                return false;
+            }
             out = algorithm->createPublicKey(material);
             return out != nullptr;
         }
@@ -303,6 +320,12 @@ namespace dnssec {
             }
 
             std::memcpy(out.publicKey.toPtr(), material.data, keyBytes);
+        }
+        else if (algorithm == EDNSALG_ECC_GOST12) {
+            if (material.size != 64 || !out.publicKey.resize(64)) {
+                return false;
+            }
+            std::memcpy(out.publicKey.toPtr(), material.data, 64);
         }
         else if (which == crypto::EASYM_RSA) {
             TReadOnlySpan<uint8_t> content;
@@ -415,6 +438,11 @@ namespace dnssec {
             return appendBytes(out, signature.data, signature.size);
         }
 
+        if (algorithm == EDNSALG_ECC_GOST12) {
+            // CGost3410 and RFC 9558 both use fixed-width s || r, big-endian.
+            return signature.size == 64 && appendBytes(out, signature.data, signature.size);
+        }
+
         crypto::EAsymmetrics which = crypto::EASYM_RSA;
         if (asymmetricOf(algorithm, which) && which == crypto::EASYM_RSA) {
             // An RSA signature is one integer the width of the modulus, and DNS writes it
@@ -473,6 +501,10 @@ namespace dnssec {
             }
 
             return appendBytes(out, signature.data, signature.size);
+        }
+
+        if (algorithm == EDNSALG_ECC_GOST12) {
+            return signature.size == 64 && appendBytes(out, signature.data, signature.size);
         }
 
         crypto::EAsymmetrics which = crypto::EASYM_RSA;

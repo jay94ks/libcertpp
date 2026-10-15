@@ -28,6 +28,7 @@ namespace dnssec {
         EDNSALG_ECDSAP384SHA384 = 14,     /**< ECDSA P-384 with SHA-384 (RFC 6605) */
         EDNSALG_ED25519 = 15,             /**< Ed25519 (RFC 8080) */
         EDNSALG_ED448 = 16,               /**< Ed448 (RFC 8080) */
+        EDNSALG_ECC_GOST12 = 23,          /**< GOST R 34.10-2012 / Streebog-256 (RFC 9558) */
     };
 
     /**

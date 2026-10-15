@@ -11,6 +11,25 @@ briefly). Chapters follow the project's development in order. See
 [`docs/CONCEPTS.md`](CONCEPTS.md) for what the library looks like *now* —
 this history explains how it got there.
 
+## Recent reliability and integration program
+
+The 1.1.0 work completed one coordinated program rather than adding more
+fine-grained history chapters: an explicit-trust X.509 path validator; five
+sanitizer-backed parser fuzz targets; masked prime-curve ladder exchanges and
+an ML-DSA timing review tool; owning-output overloads and a centralized
+generation policy; RFC 9215 GOST certificate/CSR support, RFC 9558 DNSSEC
+algorithm 23, and RFC 9935 ML-KEM SPKI support; plus a documented SemVer/ABI
+contract and an installed-package consumer test. Published RFC artifacts and
+negative inputs cover the new wire formats. Hardware follow-up added a
+sixteen-block AVX-512F ChaCha20 path, made the existing accelerated paths
+compile under Clang's Windows ABI, corrected GFNI feature detection, and
+removed an AVX-512 vector-argument ABI boundary from Poly1305. On the review
+machine the complete AVX-512 ChaCha20-Poly1305 path measured 1979.7 MiB/s for
+64 KiB records versus 494.8 MiB/s with both AVX-512 tiers disabled. Test
+processes now route assertions and crashes to console diagnostics without
+Windows error dialogs. Automated CI and the platform
+matrix intentionally remain in [the roadmap](PLANS.md).
+
 ## Chapters
 
 - [Foundations and early hardening](history/01-foundations.md)

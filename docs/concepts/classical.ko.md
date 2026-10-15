@@ -125,9 +125,8 @@
   형태의 값이 그 다섯 함수를 벗어나는 일이 없습니다. 아핀
   `add()`/`doublePoint()`/`isOnCurve()`는 의도적으로 `CBigNum`의 일반 경로에
   남는데, 군 연산 하나는 그 한 번의 모듈러 역원이 지배하고 컨텍스트를 분산시킬
-  대상이 없기 때문입니다. `scalarMulBase()`는 추가로 `g`의 작은 배수들을 담은
-  지연 생성·인스턴스별 캐시 테이블(`_baseTable`. 4비트 window, 16항목)을 써서
-  덧셈 횟수를 비트당 하나에서 4비트당 하나로 줄입니다.
+  대상이 없기 때문입니다. `scalarMulBase()`도 임의 기저와 같은 고정 너비 ladder를
+  사용하여 이전의 비밀 의존 고정 기저 테이블 조회를 없앴습니다.
   `doublePointJac()`/`addJac()`(Bernstein/Lange의
   `dbl-2007-bl`/`add-2007-bl`. 일반 `a`)과 `ec2curve.cpp`의 Lopez-Dahab
   대응물들은, 어떤 피연산자의 현재 값이 이후에 다시 읽히지 않을 때마다 그것을
@@ -135,9 +134,10 @@
   지점마다 어느 읽기가 그 피연산자의 마지막인지 이름을 댄 주석이 있습니다) —
   `CBigNum`/`CGf2m` 자신의 메서드들이 따르는 것과 같은
   복사보다-제자리 규율(위의 그들 doc 주석 참고)을 이 자유 함수들의 지역
-  변수에까지 이어 간 것입니다. `CBigNum`처럼 여기에도 여전히 constant-time
-  하드닝이 없습니다(ladder의 swap들도 constant-time이 아닙니다) — 완전한
-  부채널 저항보다 정확성/감사 가능성이 이 라이브러리의 입장으로 남아 있습니다.
+  변수에까지 이어 간 것입니다. ladder는 군 위수의 전체 비트 폭을 처리하고
+  레지스터 교환에는 mask 기반 limb swap을 사용하지만, `CBigNum`은 여전히 가변 폭
+  값을 할당하고 잘라내며 일반 산술도 constant-time이 아닙니다. 따라서 소수 곡선
+  스택 전체에 대한 부채널 저항을 주장하지 않습니다.
   `EEcKnownCurves`(`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, 더해서 Brainpool 곡선들을 위한 14개
   `ECURVE_BPOOLxxxR1`/`ECURVE_BPOOLxxxT1` 값)가 이 라이브러리의 내장 곡선들을
@@ -169,8 +169,8 @@
   초기 버전은 거기에 원시 `const CEcCurve*`를 저장했는데, 정확히 그 패턴에서
   매달린 포인터가 되어 크래시했습니다. 개인키는 이 라이브러리 자신의
   `SEQUENCE { version INTEGER (0), d INTEGER, publicKey OCTET STRING }`으로
-  직렬화되고(아직 `SubjectPublicKeyInfo`/곡선 OID 모델링이 없습니다),
-  공개키는 벌거벗은 SEC1 비압축 점으로 직렬화됩니다. 서명은 표준
+  직렬화되고 공개키는 벌거벗은 SEC1 비압축 점으로 직렬화됩니다. X.509 계층은
+  지원하는 명명 곡선 OID를 `SubjectPublicKeyInfo`와 별도로 상호 변환합니다. 서명은 표준
   `Ecdsa-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }`(RFC 3279/SEC 1)로
   직렬화됩니다. `keySizes()`는 정확히 한 크기, 선택된 곡선의 고정 체
   폭(곡선에 따라 160/192/224/256/320/384/512/521비트)을 받아들입니다.

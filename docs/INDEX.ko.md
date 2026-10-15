@@ -12,6 +12,7 @@
 | --- | --- |
 | [프로젝트 README](../README.md) | [프로젝트 README](../README.ko.md) |
 | [기여 가이드](../CONTRIB.md) | [기여 가이드](../CONTRIB.ko.md) |
+| [보안 정책](../SECURITY.md) | [보안 정책](../SECURITY.ko.md) |
 | [문서 안내](README.md) | [문서 안내](README.ko.md) |
 | [문서 인덱스](INDEX.md) | [문서 인덱스](INDEX.ko.md) |
 

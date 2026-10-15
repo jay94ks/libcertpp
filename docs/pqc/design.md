@@ -41,6 +41,8 @@ public key or signature in the surrounding BIT STRING. The certificate and
 CSR code recognizes all three ML-DSA OIDs, verifies them as direct-message
 signatures, and can build ML-DSA-signed objects.
 
-ML-KEM's algorithm and key operations are complete, but its X.509
-SubjectPublicKeyInfo encoding is not wired into `CCert`. That boundary is
-listed in [Remaining PQC work](implementation.md).
+`CKemSubjectPublicKeyInfo` imports and exports RFC 9935 ML-KEM-512,
+ML-KEM-768, and ML-KEM-1024 public keys. It enforces absent AlgorithmIdentifier
+parameters and byte-aligned raw public-key BIT STRING contents. Because a KEM
+key is not a signature key, this codec is intentionally separate from
+`CCert`, whose public-key accessor returns `IAsymmetricPublicKey`.

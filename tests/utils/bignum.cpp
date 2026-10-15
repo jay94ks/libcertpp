@@ -283,3 +283,28 @@ TEST_CASE("CBigNum: secureClear() zeroes the value and leaves it usable") {
     wide.secureClear();
     CHECK(wide.isZero());
 }
+
+TEST_CASE("CBigNum: condSwap preserves canonical values across different limb widths") {
+    const uint8_t wideBytes[] = {
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE
+    };
+    const CBigNum wide = CBigNum::fromBigEndian(
+        SReadOnlyByteSpan(wideBytes, sizeof(wideBytes)));
+    const CBigNum small(uint64_t(7));
+
+    CBigNum a(wide);
+    CBigNum b(small);
+    CBigNum::condSwap(false, a, b);
+    CHECK(a == wide);
+    CHECK(b == small);
+
+    CBigNum::condSwap(true, a, b);
+    CHECK(a == small);
+    CHECK(b == wide);
+
+    CBigNum zero;
+    CBigNum::condSwap(true, a, zero);
+    CHECK(a.isZero());
+    CHECK(zero == small);
+}

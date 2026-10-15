@@ -38,6 +38,8 @@ FIPS 204 공개 키 또는 서명을 담습니다. 인증서와 CSR 코드는 �
 모두 인식하고 직접 메시지 서명으로 검증하며 ML-DSA로 서명된 객체를 만들 수
 있습니다.
 
-ML-KEM 알고리즘과 키 연산은 완성되어 있지만 X.509 SubjectPublicKeyInfo 인코딩은
-`CCert`에 연결되어 있지 않습니다. 이 경계는 [남은 PQC 작업](implementation.ko.md)에
-기록합니다.
+`CKemSubjectPublicKeyInfo`는 RFC 9935 ML-KEM-512, ML-KEM-768,
+ML-KEM-1024 공개키를 가져오고 내보냅니다. AlgorithmIdentifier parameters가 없어야
+하고 BIT STRING 내용이 바이트에 맞춘 원시 공개키여야 함을 강제합니다. KEM 키는
+서명 키가 아니므로 이 코덱은 `IAsymmetricPublicKey`를 반환하는 `CCert`와 의도적으로
+분리되어 있습니다.

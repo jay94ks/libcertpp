@@ -2,21 +2,41 @@
 
 [English](maintenance.md)
 
-## 버전 관리
+## 버전, ABI 및 릴리스
 
 ← [프로젝트 규칙](../RULES.ko.md)
 
-- `HEADER_VERSION`(`version.hpp`에 있음)은 ABI/API가 바뀔 때 올려야 하는 단
-  하나의 숫자입니다. `LIBRARY_VERSION`(`version.cpp`에 있고
-  `GetLibraryVersion()`이 반환함)은 `HEADER_VERSION`*으로서* 정의되므로 따로
-  수정할 필요가 없습니다 — 요점은, 그 값이 바이너리가 컴파일될 때 사용된 헤더의
-  버전으로 바이너리에 구워져 들어가는 반면, 사용자 쪽의 `HEADER_VERSION`은
-  *그들이* 컴파일할 때 사용한 헤더의 값이라는 데 있습니다. 따라서 런타임에 이
-  둘을 비교하는 것이 사용자가 헤더/바이너리 불일치를 감지하는 방법이며, 이는 둘
-  중 하나만 손으로 작성된다는 바로 그 사실 덕분에 동작합니다.
-- `CMakeLists.txt`의 `project(certpp VERSION ...)`(공유 라이브러리의
-  `VERSION`/`SOVERSION`을 결정함)은 같은 숫자의 두 번째 독립 사본이며, 둘을
-  맞춰 주는 장치는 아무것도 없습니다. `HEADER_VERSION`과 함께 올려 주십시오.
+이 프로젝트는 Semantic Versioning을 따르며 현재 버전은 1.1.0입니다. patch 릴리스는
+호환되는 수정, minor 릴리스는 소스와 ABI를 유지하는 공개 API 추가를 담을 수 있고,
+공개 ABI나 소스 호환성을 깨는 변경에는 major 릴리스가 필요합니다. 설치된 CMake
+패키지는 `SameMajorVersion`을 사용하고 라이브러리 `SOVERSION`은 major 버전입니다.
+같은 major 버전 안에서는:
+
+- 공개 함수 매개변수와 반환값의 타입, 순서, 소유권, 의미를 제거하거나 바꾸지 않습니다.
+- 공개 enum 값은 기존 값을 재배열하거나 번호를 바꾸지 않고 뒤에 추가합니다.
+- major 버전 증가 없이 공개 클래스 레이아웃이나 가상 함수 테이블을 바꾸지 않습니다.
+- 설치 헤더, `CERTPP_API` export, 전이 링크 요구사항을 `certpp::certpp` 소비자가 계속
+  사용할 수 있게 유지합니다.
+
+`version.hpp`의 `HEADER_VERSION`은 런타임 헤더 버전입니다. 바이너리의
+`LIBRARY_VERSION`은 이 값으로 컴파일되고 `GetLibraryVersion()`이 반환합니다.
+`CMakeLists.txt`의 `project(certpp VERSION ...)`은 별도 사본이므로 둘은 항상 같아야
+하며 릴리스에서 함께 갱신합니다.
+
+### 릴리스 체크리스트
+
+1. 위 호환성 규칙으로 공개 변경을 분류하고 SemVer 증가 폭을 정한 뒤 두 버전 선언을
+   함께 갱신합니다.
+2. 영문·한글 유지 보수 문서, 계획/이력, 파일 추가·이동·삭제 시 `docs/INDEX.md`를
+   같은 변경에서 갱신합니다.
+3. 기본 공유 및 정적 구성에서 전체 테스트를 실행하고, 암호 또는 플랫폼 코드를
+   바꿨다면 하드웨어 가속을 끈 portable 구성도 실행합니다.
+4. 릴리스 구성의 `install_consumer`를 실행하여 설치된 `find_package(certpp)` 프로젝트가
+   빌드되고 실행되는지 확인합니다.
+5. 파서/코덱 변경에는 제한된 퍼징 smoke 검사를, 타이밍 민감 변경에는 관련 검토
+   도구를 실행합니다.
+6. `git diff --check`, 저장소 상태, 공개 헤더 diff, 릴리스 노트를 검토합니다. 커밋,
+   태그, 푸시는 사용자가 명시적으로 요청한 뒤에만 수행합니다.
 
 ## 테스트
 

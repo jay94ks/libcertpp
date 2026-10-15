@@ -3,6 +3,7 @@
 
 #include <certpp/common.hpp>
 #include <certpp/io/octet.hpp>
+#include <certpp/io/array.hpp>
 
 namespace certpp {
 namespace crypto {
@@ -111,6 +112,31 @@ namespace crypto {
          * @return True if the hash was successfully finalized, false otherwise.
          */
         virtual bool finish(const SByteSpan& out) = 0;
+
+        /**
+         * Finalizes into an owning byte string sized from byteWidth().
+         * @param out Receives the digest and is cleared on failure.
+         * @return true on success; false on allocation or hashing failure.
+         */
+        inline bool finish(COctet& out) {
+            TArray<uint8_t> buffer;
+            if (!buffer.resize(byteWidth())) {
+                out.clear();
+                return false;
+            }
+            if (!finish(SByteSpan(buffer.begin(), buffer.size()))
+                || !out.store(buffer.begin(), buffer.size()))
+            {
+                out.clear();
+                return false;
+            }
+            return true;
+        }
+
+        /** Named form of the owning overload, usable without base-overload qualification. */
+        inline bool finishOwned(COctet& out) {
+            return IHasher::finish(out);
+        }
     };
 
 } // namespace crypto

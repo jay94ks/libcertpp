@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.15)
 
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
 project(certpp
-    VERSION 1.0.1
+    VERSION 1.1.0
     DESCRIPTION "libcertpp - a C++17 certificate handling library"
     LANGUAGES CXX
 )
@@ -18,7 +22,8 @@ option(CERTPP_BUILD_SHARED "Build certpp as a shared library" ON)
 option(CERTPP_WITHOUT_JSON "Exclude the JSON utility from the library" OFF)
 option(CERTPP_RNG_FALLBACK "Allow crypto::CRng to fall back to std::random_device if the OS CSPRNG is unavailable" OFF)
 option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255-19) instead of the default 2^25.5 ten-limb one. Correct but measured no faster on x86-64 GCC, so it is off; see docs/HISTORY.md for the measurements" OFF)
-option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU acceleration (ADX/BMI2, PCLMULQDQ/GFNI, SSE2/AVX2, BMI1 ANDN, BMI2 RORX, and AVX512-IFMA), always using portable implementations instead" OFF)
+option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU acceleration (ADX/BMI2, PCLMULQDQ/GFNI, SSE2/AVX2/AVX-512F, BMI1 ANDN, BMI2 RORX, and AVX512-IFMA), always using portable implementations instead" OFF)
+option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512F ChaCha20 and AVX512-IFMA Poly1305 acceleration while retaining narrower SIMD paths" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
 
@@ -57,13 +62,16 @@ target_compile_definitions(certpp
     PRIVATE
         __COMPILES_LIBCERTPP__=1
         $<$<BOOL:${CERTPP_RNG_FALLBACK}>:CERTPP_RNG_FALLBACK=1>
-        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SIMD}>:CERTPP_DISABLE_HWACCEL_SIMD=1>
         $<$<BOOL:${CERTPP_ENABLE_FE25519_RADIX51}>:CERTPP_ENABLE_FE25519_RADIX51=1>
-        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SHA}>:CERTPP_DISABLE_HWACCEL_SHA=1>
-        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AES}>:CERTPP_DISABLE_HWACCEL_AES=1>
     PUBLIC
         $<$<BOOL:${CERTPP_BUILD_SHARED}>:__SHARED_LIBCERTPP__=1>
         $<$<BOOL:${CERTPP_WITHOUT_JSON}>:CERTPP_WITHOUT_JSON=1>
+        # Public headers use these switches to select matching declarations and object layouts.
+        # Export them so installed consumers compile against the configuration of the library.
+        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SIMD}>:CERTPP_DISABLE_HWACCEL_SIMD=1>
+        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AVX512}>:CERTPP_DISABLE_HWACCEL_AVX512=1>
+        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SHA}>:CERTPP_DISABLE_HWACCEL_SHA=1>
+        $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AES}>:CERTPP_DISABLE_HWACCEL_AES=1>
 )
 
 set_target_properties(certpp PROPERTIES
@@ -109,9 +117,8 @@ configure_package_config_file(
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/certpp
 )
 
-# SameMajorVersion: this library is pre-1.0 in spirit and its headers change freely, but the
-# shared object's SOVERSION is the major, so that is the compatibility boundary consumers can
-# actually rely on.
+# SameMajorVersion is the package-compatibility promise: minor and patch releases within one
+# major line remain source compatible, while an ABI break increments the major/SOVERSION.
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/certpp-config-version.cmake
     VERSION ${PROJECT_VERSION}
@@ -125,9 +132,25 @@ install(FILES
 )
 
 option(CERTPP_BUILD_TESTS "Build certpp test executables" ON)
+option(CERTPP_BUILD_FUZZERS "Build Clang/libFuzzer parser targets" OFF)
+option(CERTPP_BUILD_AUDIT_TOOLS "Build manual security-audit tools" OFF)
 
 if(CERTPP_BUILD_TESTS)
     enable_testing()
+
+    # Exercise the installed package as an external consumer. This catches missing installed
+    # headers, export definitions, transitive system libraries and find_package regressions that
+    # an in-tree target cannot see.
+    add_test(NAME install_consumer
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            -DGENERATOR=${CMAKE_GENERATOR}
+            -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+            -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -DCONFIG=$<CONFIG>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunConsumerTest.cmake
+    )
 
     # third-party/ vendors the doctest single header; its CMakeLists.txt
     # exposes it as the INTERFACE target `doctest`.
@@ -152,6 +175,20 @@ if(CERTPP_BUILD_TESTS)
 
         add_executable(certpp_test_${CERTPP_TEST_NAME} ${CERTPP_TEST_SOURCE})
         target_link_libraries(certpp_test_${CERTPP_TEST_NAME} PRIVATE certpp::certpp doctest)
+
+        # Keep standard assertions enabled in every configuration and force a small runtime shim
+        # into every test translation unit. On Windows it routes CRT assertions and aborts to
+        # stderr and suppresses modal error-reporting dialogs, so a failed CTest run remains
+        # unattended and leaves enough file/line detail to debug it.
+        set(CERTPP_TEST_RUNTIME_HEADER
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/runtime.hpp")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+            target_compile_options(certpp_test_${CERTPP_TEST_NAME} PRIVATE
+                "/UNDEBUG" "/FI${CERTPP_TEST_RUNTIME_HEADER}")
+        else()
+            target_compile_options(certpp_test_${CERTPP_TEST_NAME} PRIVATE
+                "-UNDEBUG" "-include" "${CERTPP_TEST_RUNTIME_HEADER}")
+        endif()
 
         # Some tests exercise implementation units that are deliberately private to the library:
         # the lattice arithmetic and wire encoding behind ML-KEM and ML-DSA have no public API, so
@@ -305,6 +342,76 @@ if(CERTPP_BUILD_TESTS)
         )
 
         add_test(NAME ${CERTPP_TEST_NAME} COMMAND certpp_test_${CERTPP_TEST_NAME})
+    endforeach()
+endif()
+
+if(CERTPP_BUILD_AUDIT_TOOLS)
+    add_executable(certpp_mldsa_timing_audit
+        tools/mldsa_timing_audit.cpp
+        src/crypto/asyms/mldsaring.cpp
+        src/crypto/asyms/mldsarounding.cpp
+        src/crypto/asyms/mldsacodec.cpp
+        src/crypto/asyms/mldsasampler.cpp
+        src/crypto/asyms/mldsascheme.cpp
+    )
+    target_include_directories(certpp_mldsa_timing_audit PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(certpp_mldsa_timing_audit PRIVATE certpp::certpp)
+endif()
+
+if(CERTPP_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "CERTPP_BUILD_FUZZERS requires Clang with libFuzzer support")
+    endif()
+
+    # The Windows libFuzzer runtime shipped with Clang is built against the
+    # release iterator ABI. Keep the library and every harness on that ABI even
+    # when a developer selects a Debug configuration.
+    if(WIN32)
+        target_compile_definitions(certpp PRIVATE
+            _DISABLE_STL_ANNOTATION
+            _ITERATOR_DEBUG_LEVEL=0
+        )
+        set_property(TARGET certpp PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} --print-file-name=clang_rt.asan_dynamic-x86_64.dll
+            OUTPUT_VARIABLE CERTPP_ASAN_RUNTIME
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT EXISTS "${CERTPP_ASAN_RUNTIME}")
+            message(FATAL_ERROR "Clang ASan runtime was not found: ${CERTPP_ASAN_RUNTIME}")
+        endif()
+    endif()
+
+    file(GLOB CERTPP_FUZZ_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/*.cpp
+    )
+    foreach(CERTPP_FUZZ_SOURCE ${CERTPP_FUZZ_SOURCES})
+        get_filename_component(CERTPP_FUZZ_NAME ${CERTPP_FUZZ_SOURCE} NAME_WE)
+        add_executable(certpp_fuzz_${CERTPP_FUZZ_NAME} ${CERTPP_FUZZ_SOURCE})
+        target_link_libraries(certpp_fuzz_${CERTPP_FUZZ_NAME} PRIVATE certpp::certpp)
+        target_compile_options(certpp_fuzz_${CERTPP_FUZZ_NAME} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+        )
+        if(WIN32)
+            target_compile_definitions(certpp_fuzz_${CERTPP_FUZZ_NAME} PRIVATE
+                _DISABLE_STL_ANNOTATION
+                _ITERATOR_DEBUG_LEVEL=0
+            )
+            set_property(TARGET certpp_fuzz_${CERTPP_FUZZ_NAME}
+                PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded
+            )
+            add_custom_command(TARGET certpp_fuzz_${CERTPP_FUZZ_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CERTPP_ASAN_RUNTIME}"
+                    "$<TARGET_FILE_DIR:certpp_fuzz_${CERTPP_FUZZ_NAME}>"
+                VERBATIM
+            )
+        endif()
+        target_link_options(certpp_fuzz_${CERTPP_FUZZ_NAME} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+        )
     endforeach()
 endif()
 

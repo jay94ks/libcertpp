@@ -47,8 +47,8 @@ namespace crypto {
          * Runs the SHA-1 compression function over one 64-byte block via the SHA extensions,
          * updating state in place.
          */
-#if defined(__GNUC__) && !defined(_MSC_VER)
-        __attribute__((target("sha,sse4.1")))
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("sha,ssse3,sse4.1")))
 #endif
         static void transformAccelerated(uint32_t state[5], const uint8_t block[64]);
 #endif

@@ -116,7 +116,7 @@ namespace crypto {
     /* The BMI2-enabled instantiation. The attribute has to sit here, on a function compiled as a
      * whole with BMI2, rather than on the rotate helper inside it -- see the note on
      * transformRounds(). */
-#  if defined(__GNUC__) && !defined(_MSC_VER)
+#  if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
     __attribute__((target("bmi2")))
 #  endif
     void Sha2_64Core::transformRoundsBmi2(uint64_t state[8], const uint8_t block[128]) {

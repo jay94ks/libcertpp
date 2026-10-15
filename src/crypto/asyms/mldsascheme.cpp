@@ -504,8 +504,12 @@ namespace crypto {
     /* ML-DSA.Sign_internal (FIPS 204 Algorithm 7). */
     bool MlDsaScheme::signInternal(
         const MlDsaParams& params, const SReadOnlyByteSpan& sk, const SReadOnlyByteSpan& message,
-        const SReadOnlyByteSpan& externalMu, const SReadOnlyByteSpan& rnd, const SByteSpan& out
+        const SReadOnlyByteSpan& externalMu, const SReadOnlyByteSpan& rnd, const SByteSpan& out,
+        MlDsaSignMetrics* metrics
     ) {
+        if (metrics) {
+            *metrics = MlDsaSignMetrics{};
+        }
         if (!params.isValid()) {
             return false;
         }
@@ -642,6 +646,9 @@ namespace crypto {
         // whole attempt away if any of the four bounds below fails; the expected count is a
         // handful, and FIPS 204 sets no upper limit, so neither does this.
         for (uint32_t kappa = 0; ; kappa += uint32_t(l)) {
+            if (metrics) {
+                ++metrics->attempts;
+            }
             if (!MlDsaSampler::expandMask(
                     SReadOnlyByteSpan(rhoPrime2, sizeof(rhoPrime2)), kappa, l, params.gamma1,
                     y.begin()))
@@ -700,9 +707,15 @@ namespace crypto {
             // z holds reduced coefficients, so its norm goes through centered(); the low parts
             // are already centered and must not be reduced again.
             if (vectorInfinityNorm(z.begin(), l) >= int32_t(params.gamma1) - int32_t(params.beta)) {
+                if (metrics) {
+                    ++metrics->zNormRejections;
+                }
                 continue;
             }
             if (absMax(lowParts.begin(), k) >= gamma2 - int32_t(params.beta)) {
+                if (metrics) {
+                    ++metrics->lowBitsRejections;
+                }
                 continue;
             }
 
@@ -715,6 +728,9 @@ namespace crypto {
             // has to stay strictly inside gamma2. Dropping it produces signatures that the
             // signer believes in and no verifier accepts.
             if (vectorInfinityNorm(ct0.begin(), k) >= gamma2) {
+                if (metrics) {
+                    ++metrics->t0NormRejections;
+                }
                 continue;
             }
 
@@ -734,6 +750,9 @@ namespace crypto {
             }
 
             if (hintWeight > params.omega) {
+                if (metrics) {
+                    ++metrics->hintWeightRejections;
+                }
                 continue;
             }
 

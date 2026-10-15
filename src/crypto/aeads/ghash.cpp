@@ -6,8 +6,10 @@
  * in the intrinsics and CPUID headers it needs, and must stay in step with it. */
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
 #include <immintrin.h>   // GFNI's GF2P8AFFINEQB is newer than the wmmintrin.h that PCLMULQDQ needs
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #include <zmmintrin.h>   // ...and MSVC declares the GFNI intrinsics here rather than there
+#endif
+#if defined(_MSC_VER)
 #include <intrin.h>
 #else
 #include <cpuid.h>
@@ -69,7 +71,7 @@ namespace crypto {
             return supported;
         }
 
-        /* Whether this CPU also has GFNI (CPUID.7.0:EBX.GFNI, bit 5). GFNI is a separate and newer
+        /* Whether this CPU also has GFNI (CPUID.7.0:ECX.GFNI, bit 8). GFNI is a separate and newer
          * feature from PCLMULQDQ -- a CPU can have either without the other, and plenty have
          * neither -- so it is its own check rather than an assumption about the one above. */
         bool hasGfni() {
@@ -77,13 +79,13 @@ namespace crypto {
 #if defined(_MSC_VER)
                 int info[4] = { 0, 0, 0, 0 };
                 __cpuidex(info, 7, 0);
-                return (info[1] & (1 << 5)) != 0;
+                return (info[2] & (1 << 8)) != 0;
 #else
                 unsigned int eax, ebx, ecx, edx;
                 if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
                     return false;
                 }
-                return (ebx & (1u << 5)) != 0;
+                return (ecx & (1u << 8)) != 0;
 #endif
             }();
 
@@ -102,7 +104,7 @@ namespace crypto {
          * byte's bits (and keeping little-endian byte order, which _mm_loadu_si128 already gives)
          * is the whole of the conversion. It is its own inverse, so the same function brings the
          * product back. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("pclmul,sse2")))
 #endif
         __m128i reverseBitsInBytes(__m128i v) {
@@ -137,7 +139,7 @@ namespace crypto {
          * multiplies are one serial chain and have nothing to aggregate -- but this reflection,
          * which is twenty instructions by hand and one here. Checked against the SSE2 version
          * above by tests/crypto/aeads/ghash.cpp rather than taken on the constant's word. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("gfni,sse2")))
 #endif
         __m128i reverseBitsInBytesGfni(__m128i v) {
@@ -208,7 +210,7 @@ namespace crypto {
      *
      * @param useGfni Whether to reflect with GFNI rather than the SSE2 sequence. Only ever
      * true where hasGfni() is true, which is what makes emitting GF2P8AFFINEQB here safe. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
     __attribute__((target("gfni,pclmul,sse2")))
 #endif
     void Ghash::multiplyCore(uint8_t block[BLOCK_BYTES], const uint8_t h[BLOCK_BYTES],

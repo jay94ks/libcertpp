@@ -286,6 +286,7 @@ TEST_CASE("ChaCha20: the vectorized path matches an independent reference at eve
     }
 
     for (size_t n : lengths) {
+        CAPTURE(n);
         // Sealing a zero buffer yields the keystream itself, which is what makes this a direct
         // comparison of the two implementations rather than of ciphertexts.
         std::vector<uint8_t> buffer(n, 0x00);

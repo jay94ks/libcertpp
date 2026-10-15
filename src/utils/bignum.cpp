@@ -84,7 +84,7 @@ namespace certpp {
          * equivalent -- it allows using intrinsics for any instruction set unconditionally, and
          * relies on the runtime hasAdxBmi2() check above to avoid actually executing them on a
          * CPU that lacks the feature). */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("bmi2,adx")))
 #endif
         void CBigNum::mulAccelerated(
@@ -934,9 +934,42 @@ namespace certpp {
     }
 
     void CBigNum::condSwap(bool swap, CBigNum& a, CBigNum& b) {
-        if (swap) {
-            std::swap(a, b);
+        const size_t aSize = a._limbs.size();
+        const size_t bSize = b._limbs.size();
+        const size_t count = aSize > bSize ? aSize : bSize;
+
+        if (!a._limbs.resize(count)) {
+            if (swap) {
+                std::swap(a, b);
+            }
+            return;
         }
+        if (!b._limbs.resize(count)) {
+            a._limbs.resize(aSize);
+            if (swap) {
+                std::swap(a, b);
+            }
+            return;
+        }
+
+        const uint32_t mask = uint32_t(0) - uint32_t(swap);
+        for (size_t i = 0; i < count; ++i) {
+            const uint32_t difference = (a._limbs[i] ^ b._limbs[i]) & mask;
+            a._limbs[i] ^= difference;
+            b._limbs[i] ^= difference;
+        }
+
+        size_t aTrimmed = count;
+        while (aTrimmed != 0 && a._limbs[aTrimmed - 1] == 0) {
+            --aTrimmed;
+        }
+        size_t bTrimmed = count;
+        while (bTrimmed != 0 && b._limbs[bTrimmed - 1] == 0) {
+            --bTrimmed;
+        }
+
+        a._limbs.resize(aTrimmed);
+        b._limbs.resize(bTrimmed);
     }
 
     bool CBigNum::random(size_t bits, CBigNum& out) {

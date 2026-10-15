@@ -19,6 +19,7 @@
 | 확장 읽기 | `x509/cert.hpp`, `x509/ext.hpp`, `x509/exts/*.hpp` | `CCert::extensionOf(oid, out)`; `exts/` 아래의 10종 구체 타입 |
 | RSASSA-PSS 매개변수 읽기 | `x509/cert.hpp` | `CCert::rsaPssParams()` |
 | 체인의 한 연결 검증 | `x509/cert.hpp` | `CCert::verifyBy(issuer)` |
+| 명시적인 신뢰 앵커까지 경로 구성·검증 | `x509/validator.hpp` | `CTrustStore`, `SPathValidationPolicy`, `CPathValidator::validate()` |
 | 인증서의 키로 임의의 데이터 서명/검증 | `x509/cert.hpp` | `CCert::signData()`, `verifyData()` |
 | 인증서 발급 또는 자체 서명 | `x509/cert.hpp` | `CCertBuilder` |
 | CRL 파싱 또는 빌드 | `x509/crl.hpp` | `CCrlReader`, `CCrlWriter`, `CCrlRevokationInfo` |
@@ -26,6 +27,7 @@
 | 여러 인증서를 담아 두고 순서대로 정렬 | `x509/chain.hpp` | `CCertCollection`, `SCertEntry`, `EChainResults` |
 | PEM 컬렉션 읽기 또는 쓰기 | `x509/chain/pem.hpp` | `CPemChainFormat` |
 | PKCS#12/PFX 컬렉션 읽기 또는 쓰기 | `x509/chain/pfx.hpp` | `CPfxFormat` |
+| ML-KEM SubjectPublicKeyInfo 디코드·인코드 | `x509/kemspki.hpp` | `CKemSubjectPublicKeyInfo::decode()`, `encode()` |
 | 식별 이름(DN) | `name.hpp` | `CDistinguishedName`, `CName`, `ENameType` |
 
 ## 해시, MAC, KDF
@@ -63,9 +65,14 @@
 | 곡선 매개변수 | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; 이진 곡선은 `CEc2Curve` |
 | ML-KEM(양자내성 KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, 그다음 `encapsulate()`/`decapsulate()`; 또는 span을 직접 받는 `CMlKem` |
 | ML-DSA(양자내성 서명) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, `IAsymmetric::builtIn(EASYM_MLDSA87)`을 통해 |
+| 새 출력용 알고리즘 정책 분류 | `crypto/policy.hpp` | `CAlgorithmPolicy::classify()`, `allowsGeneration()` |
 
 알고리즘 열거자(enumerator)는 `crypto/keys.hpp`(`EAsymmetrics`, `EKems`,
 `ESymmetrics`)와 `crypto/hasher.hpp`(`EHashers`)에 있습니다.
+해시 `finish()`, 비대칭 `sign()`/`signPss()`, KEM
+`encapsulate()`/`decapsulate()`에는 소유권을 갖는 `COctet` overload가 있습니다.
+호출자가 정확한 크기의 출력 span을 의도적으로 관리하는 경우가 아니라면 이를
+우선 사용하세요.
 
 ## DNSSEC
 

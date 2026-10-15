@@ -9,12 +9,12 @@ optimizations, investigations, and negative results are recorded in
 
 ## Security work
 
-- **Make prime-curve ECDH and ECDSA signing constant-time.** Their ladder has
-  a branch-free shape, but `CBigNum` trims leading zero limbs,
-  `condSwap()` branches on a secret bit, and fixed-base multiplication uses a
-  secret-dependent table index. The replacement needs a shared fixed-width
-  field strategy across the supported prime curves rather than one field
-  implementation per curve.
+- **Finish constant-time prime-curve ECDH and ECDSA signing.** The ladder now
+  processes the full group-order width, masked-swaps its registers, and uses no
+  secret-indexed fixed-base table. The remaining blocker is `CBigNum` itself:
+  it allocates and trims variable-width limbs and its arithmetic has
+  operand-dependent cost. A shared fixed-width field strategy is still needed
+  across the supported prime curves.
 - **Audit ML-DSA signing for timing leakage.** The retry count in
   Fiat-Shamir-with-aborts is data-dependent by design. The current
   implementation zeroizes secret intermediates and avoids secret-indexed

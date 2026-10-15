@@ -63,6 +63,11 @@ The source layout has several rules that are easy to miss:
   build reference.
 - Keep changes narrow and complete. Update declarations, definitions, tests,
   examples, and caller documentation together when the contract changes.
+- Do not create a Git commit or push to a remote unless the user explicitly
+  requests that action. A request to edit, fix, validate, or finish work does
+  not imply permission to commit or push. Treat committing and pushing as
+  separate actions: a request to commit does not authorize a push, and a
+  request to push does not authorize creating additional commits.
 
 ## Cryptographic and encoding changes
 
@@ -78,9 +83,10 @@ not. Record any security or interoperability limit in the relevant public doc
 comment and caller-facing specification.
 
 Certificate chain ordering and link-signature checks are not certification
-path validation. `CCertCollection::buildChain()` and `verifyLinks()` do not
-establish validity periods, constraints, policies, revocation status, or trust
-in a root. Do not describe their result as a trusted or validated chain.
+path validation. Describe a path as validated only after `CPathValidator`
+checks it against an explicit `CTrustStore`. Its core result covers the policy
+fields documented in `x509/validator.hpp`; it does not imply live revocation or
+RFC 5280 policy-tree processing.
 
 ## Documentation and wiki
 

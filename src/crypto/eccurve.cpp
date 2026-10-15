@@ -754,8 +754,12 @@ namespace crypto {
         ECPointJac r0 = infinityJac(field);
         ECPointJac r1 = toJacobian(pt, field);
 
-        for (size_t i = k.bitLength(); i-- > 0; ) {
-            bool bit = k.testBit(i);
+        const size_t scalarBits = k.bitLength();
+        const size_t orderBits = n.bitLength();
+        const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
+
+        for (size_t i = iterations; i-- > 0; ) {
+            const bool bit = k.testBit(i);
 
             condSwapJac(bit, r0, r1);
             ECPointJac sum = addJac(r0, r1, field, aMont);
@@ -768,62 +772,11 @@ namespace crypto {
         return toAffineFromJac(r0, field);
     }
 
-    /* Left-to-right windowed method over _baseTable (see its own doc comment for the lazy-build/
-     * copy-propagation reasoning): every window's addition still runs unconditionally --
-     * _baseTable[0] is the point at infinity, so an all-zero window costs an addJac() that adds
-     * nothing (its z == 0 short-circuit) rather than a branch skipping the addition -- the same
-     * "always do the expensive step" shape scalarMul()'s ladder above uses. Entirely in Jacobian
-     * coordinates internally, same as scalarMul(). */
+    /* Use the same ladder as arbitrary-point multiplication. The previous four-bit window method
+     * indexed a table with private scalar bits, which exposed a cache-timing signal even though it
+     * performed an addition for every window. */
     SEcPoint CEcCurve::scalarMulBase(const CBigNum& k) const {
-        constexpr size_t BASE_TABLE_WINDOW = 4;
-        constexpr size_t BASE_TABLE_SIZE = size_t(1) << BASE_TABLE_WINDOW; // 16
-
-        if (g.infinity || k.isZero()) {
-            return SEcPoint();
-        }
-
-        const CMontgomery field(p);
-        if (!field.isValid()) {
-            return SEcPoint();
-        }
-
-        const CBigNum aMont = field.toMont(a);
-
-        if (_baseTable.size() != BASE_TABLE_SIZE) {
-            TArray<SEcPoint> table;
-            table.resize(BASE_TABLE_SIZE);
-
-            table[0] = SEcPoint(); // infinity
-            table[1] = g;
-            for (size_t i = 2; i < BASE_TABLE_SIZE; ++i) {
-                table[i] = add(table[i - 1], g);
-            }
-
-            _baseTable = std::move(table);
-        }
-
-        size_t bits = k.bitLength();
-        size_t numWindows = (bits + BASE_TABLE_WINDOW - 1) / BASE_TABLE_WINDOW;
-
-        ECPointJac result = infinityJac(field);
-
-        for (size_t w = numWindows; w-- > 0; ) {
-            for (size_t i = 0; i < BASE_TABLE_WINDOW; ++i) {
-                result = doublePointJac(result, field, aMont);
-            }
-
-            size_t base = w * BASE_TABLE_WINDOW;
-            size_t windowValue = 0;
-            for (size_t b = 0; b < BASE_TABLE_WINDOW; ++b) {
-                if (k.testBit(base + b)) {
-                    windowValue |= (size_t(1) << b);
-                }
-            }
-
-            result = addJac(result, toJacobian(_baseTable[windowValue], field), field, aMont);
-        }
-
-        return toAffineFromJac(result, field);
+        return scalarMul(g, k);
     }
 
     bool CEcCurve::encodePoint(const SEcPoint& pt, TArray<uint8_t>& out) const {

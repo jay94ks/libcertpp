@@ -10,6 +10,22 @@
 [`docs/CONCEPTS.ko.md`](CONCEPTS.ko.md)를 보십시오. 이 변경 이력은 그 모습에
 이르기까지의 과정을 설명합니다.
 
+## 최근 신뢰성과 통합 계획
+
+1.1.0 작업은 이력을 더 잘게 나누지 않고 하나의 연속된 계획으로 완료했습니다.
+명시적인 신뢰 저장소를 쓰는 X.509 경로 validator, sanitizer를 적용한 파서 퍼저
+다섯 개, mask 기반 소수 곡선 ladder 교환과 ML-DSA 타이밍 검토 도구, 소유형 출력
+overload와 중앙 생성 정책, RFC 9215 GOST 인증서/CSR·RFC 9558 DNSSEC 알고리즘
+23·RFC 9935 ML-KEM SPKI 지원, SemVer/ABI 계약과 설치 패키지 소비자 테스트를
+추가했습니다. 새 wire format은 공개 RFC 산출물과 잘못된 입력으로 검증합니다.
+후속 하드웨어 작업에서는 16블록 AVX-512F ChaCha20 경로를 추가하고, 기존 가속
+경로가 Clang의 Windows ABI에서도 컴파일되게 했으며, GFNI 기능 감지를 바로잡고,
+Poly1305의 AVX-512 벡터 인자 ABI 경계를 없앴습니다. 검토 장비의 64 KiB record에서
+완전한 AVX-512 ChaCha20-Poly1305 경로는 1979.7 MiB/s, 두 AVX-512 단계를 모두
+끈 구성은 494.8 MiB/s였습니다. 테스트 프로세스는 이제 Windows 오류 대화상자 없이
+assertion과 충돌을 콘솔 진단으로 보냅니다. 자동 CI와 플랫폼 매트릭스는 의도적으로
+[로드맵](PLANS.ko.md)에 남겨 두었습니다.
+
 ## 장별 기록
 
 - [기반 구축과 초기 강화](history/01-foundations.ko.md)

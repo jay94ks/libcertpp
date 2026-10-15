@@ -36,6 +36,115 @@ void exampleCCert(const COctet& der) {
     }
 }
 
+// === EPathValidationStatus ===
+// Handles a path verdict as a typed result. EPATH_OK covers the validator's documented core
+// profile; revocation and full RFC 5280 policy processing have explicit unavailable statuses
+// rather than being silently included in success.
+void exampleEPathValidationStatus(const SPathValidationResult& result) {
+    if (result.status == EPATH_REVOCATION_UNAVAILABLE
+        || result.status == EPATH_POLICY_PROCESSING_UNAVAILABLE)
+    {
+        return; // this deployment requested a capability the core validator does not provide
+    }
+
+    if (result.status != EPATH_OK) {
+        // certificateIndex identifies the failing item in result.path, leaf first.
+        return;
+    }
+}
+
+// === SPathValidationPolicy ===
+// Supplies the application-specific part of path validation: the evaluation time and the leaf
+// usage expected by this protocol. Leaving these implicit is how an otherwise valid chain is
+// accidentally accepted for the wrong purpose.
+void exampleSPathValidationPolicy() {
+    SPathValidationPolicy policy;
+    policy.validationTime = SDateTime::now(true);
+    policy.requiredLeafKeyUsages = EKUSE_DIGITAL_SIGNATURE;
+    policy.requiredExtendedKeyPurpose = COid(CEkuExtension::OID_SERVER_AUTH);
+    policy.maxDepth = 8;
+    policy.requireRevocation = false; // revocation is checked by a separate deployment service
+}
+
+// === SPathValidationResult ===
+// Reads the diagnostic result without reducing it to a Boolean. The completed path is leaf first,
+// and on failure certificateIndex points at the certificate whose rule failed when one applies.
+void exampleSPathValidationResult(const SPathValidationResult& result) {
+    if (!result) {
+        if (result.certificateIndex < result.path.size()) {
+            const CCert& rejected = result.path[result.certificateIndex];
+            (void)rejected; // report rejected.subject() together with result.status
+        }
+        return;
+    }
+
+    const CCert& trustAnchor = result.path[result.path.size() - 1];
+    (void)trustAnchor; // EPATH_OK means this exact certificate was in the supplied CTrustStore
+}
+
+// === CTrustStore ===
+// Builds an explicit set of trust anchors. A self-signed certificate found beside the leaf does
+// not become trusted by position; it must be added here through deployment configuration.
+void exampleCTrustStore(const CCert& configuredRoot) {
+    CTrustStore trust;
+    if (trust.add(configuredRoot) != ERET_OK) {
+        return; // empty or malformed certificate
+    }
+
+    if (!trust.contains(configuredRoot) || trust.count() != 1) {
+        return;
+    }
+}
+
+// === CPathValidator ===
+// Builds and validates a leaf-first certification path against an explicit trust store. Passing
+// intermediates supplies candidates only; none of them becomes trusted merely by being present.
+void exampleCPathValidator(
+    const CCert& leaf, const CCert& intermediate, const CCert& configuredRoot
+) {
+    CCertCollection intermediates;
+    size_t index = 0;
+    if (intermediates.add(intermediate, index) != ERET_OK) {
+        return;
+    }
+
+    CTrustStore trust;
+    if (trust.add(configuredRoot) != ERET_OK) {
+        return;
+    }
+
+    SPathValidationPolicy policy;
+    policy.requiredLeafKeyUsages = EKUSE_DIGITAL_SIGNATURE;
+    SPathValidationResult result = CPathValidator::validate(
+        leaf, intermediates, trust, policy
+    );
+    if (!result) {
+        return; // inspect status, certificateIndex and detail for the exact failed rule
+    }
+}
+
+// === CKemSubjectPublicKeyInfo ===
+// Exchanges an ML-KEM encapsulation key in RFC 9935 SubjectPublicKeyInfo form. The decoder checks
+// the algorithm OID, requires absent parameters and constructs the matching ML-KEM public key.
+void exampleCKemSubjectPublicKeyInfo(
+    const IKemPublicKeyPtr& ownPublicKey, const SReadOnlyByteSpan& receivedDer
+) {
+    CBuffer encoded;
+    if (CKemSubjectPublicKeyInfo::encode(ownPublicKey, encoded) != ERET_OK) {
+        return;
+    }
+
+    EKems peerAlgorithm = EKEM_UNKNOWN;
+    IKemPublicKeyPtr peerPublicKey;
+    if (CKemSubjectPublicKeyInfo::decode(receivedDer, peerAlgorithm, peerPublicKey) != ERET_OK) {
+        return;
+    }
+
+    if (peerAlgorithm != ownPublicKey->algorithm()) {
+        return; // the peers selected different ML-KEM parameter sets
+    }
+}
+
 // === CCertBuilder ===
 // Issues a leaf certificate signed by a CA's key pair. subjectKey is only the key being
 // certified; issuerKeyPair is what signs. build() never attaches a private key to the

@@ -1,4 +1,5 @@
 #include "chacha20core.hpp"
+#include <certpp/arch.hpp>
 #include <cstring>
 
 /* Four-block SSE2 path. Unlike CBigNum's ADX/BMI2 and CGf2m's PCLMULQDQ, this needs no runtime
@@ -11,16 +12,16 @@
 #include <emmintrin.h>
 #include <immintrin.h>
 
-#if defined(__GNUC__) || defined(__clang__)
-#include <cpuid.h>
-#elif defined(_M_X64) || defined(_M_AMD64)
+#if defined(_MSC_VER)
 #include <intrin.h>
+#else
+#include <cpuid.h>
 #endif
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CERTPP_TARGET_AVX2 __attribute__((target("avx2")))
-#define CERTPP_TARGET_AVX512F __attribute__((target("avx512f,avx512vl")))
+#define CERTPP_TARGET_AVX512F __attribute__((target("avx2,avx512f")))
 #else
 #define CERTPP_TARGET_AVX2
 #define CERTPP_TARGET_AVX512F
@@ -202,13 +203,15 @@ namespace crypto {
          * for a short payload, so the caller only reaches this at 512 bytes and above. */
         bool hasAvx2() {
             static const bool detected = [] {
-#if defined(__GNUC__) || defined(__clang__)
-                __builtin_cpu_init();
-                return __builtin_cpu_supports("avx2") != 0;
-#elif defined(_M_X64) || defined(_M_AMD64)
+#if defined(_MSC_VER)
                 int regs[4] = { 0, 0, 0, 0 };
                 __cpuid(regs, 0);
                 if (regs[0] < 7) {
+                    return false;
+                }
+                __cpuidex(regs, 1, 0);
+                if ((regs[2] & (1 << 27)) == 0 || (regs[2] & (1 << 28)) == 0 ||
+                    (_xgetbv(0) & 0x6) != 0x6) {
                     return false;
                 }
                 __cpuidex(regs, 7, 0);
@@ -222,13 +225,15 @@ namespace crypto {
 
         bool hasAvx512f() {
             static const bool detected = [] {
-#if defined(__GNUC__) || defined(__clang__)
-                __builtin_cpu_init();
-                return __builtin_cpu_supports("avx512f") != 0;
-#elif defined(_M_X64) || defined(_M_AMD64)
+#if defined(_MSC_VER)
                 int regs[4] = { 0, 0, 0, 0 };
                 __cpuid(regs, 0);
                 if (regs[0] < 7) {
+                    return false;
+                }
+                __cpuidex(regs, 1, 0);
+                if ((regs[2] & (1 << 27)) == 0 || (regs[2] & (1 << 28)) == 0 ||
+                    (_xgetbv(0) & 0xE6) != 0xE6) {
                     return false;
                 }
                 __cpuidex(regs, 7, 0);
@@ -365,6 +370,103 @@ namespace crypto {
             }
         }
 
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+        template <int N>
+        CERTPP_TARGET_AVX512F
+        inline __m512i rotl32x16(__m512i x) {
+            return _mm512_or_si512(_mm512_slli_epi32(x, N),
+                                   _mm512_srli_epi32(x, 32 - N));
+        }
+
+        CERTPP_TARGET_AVX512F
+        inline void quarterRoundX16(__m512i& a, __m512i& b, __m512i& c, __m512i& d) {
+            a = _mm512_add_epi32(a, b); d = _mm512_xor_si512(d, a); d = rotl32x16<16>(d);
+            c = _mm512_add_epi32(c, d); b = _mm512_xor_si512(b, c); b = rotl32x16<12>(b);
+            a = _mm512_add_epi32(a, b); d = _mm512_xor_si512(d, a); d = rotl32x16<8>(d);
+            c = _mm512_add_epi32(c, d); b = _mm512_xor_si512(b, c); b = rotl32x16<7>(b);
+        }
+
+        /* Sixteen blocks per pass. AVX-512 holds the same state word from sixteen independent
+         * counters in one vector. Output formatting reuses the already verified AVX2 8x8
+         * transpose twice for each half of the state, avoiding an additional 16x16 shuffle
+         * whose lane ordering would be harder to audit. */
+        CERTPP_TARGET_AVX512F
+        void xorStream16(
+            const ChaCha20Core::SState& state, uint32_t counter,
+            const uint8_t* in, uint8_t* out, size_t blocks
+        ) {
+            __m512i original[16];
+            for (size_t i = 0; i < 16; ++i) {
+                original[i] = _mm512_set1_epi32(int(state.words[i]));
+            }
+
+            for (size_t blockIndex = 0; blockIndex < blocks; blockIndex += 16) {
+                const uint32_t base = counter + uint32_t(blockIndex);
+                const __m512i counters = _mm512_setr_epi32(
+                    int(base), int(base + 1), int(base + 2), int(base + 3),
+                    int(base + 4), int(base + 5), int(base + 6), int(base + 7),
+                    int(base + 8), int(base + 9), int(base + 10), int(base + 11),
+                    int(base + 12), int(base + 13), int(base + 14), int(base + 15));
+
+                __m512i v[16];
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = original[i];
+                }
+                v[12] = counters;
+
+                for (int round = 0; round < 10; ++round) {
+                    quarterRoundX16(v[0], v[4], v[8], v[12]);
+                    quarterRoundX16(v[1], v[5], v[9], v[13]);
+                    quarterRoundX16(v[2], v[6], v[10], v[14]);
+                    quarterRoundX16(v[3], v[7], v[11], v[15]);
+
+                    quarterRoundX16(v[0], v[5], v[10], v[15]);
+                    quarterRoundX16(v[1], v[6], v[11], v[12]);
+                    quarterRoundX16(v[2], v[7], v[8], v[13]);
+                    quarterRoundX16(v[3], v[4], v[9], v[14]);
+                }
+
+                for (size_t i = 0; i < 16; ++i) {
+                    v[i] = _mm512_add_epi32(v[i], (i == 12) ? counters : original[i]);
+                }
+
+                __m256i firstLo[8], firstHi[8], secondLo[8], secondHi[8];
+                for (size_t i = 0; i < 8; ++i) {
+                    firstLo[i] = _mm512_castsi512_si256(v[i]);
+                    firstHi[i] = _mm512_castsi512_si256(v[i + 8]);
+                    secondLo[i] = _mm512_extracti64x4_epi64(v[i], 1);
+                    secondHi[i] = _mm512_extracti64x4_epi64(v[i + 8], 1);
+                }
+                transpose8(firstLo);
+                transpose8(firstHi);
+                transpose8(secondLo);
+                transpose8(secondHi);
+
+                for (size_t block = 0; block < 8; ++block) {
+                    const size_t firstOffset = (blockIndex + block) * 64;
+                    const size_t secondOffset = (blockIndex + block + 8) * 64;
+
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + firstOffset),
+                        _mm256_xor_si256(
+                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + firstOffset)),
+                            firstLo[block]));
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + firstOffset + 32),
+                        _mm256_xor_si256(
+                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + firstOffset + 32)),
+                            firstHi[block]));
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + secondOffset),
+                        _mm256_xor_si256(
+                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + secondOffset)),
+                            secondLo[block]));
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + secondOffset + 32),
+                        _mm256_xor_si256(
+                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + secondOffset + 32)),
+                            secondHi[block]));
+                }
+            }
+        }
+#endif
+
 #endif
     } // namespace
 
@@ -408,10 +510,22 @@ namespace crypto {
         size_t offset = 0;
 
 #if defined(CERTPP_CHACHA20_SSE2)
-        // Whole eight-block groups go through AVX2 where the CPU has it, then whole four-block
-        // groups through SSE2, then whatever is left through the scalar loop -- which also
-        // serves every non-x86-64 target and a build with the option off.
-        const size_t wholeBlocks = (length - offset) / BLOCK_BYTES;
+        // Whole sixteen-block groups go through AVX-512 where available, followed by AVX2,
+        // SSE2, and the scalar tail. The latter paths also cover CPUs and builds without wider
+        // vectors.
+        size_t wholeBlocks = (length - offset) / BLOCK_BYTES;
+
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+        const size_t avx512Blocks =
+            (wholeBlocks >= 16 && hasAvx512f() && hasAvx2())
+                ? wholeBlocks & ~size_t(15) : 0;
+        if (avx512Blocks != 0) {
+            xorStream16(state, counter, in + offset, out + offset, avx512Blocks);
+            offset += avx512Blocks * BLOCK_BYTES;
+            counter += uint32_t(avx512Blocks);
+            wholeBlocks = (length - offset) / BLOCK_BYTES;
+        }
+#endif
 
         // Only at 512 bytes and up. Computing eight lanes and discarding six is a loss for a
         // short payload, which is the same mistake the four-block path makes below 256 B and

@@ -4,7 +4,7 @@
 
 The example code published on the
 [GitHub wiki's API reference](https://github.com/jay94ks/libcertpp/wiki/API-Reference) —
-one snippet per public class, struct and enum, 173 of them.
+one snippet per public class, struct and enum, 181 of them.
 
 They live here, in the build, rather than only in the wiki, for one reason:
 **a published example that has never been compiled is a guess.** This

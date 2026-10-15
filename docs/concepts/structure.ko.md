@@ -58,6 +58,7 @@ include/
         streebog512.hpp             # Streebog512: 512비트 해시 코드를 쓰는 GOST R 34.11-2012 (RFC 6986)
       keys.hpp                   # SKeySize, SKeySizeSpec, IPublicKey/IPrivateKey 인터페이스, SKeyPair. EKems/IKemKeyBase/IKemPublicKey/IKemPrivateKey/SKemKeyPair (병렬 KEM 키 계열)
       kem.hpp                     # IKem/IKemContext: asym.hpp의 KEM 대응물 — sign/verify/encrypt/decrypt 자리에 encapsulate()/decapsulate()가 옵니다. KEM은 호출자가 고른 평문을 암호화하는 것이 아니라 ciphertext와 새 비밀을 함께 만들어 내기 때문입니다
+      policy.hpp                  # CAlgorithmPolicy/EAlgorithmPolicy: 중앙 기본 정책과 명시적 레거시 생성 opt-in
       kems/                        # 구체 IKem 구현들, 파일 하나당 하나 (asyms/를 반영)
         mlkem.hpp                     # CMlKem/SMlKemParams/SMlKemPoly/CMlKemSampler: 원시 span 위의 ML-KEM (FIPS 203, 포스트 양자). K-PKE와 암묵적 거부를 갖춘 FO 변환. 그리고 같은 세 파라미터 집합을 IKem으로 노출하는 MLKEM
       rng.hpp                     # CRng: CSPRNG 유틸리티 (OS API, std::random_device 대체)
@@ -109,6 +110,8 @@ include/
         cp.hpp                                 # CPoliciesExtension
         nc.hpp                                  # CNameConstraintsExtension
       cert.hpp                        # CCert: DER X.509 Certificate를 파싱합니다. EKeyUsages는 exts/ku.hpp를 통해 다시 노출됩니다. CCertBuilder: 하나를 빌드하고 자기 서명합니다
+      kemspki.hpp                     # CKemSubjectPublicKeyInfo: RFC 9935 ML-KEM SubjectPublicKeyInfo 입출력
+      validator.hpp                   # CTrustStore/CPathValidator와 명시적 core 검증 정책/결과/상태 타입
       crl.hpp                          # CCrlReader/CCrlWriter: DER X.509 CertificateList(CRL)를 파싱/빌드합니다. CCrlRevokationInfo: 폐기된 인증서 항목 하나
       ocsp.hpp                          # COcspRequest/COcspRequestBuilder: OCSPRequest를 파싱/빌드합니다. COcspResponse: OCSPResponse를 파싱+빌드합니다. COcspCertId(CertID), COcspEntry(SingleResponse)
       csr.hpp                            # CCertRequest/CCertRequestBuilder: PKCS#10 CertificationRequest를 파싱(자기 서명을 검증하며)/빌드+자기 서명합니다. SCertRequestAttribute: Attribute 하나. PKCS#9 extensionRequest는 extensions로 디코드됩니다
@@ -187,6 +190,7 @@ src/
       streebog512.cpp                   # Streebog-512: 자체 IV(0^512), 자체 컨텍스트/padding, 최종 상태 전체를 내놓습니다
     keys.cpp                  # SKeySizeSpec::compare() — IPublicKey/IPrivateKey 자체는 순수 가상이고 SKeyPair는 평범한 구조체이므로, 그 외에 out-of-line인 것이 없습니다
     kem.cpp                    # IKem::builtIn(): EKems를 구체 kems/ 구현으로 디스패치
+    policy.cpp                 # CAlgorithmPolicy 프로세스 전역 생성 정책
     kems/                       # 구체 IKem 구현들, 파일 하나당 하나
       mlkemring.hpp / .cpp          # MlKemRing: private, q = 3329인 R_q = Z_q[X]/(X^256 + 1). NTT/역 NTT/기본 경우 곱셈. 트위들은 옮겨 적지 않고 ZETA에서 유도합니다
       mlkemcodec.hpp / .cpp          # MlKemCodec: private, FIPS 203의 ByteEncode/ByteDecode와 Compress/Decompress, 그리고 isCanonical12() — ByteDecode_12는 mod q로 축약하므로 단사가 아니고, 그것 자체가 캡슐화 키 유효성 검사입니다
@@ -257,6 +261,8 @@ src/
     exts/                          # exts/ 헤더당 .cpp 하나, 같은 약칭 파일명
       bc.cpp, ku.cpp, eku.cpp, san.cpp, ski.cpp, aki.cpp, cdp.cpp, aia.cpp, cp.cpp, nc.cpp
     cert.cpp                        # CCert 구현: importDer()/importPem()/importFrom(), 지연 평가 publicKey()/privateKey(), extension<T>() 호출자들. CCertBuilder::build()/subjectFrom(). 그리고 crl.cpp/ocsp.cpp/csr.cpp가 friend로 접근하는 공유 encode/decode/sign/verify static들
+    kemspki.cpp                     # RFC 9935 ML-KEM SubjectPublicKeyInfo codec
+    validator.cpp                   # 명시적 신뢰 저장소 기반 X.509 core 경로 검증
     crl.cpp                          # CCrlReader/CCrlWriter/CCrlRevokationInfo 구현. CCert 자체의 private encodeName()/encodeTime()/readTime()/resolveSigAlgoForSigning() 위에 구현(friend 접근)
     ocsp.cpp                          # COcsp*/CCert friend 접근 구현 (RFC 6960). CCert 자체의 UTCTime|GeneralizedTime CHOICE 보조 함수와 구분되는, 자체 파일 지역 GeneralizedTime 전용 시간 인코드/디코드를 가집니다
     csr.cpp                            # CCertRequest/CCertRequestBuilder 구현 (RFC 2986). 전부 CCert 자체의 encodeName()/encodeAlgorithmIdentifier()/encode+decodeSubjectPublicKeyInfo()/encodeExtensions()/parseExtensions()/signTbs()/verifySignedBlob() 위에 구현(friend 접근). Attributes SET을 위한 자체 X.690 11.6 SET-OF 정렬
@@ -267,7 +273,7 @@ src/
   dnssec/
     name.cpp                    # CDnsName 구현. walk() 하나를 공유하므로 어느 연산에서 걸렸든 잘못된 이름이 동일하게 거부됩니다
     records.cpp                  # SDnskey/SDsRecord/SRrsig 구현. 빅엔디언 필드 보조 함수(옆집 Poly1305/ChaCha20과 달리 — 그쪽은 리틀엔디언입니다)
-    keys.cpp                      # CDnssecKeys 구현. RSA 방향은 필드 순서도 바꿉니다. DNS는 지수-다음-모듈러스로 쓰고 이 라이브러리의 DER는 모듈러스-다음-지수를 원하기 때문입니다
+    keys.cpp                      # RSA/ECDSA/EdDSA와 RFC 9558 GOST 2012용 CDnssecKeys 구현. RSA 방향은 지수/모듈러스 필드 순서도 바꿉니다
 ```
 
 ## 이름 및 고유 이름

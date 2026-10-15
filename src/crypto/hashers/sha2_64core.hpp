@@ -40,7 +40,7 @@ namespace crypto {
             // it exists for a CPU that does not have it, where the first instruction would be a
             // SIGILL. The branch is on a constant, so it folds away in each instantiation and
             // neither carries the other's code.
-#if defined(CERTPP_ARCH_HAS_BMI2_ROTR) && defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(CERTPP_ARCH_HAS_BMI2_ROTR) && (defined(__GNUC__) || defined(__clang__))
             if (UseBmi2Rotr) {
                 uint64_t out;
                 __asm__("rorx %2, %1, %0" : "=r"(out) : "r"(value), "J"(count));

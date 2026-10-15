@@ -67,7 +67,7 @@ namespace crypto {
          * attribute at all -- see the same note on ghash.cpp's reverseBitsInBytesGfni() -- because
          * it exposes the BMI intrinsics without one. */
         inline uint64_t andn64(uint64_t a, uint64_t b) {
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__GNUC__) || defined(__clang__)
             uint64_t r;
             __asm__("andn %1, %2, %0" : "=r"(r) : "r"(b), "r"(a));
             return r;
@@ -153,7 +153,7 @@ namespace crypto {
             for (size_t x = 0; x < 5; ++x) {
                 for (size_t y = 0; y < 5; ++y) {
                     uint64_t term;
-                    if (UseAndn) {
+                    if constexpr (UseAndn) {
                         term = andn64(b[(x + 1) % 5 + 5 * y], b[(x + 2) % 5 + 5 * y]);
                     } else {
                         term = (~b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y];
@@ -177,7 +177,7 @@ namespace crypto {
          * own target set in GCC, so this one is compiled with BMI1 enabled and the ANDN inside
          * it inlines. MSVC takes the plain path: it exposes the BMI intrinsics without needing an
          * attribute at all, so there is nothing to say. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("bmi")))
 #endif
         void f1600RoundsAndn(uint64_t a[25]) {

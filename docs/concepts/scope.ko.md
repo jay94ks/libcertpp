@@ -64,16 +64,14 @@ doc 주석을 보십시오. 미래의 진짜로 라이브러리가 제공할 수
 `CCert::tbsCertificate()`/`CCrlReader::tbsCertList()`/
 `CCertRequest::certificationRequestInfo()`가 그 바이트를 노출합니다).
 `CCertCollection::buildChain()`은 발급자/주체 이름으로 집합 순서를 잡고
-`verifyLinks()`는 그 링크 검사를 적용합니다. 여전히 없는 것은 인증 경로 검증입니다.
-
-- **인증 경로 검증** — 유효 기간, `BasicConstraints`/`KeyUsage`/
-  `NameConstraints` 강제, 정책, 폐지, 신뢰 앵커 판단, 그리고 RFC 5280의
-  "인식되지 않는 critical 확장을 거부하라" 규칙입니다. 이 라이브러리는
-  관련 입력을 파싱하고 보존하며 그 정책들을 강제하지
-  않습니다. 이 문서 맨 앞의 범위 설명을 보십시오. 같은 공백이 PKCS#10의 CA
-  쪽에도 나타납니다. `CCertBuilder::subjectFrom()`은 검증된 요청의 subject와
-  키를 건네주고, 그 subject 이름과 그 요청된 확장들이 인증*되어야 하는지*를
-  결정하는 것은 이 라이브러리가 모델링하지 않는 정책입니다.
+`verifyLinks()`는 그 링크 검사를 적용합니다. 정책을 적용하는 진입점은
+`CPathValidator`입니다. 리프에서 명시적인 `CTrustStore`까지 경로를 만들고 유효
+기간, 서명, `BasicConstraints`, `KeyUsage`, 선택적 EKU, 지원하는
+`NameConstraints`, 경로 길이, 알 수 없는 critical 확장을 검사합니다. 진단 결과는
+실패 이유와 인증서 인덱스를 함께 제공합니다. 폐지 검사와 RFC 5280 정책 트리 처리는
+지원한다고 주장하지 않으며, 이를 요청하면 명시적인 unavailable 상태를 반환합니다.
+PKCS#10의 CA 쪽에서 `CCertBuilder::subjectFrom()`은 검증된 요청의 subject와 키를
+건네주지만, 그 이름과 요청된 확장을 인증할지는 여전히 애플리케이션 정책입니다.
 
 ## 엄브렐라 헤더 및 테스트 통합
 
@@ -139,7 +137,8 @@ doc 주석을 보십시오. 미래의 진짜로 라이브러리가 제공할 수
   같은 길을 가며, ECDSA 방향이 조심해야 하는 쪽입니다. DER `INTEGER`는 선행
   0 옥텟을 담지 않으므로, `r`과 `s`를 각각 곡선의 체 크기로 왼쪽을 채우지
   않고 다시 써 내보내면 `r`이 짧았던 만큼 `s`가 밀리고, RFC 6605 2는 고정
-  폭을 요구합니다.
+  폭을 요구합니다. GOST 2012(RFC 9558 알고리즘 23)는 256비트 파라미터 집합
+  A를 고정하며 little-endian `x | y` 공개키와 `r | s` 서명을 그대로 전달합니다.
 
 `fromPublicKey()`는 DNSSEC 알고리즘 번호를 추론하는 대신 받아야 하는데,
 여러 번호가 하나의 키 타입을 공유하기 때문입니다. RSA/SHA-1, RSA/SHA-256,

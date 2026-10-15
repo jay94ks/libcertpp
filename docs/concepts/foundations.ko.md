@@ -145,9 +145,9 @@
   `generatePrime`(`crypto::CRng`를 통해)이 있습니다.
   `fromHex`/`fromLittleEndian`/`toLittleEndian`/`fromBigEndianTruncated`가
   생성/직렬화를 마무리하고(16진 파싱 자체는 독립된 `CHex` 유틸리티에 있습니다.
-  위를 보십시오), `condSwap`은 분기 기반 스칼라 곱 ladder(예:
-  `crypto/asyms/x25519.cpp`의 Montgomery ladder)를 위한 조건부 swap입니다.
-  `crypto/`가 아니라 `utils/` 아래에 있는데, 타입 자체가 어느 한 알고리즘에
+  위를 보십시오), `condSwap`은 스칼라 곱 ladder를 위해 이미 할당된 limb를 산술
+  mask로 교환합니다. 이를 둘러싼 가변 폭 타입 전체는 여전히 constant-time
+  백엔드가 아닙니다. `crypto/`가 아니라 `utils/` 아래에 있는데, 타입 자체가 어느 한 알고리즘에
   (심지어 `crypto/`에 특정하여) 묶이지 않은 범용 수학이기 때문입니다 —
   암호학적인 것은 그 호출자들뿐입니다.
 

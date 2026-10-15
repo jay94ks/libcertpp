@@ -39,6 +39,12 @@ glob하므로, 새 테스트 파일은 자동으로 포함됩니다 -- 어디에
 필요가 없습니다. 테스트 빌드를 아예 건너뛰려면
 `-DCERTPP_BUILD_TESTS=OFF`를 지정하세요.
 
+CMake는 테스트 타깃에서 `NDEBUG`를 해제하고 모든 테스트 번역 단위에
+[`tests/support/runtime.hpp`](../../tests/support/runtime.hpp)를 강제 include합니다. 따라서 Release에서도
+표준 `assert`가 활성 상태로 유지되고, 실패한 식과 소스 위치를 `stderr`에 출력합니다.
+Windows에서는 런타임 shim이 CRT 보고와 abort를 콘솔로 보내고 모달 오류 대화상자를
+억제하므로, 무인 CTest 실패가 버튼 입력을 기다리지 않고 종료되어 로그를 남깁니다.
+
 디스크상의 픽스처 데이터가 필요한 테스트(예:
 [`tests/x509/realcerts.cpp`](../../tests/x509/realcerts.cpp)가 쓰는, 실제
 인증서 파일들이 담긴 `certs/` 하위 디렉터리)는 모든 테스트 타깃이 자동으로
@@ -70,6 +76,43 @@ glob하므로, 새 테스트 파일은 자동으로 포함됩니다 -- 어디에
 임포트하므로 이 목록에 넣지 않습니다. 다시 추가하면 중복 정의가 됩니다. 따라서
 비공개 단위를 추가하는 것은 의도적인 CMake 변경이며, 그 밖은 공개 표면을 통해
 테스트합니다.
+
+## 설치 소비자, 퍼저, 검토 도구
+
+일반 CTest 실행에는 `install_consumer`가 포함됩니다. 선택한 구성을 설치하고
+`find_package(certpp)`를 쓰는 별도 프로젝트를 구성·빌드·실행하며, 공개 헤더와
+링크된 라이브러리가 같은 버전을 보고하는지 검사합니다. 이 릴리스 검증만 실행하려면:
+
+```sh
+ctest --test-dir build -C Debug -R install_consumer --output-on-failure
+```
+
+파서 퍼저는 Clang을 사용해 별도 디렉터리에 빌드합니다:
+
+```sh
+cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ \
+  -DCERTPP_BUILD_FUZZERS=ON -DCERTPP_BUILD_TESTS=OFF \
+  -DCERTPP_BUILD_EXAMPLES=OFF
+cmake --build build-fuzz --config Debug
+./build-fuzz/certpp_fuzz_asn1_der -runs=1000
+```
+
+나머지 타깃은 `certpp_fuzz_containers`, `certpp_fuzz_dnssec`,
+`certpp_fuzz_json_bson`, `certpp_fuzz_x509_objects`입니다. libFuzzer에
+AddressSanitizer와 UndefinedBehaviorSanitizer를 함께 사용합니다. 제한된 횟수의 깨끗한
+실행은 smoke 검사이며, 장기 캠페인의 corpus는 소스 트리 밖에 보관합니다.
+
+ML-DSA 타이밍 검토 도구도 선택적으로 빌드합니다:
+
+```sh
+cmake -S . -B build-audit -DCERTPP_BUILD_AUDIT_TOOLS=ON \
+  -DCERTPP_BUILD_TESTS=OFF -DCERTPP_BUILD_EXAMPLES=OFF
+cmake --build build-audit --config Release
+./build-audit/certpp_mldsa_timing_audit
+```
+
+거부 결과별 타이밍 분포를 출력하여 검토자가 비교할 수 있게 합니다. 수동 검토를 위한
+근거이며 constant-time 인증이나 안정적인 벤치마크 임계값은 아닙니다.
 
 ## 예제
 

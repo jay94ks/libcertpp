@@ -291,6 +291,37 @@ namespace crypto {
          */
         virtual ERetCode encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret) = 0;
 
+        /** Allocating encapsulation overload sized from the bound key. */
+        inline ERetCode encapsulate(COctet& ciphertext, COctet& sharedSecret) {
+            TArray<uint8_t> ciphertextBuffer;
+            TArray<uint8_t> secretBuffer;
+            if (sizeOfCiphertext() == 0 || sizeOfSharedSecret() == 0) {
+                ciphertext.clear();
+                sharedSecret.clear();
+                return ERET_KEY_EMPTY;
+            }
+            if (!ciphertextBuffer.resize(sizeOfCiphertext())
+                || !secretBuffer.resize(sizeOfSharedSecret()))
+            {
+                ciphertext.clear();
+                sharedSecret.clear();
+                return ERET_NOMEM;
+            }
+
+            SByteSpan ciphertextSpan(ciphertextBuffer.begin(), ciphertextBuffer.size());
+            SByteSpan secretSpan(secretBuffer.begin(), secretBuffer.size());
+            const ERetCode result = encapsulate(ciphertextSpan, secretSpan);
+            if (result != ERET_OK
+                || !ciphertext.store(ciphertextSpan.data, ciphertextSpan.size)
+                || !sharedSecret.store(secretSpan.data, secretSpan.size))
+            {
+                ciphertext.clear();
+                sharedSecret.clear();
+                return result == ERET_OK ? ERET_NOMEM : result;
+            }
+            return ERET_OK;
+        }
+
         /**
          * Recovers the shared secret that was encapsulated to this context's bound private
          * key's matching public key. Nothing about the encapsulating side is remembered here --
@@ -309,6 +340,36 @@ namespace crypto {
          * ERetCode describing any other failure.
          */
         virtual ERetCode decapsulate(const SReadOnlyByteSpan& ciphertext, SByteSpan& sharedSecret) = 0;
+
+        /** Allocating decapsulation overload sized from the bound key. */
+        inline ERetCode decapsulate(
+            const SReadOnlyByteSpan& ciphertext, COctet& sharedSecret
+        ) {
+            TArray<uint8_t> buffer;
+            if (sizeOfSharedSecret() == 0) {
+                sharedSecret.clear();
+                return ERET_KEY_EMPTY;
+            }
+            if (!buffer.resize(sizeOfSharedSecret())) {
+                sharedSecret.clear();
+                return ERET_NOMEM;
+            }
+            SByteSpan written(buffer.begin(), buffer.size());
+            const ERetCode result = decapsulate(ciphertext, written);
+            if (result != ERET_OK) {
+                sharedSecret.clear();
+                return result;
+            }
+            if (!sharedSecret.store(written.data, written.size)) {
+                sharedSecret.clear();
+                return ERET_NOMEM;
+            }
+            return ERET_OK;
+        }
+
+        inline ERetCode decapsulate(const COctet& ciphertext, COctet& sharedSecret) {
+            return decapsulate(ciphertext.toSpan(), sharedSecret);
+        }
     };
 
 } // namespace crypto

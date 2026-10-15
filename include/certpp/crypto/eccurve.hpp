@@ -102,11 +102,10 @@ namespace crypto {
      * curve; public rather than a src/-only implementation detail since the underlying group
      * arithmetic isn't tied to any one algorithm (matching CBigNum's own reasoning).
      *
-     * All arithmetic is affine (no projective-coordinate optimization to avoid a modular
-     * inversion per point operation) and branches directly on scalar bits in scalarMul()'s
-     * double-and-add loop -- correctness and simplicity over performance/timing-side-channel
-     * hardening, consistent with this library's early-stage priorities (schoolbook CBigNum
-     * arithmetic already isn't constant-time either).
+     * Scalar multiplication uses Jacobian coordinates and a fixed-shape ladder. The implementation
+     * removes direct branches and table indexes on ordinary private-scalar bits, but CBigNum's
+     * variable-length storage and the exceptional cases in the point formulas still prevent a
+     * constant-time guarantee.
      */
     class CERTPP_API CEcCurve {
     private:
@@ -114,17 +113,6 @@ namespace crypto {
          * Known curves (e.g., NIST P-256, P-384, P-521, the GOST R 34.10-2012 parameter sets).
          */
         static const CEcCurve _knownCurves[ECURVE_MAX - 1];
-
-        /**
-         * Lazily-built table of small multiples of g, for scalarMulBase()'s windowed method;
-         * empty until scalarMulBase() first needs it. mutable so scalarMulBase() can stay a
-         * logically-const query; deep-copied like any other member on copy-construction (e.g.
-         * when a generated key's private-key class stores its own CEcCurve copy), so a
-         * caller that keeps reusing an already-warmed CEcCurve (directly, or copied from one)
-         * reuses the table too -- only a still-cold copy pays to rebuild it, on its own first
-         * use.
-         */
-        mutable TArray<SEcPoint> _baseTable;
 
         /* Parses a curve's hardcoded hex constant into a CBigNum at static-init time -- the
          * strings are trusted literals (see _knownCurves), so a parse failure (which fromHex
@@ -252,7 +240,9 @@ namespace crypto {
         SEcPoint doublePoint(const SEcPoint& pt) const;
 
         /**
-         * Computes k*pt via MSB-first double-and-add.
+         * Computes k*pt with a fixed-shape Montgomery ladder. Scalars in the ordinary private-key
+         * range run for the subgroup order's bit width; oversized public inputs retain their full
+         * width for mathematical correctness.
          * @param pt The point to multiply.
          * @param k The scalar to multiply by.
          * @return k*pt.
@@ -260,14 +250,8 @@ namespace crypto {
         SEcPoint scalarMul(const SEcPoint& pt, const CBigNum& k) const;
 
         /**
-         * Computes k*g (the base point specifically, not an arbitrary point) via a windowed
-         * method over a table of small multiples of g, built lazily on first call and cached in
-         * this instance (see _baseTable's own comment) -- faster than scalarMul(g, k) for
-         * repeated calls against the same CEcCurve instance (or a copy descended from an
-         * already-warmed one), such as every ECDSA sign()/verify() call's k*g/u1*g term. Not
-         * meaningfully faster for a single one-off call, and not applicable to a caller-supplied
-         * arbitrary point (e.g. the other party's public key in verify()'s u2*Q term) -- use
-         * scalarMul() for that.
+         * Computes k*g through the same ladder as scalarMul(). This deliberately avoids a
+         * fixed-base table indexed by secret scalar bits.
          * @param k The scalar to multiply g by.
          * @return k*g.
          */

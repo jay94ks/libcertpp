@@ -100,7 +100,7 @@ tests/
       aria.cpp                     # ARIA 테스트 케이스 (RFC 5794 부록 A의 세 키 크기 벡터, CBC/padding, 잘못된 키와 IV)
       des.cpp                       # DES 테스트 케이스 (고전적인 FIPS-46 벡터)
       des3.cpp                       # TripleDES 테스트 케이스 (DES 합성 교차 확인)
-      chacha20.cpp                    # ChaCha20 테스트 케이스 (RFC 8439 부록 A.1 블록 함수, chunk 단위 키스트림)
+      chacha20.cpp                    # ChaCha20 테스트 케이스 (RFC 8439 부록 A.1, chunk 키스트림, SSE2/AVX2/AVX-512 경계의 독립 scalar 차분)
     aeads/
       chacha20poly1305.cpp          # CPoly1305 + CChaCha20Poly1305 테스트 케이스 (RFC 8439 2.5.2/2.6.2/2.8.2)
       xchacha20poly1305.cpp          # CXChaCha20Poly1305 테스트 케이스 (draft-irtf-cfrg-xchacha A.3의 벡터, HChaCha20 부분키를 A.1에 대조, 그리고 마지막 8바이트가 반복되는 192비트 nonce가 키스트림을 반복하지 않는다는 것)
@@ -108,6 +108,8 @@ tests/
       ghash.cpp                       # Ghash 테스트 케이스 (GCM 비트 순서에서의 체 항등식, x 곱셈을 shift에 대조, chunk 처리, 이식 가능 경로 대 PCLMULQDQ 차분)
     eccurve.cpp                   # CEcCurve/SEcPoint 테스트 케이스 (군 법칙, SEC1 인코딩, 군 위수 검사)
     ec2curve.cpp                  # CEc2Curve/SEc2Point 테스트 케이스. 알려진 10개 곡선 전부에 대해 (곡선 위에 있음, 부정, 군 법칙, SEC1 인코딩, 군 위수 검사)
+    policy.cpp                    # CAlgorithmPolicy 기본값과 레거시 알고리즘 opt-in 동작
+    safe_api.cpp                  # 공개 crypto API의 소유형 출력 overload와 실패 상태 검사
   x509/
     cert.cpp                  # CCert::importDer() 테스트 케이스 (자체 자기 서명 RSA/EC/KeyUsage/개인키 픽스처), extension<T>() 조회, CCertBuilder::build() (자기 서명 RSA/DSA/EC/EdDSA, 모든 digestAlgo/rsaPss 조합)
     crl.cpp                      # CCrlWriter::add()/remove()/build() + CCrlReader::decode()/find()/check() 왕복 테스트 케이스 (자체 자기 서명 CA 픽스처)
@@ -118,6 +120,9 @@ tests/
     verify.cpp                    # CCert::verifyBy()/tbsCertificate()/signature()와 CCrlReader의 대응물들: 진짜 서명, 잘못된 발급자와 조작된 바이트의 거부
     malformed.cpp                 # 적대적/음성 x509: 뒤에 붙은 바이트, 잘못된 [3] extensions 래퍼, 내부/외부 서명 알고리즘 불일치, BIT STRING의 사용하지 않는 비트, pathLenConstraint 범위
     chain.cpp                     # 테스트 안에서 발급한 실제 3단 계층에 대한 CCertCollection 테스트 케이스: 조회, findIssuerOf(), buildChain(), verifyLinks(), checkKeyPairing()
+    validator.cpp                 # CPathValidator 신뢰, 시간, 제약, 용도, 이름 제약, 깊이, 서명, 미지원 기능 결과
+    gost.cpp                      # RFC 9215 GOST 인증서/CSR SubjectPublicKeyInfo와 서명 인코딩
+    kemspki.cpp                   # RFC 9935 ML-KEM SubjectPublicKeyInfo 기지 응답과 잘못된 입력 거부
     chain/                        # 컨테이너 포맷당 .cpp 하나
       pem.cpp                       # CPemChainFormat 테스트 케이스: 왕복, 교체가 아니라 추가, 잘못된/잘린/암호화된 컨테이너, CRLF와 블록 사이 텍스트, 더해서 certs/openssl-*.pem — 이 라이브러리가 아니라 OpenSSL 3.4.0이 쓴 픽스처입니다
       pfx.cpp                       # CPfxFormat 테스트 케이스: OpenSSL 3가 쓴 PFX 컨테이너 다섯 개를 읽고, 자기 것을 왕복하고, MAC이 덮는 범위의 조작 스윕, 그리고 CCert PKCS#8 wrap/unwrap 쌍
@@ -125,8 +130,8 @@ tests/
     realcerts.cpp                # certs/implemented/ 아래 디스크에 있는 실제 상용 인증서들: github.com, amazon.com, sourceforge.net, QuoVadis/DigiCert RSASSA-PSS 중간 인증서, 그리고 자기 서명이 종단 간으로 검증되는 IdenTrust ML-DSA-87 파일럿 루트
   dnssec/
     name.cpp                      # CDnsName 테스트 케이스 (와이어 형식, 대소문자 폴딩, 레이블 세기, 잘못된 이름, 압축 포인터 거부)
-    records.cpp                    # RFC 5702, 6605, 8080의 발행된 예제들에 대한 DNSKEY/DS/RRSIG 테스트 케이스 — 모든 키 태그와 DS digest
-    keys.cpp                        # CDnssecKeys 테스트 케이스 (알고리즘별 DNSKEY 왕복, 고정 폭 r|s 재padding, 그리고 변환된 DNSKEY를 통한 종단 간 서명/검증)
+    records.cpp                    # RFC 5702, 6605, 8080, 9558의 발행 산출물에 대한 DNSKEY/DS/RRSIG 테스트
+    keys.cpp                        # RFC 9558 GOST 알고리즘 23, 고정 폭 서명 재padding, 종단 간 변환을 포함한 CDnssecKeys 테스트
 third-party/
   CMakeLists.txt           # 벤더링된 의존성을 CMake 타깃으로 노출합니다. CERTPP_BUILD_TESTS=ON일 때만 add_subdirectory됩니다
   doctest/
@@ -147,15 +152,18 @@ CMake는 하나의 타깃 `certpp`(별칭 `certpp::certpp`)를 빌드하며, sha
 선언을 받습니다. 명령은 [BUILDING.ko.md](../BUILDING.ko.md)를 보십시오.
 
 하드웨어 가속은 그것이 끌어오는 서로 무관한 명령어 집합 계열에 맞춰 독립적인
-세 빌드 옵션으로 나뉩니다 — 하나를 끄는 것이 다른 것들에 영향을 주는 일은
+네 빌드 옵션으로 나뉩니다 — 하나를 끄는 것이 다른 것들에 영향을 주는 일은
 없습니다.
 
 - `CERTPP_DISABLE_HWACCEL_SIMD`(기본 `OFF`)는 AES-NI와 SHA-NI에 속하지 않는
   확장 명령 경로를 끕니다. `CBigNum`의 ADX/BMI2, `CGf2m`·`Ghash`의
-  PCLMULQDQ, `Ghash` 반사의 GFNI, SSE2/AVX2 ChaCha20 키스트림, Keccak의 BMI1 ANDN,
+  PCLMULQDQ, `Ghash` 반사의 GFNI, SSE2/AVX2/AVX-512F ChaCha20 키스트림, Keccak의 BMI1 ANDN,
   SHA-384/SHA-512의 BMI2 RORX, Poly1305의 AVX512-IFMA가 해당합니다. 영향을
   받는 각 구성 요소는 이식 가능 경로를 유지합니다. 선택적 명령은 런타임 CPUID
   검사로 고르고, SSE2는 x86-64의 baseline입니다.
+- `CERTPP_DISABLE_HWACCEL_AVX512`(기본 `OFF`)는 16블록 ChaCha20 AVX-512F
+  경로와 8블록 Poly1305 AVX512-IFMA 경로만 끕니다. AVX2/SSE2와 다른 SIMD
+  계열은 계속 사용할 수 있습니다.
 - `CERTPP_DISABLE_HWACCEL_SHA`(기본 `OFF`)는
   `SHA1::transform()`/`SHA256::transform()`
   (`src/crypto/hashers/sha1.cpp`, `src/crypto/hashers/sha256.cpp`)이 x86 SHA
@@ -172,12 +180,12 @@ CMake는 하나의 타깃 `certpp`(별칭 `certpp::certpp`)를 빌드하며, sha
   명령(AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) 대신 항상 이식 가능 라운드
   루프를 쓰게 강제하며, 자기 런타임 CPUID 검사(`hasAesNi()`. leaf 1, ECX
   비트 25)에 관문이 걸려 있습니다. `DES`/`TripleDES`에는 가속 경로가 없고
-  영향을 받지 않습니다. `ChaCha20`은 AES 확장 대신 SSE2/AVX2를 사용하며
+  영향을 받지 않습니다. `ChaCha20`은 AES 확장 대신 SSE2/AVX2/AVX-512F를 사용하며
   `CERTPP_DISABLE_HWACCEL_SIMD`에 응답합니다 — 복호 쪽이 쓰는
   Equivalent Inverse Cipher 구성은 위의 `crypto/syms/aes.hpp` 항목을
   보십시오.
 
-세 설정 모두의 가속 경로와 이식 가능 경로는 바이트 단위로 동일한 결과를
+네 설정 모두의 가속 경로와 이식 가능 경로는 바이트 단위로 동일한 결과를
 만들어 낼 것으로 기대되며, 어느 경로든 변경이 끝났다고 보기 전에 전체 테스트
 모음에 대해 검증합니다. 이 옵션들은 — 위의 `CERTPP_RNG_FALLBACK`과
 마찬가지로 — 변경 시 `certpp` 자체의 전체 재빌드를 강제하는

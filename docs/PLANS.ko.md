@@ -30,40 +30,14 @@ Pull request 매트릭스는 필요한 범위로 제한합니다. 지원 운영�
 로그가 남고, [`docs/BUILDING.ko.md`](BUILDING.ko.md)의 유지보수 빌드 명령이
 자동화와 일치하면 이 작업을 완료한 것으로 봅니다.
 
-## 요청받은 알고리즘
+## 완료된 신뢰성과 생태계 통합 계획
 
-| 알고리즘 | 표준 | 용도 |
-| --- | --- | --- |
-| GOST R 34.10-2012 / Streebog의 **X.509 및 DNSSEC 연결 작업** (알고리즘 자체는 완료됨) | RFC 9215, RFC 9558 | 러시아 프로파일 인증서 및 DNSSEC |
-
-여기 요청되었다가 완료된 작업은 [`docs/CONCEPTS.ko.md`](CONCEPTS.ko.md)에
-기술되어 있고, 그 배경은 [`docs/HISTORY.ko.md`](HISTORY.ko.md)에 담겨
-있습니다. 여기에는 반복하지 않으며, 목록으로 만들어 두면 다음 작업이
-완료될 때마다 낡게 됩니다.
-
-구현에 영향을 주는 참고사항:
-
-- **소수체 곡선 ECDH는 현재 constant-time이 아닙니다.** 다만 처음 보이는
-  것과는 이유가 다릅니다. `CEcCurve::scalarMul()`은 이미 분기 없는
-  *형태*의 ladder이지만, constant-time이 아닙니다: 루프가
-  `k.bitLength()`번 돌고(반복 횟수가 스칼라의 최상위 설정 비트 위치를
-  누출), `CBigNum::condSwap()`이 비밀 스칼라의 한 비트에 대한 실제 분기이며,
-  `CBigNum`이 선행 0 limb를 잘라내어 모든 연산이 피연산자에 비례하는 일을
-  합니다. `scalarMulBase()`는 네 번째 이유를 더합니다: `_baseTable[windowValue]`
-  를 인덱스하는데 `windowValue`가 비밀 스칼라의 4비트이므로 데이터에 의존하는
-  메모리 접근이고 캐시 타이밍 채널입니다. 이것을 constant-time으로 만드는 일은
-  별개의 더 큰 작업입니다 -- [Constant-time 및 성능](roadmap/performance.ko.md)을 참고하세요.
-- **GOST는 알고리즘이 구현되었고 인코딩만 남았습니다.**
-  `Streebog256`/`Streebog512`와 `CGost3410`(9종의 매개변수 집합)이
-  `crypto/`에 있으며 RFC 6986/7091/9215/9385로 검증되었습니다. 남은 것은
-  OID와 와이어 포맷입니다: `parameters` 필드를 생략하는
-  `id-tc26-signwithdigest-*` 서명 OID, `parameters`가 매개변수 집합 OID를
-  담고 키 비트가 *OCTET STRING을 감싼* BIT STRING인 `SubjectPublicKeyInfo`,
-  그리고 DER `SEQUENCE { r, s }`가 아니라 원시 `s || r` 블롭인 서명 값.
-- **GOST의 DNSSEC 사정은 둘로 갈립니다.** RFC 5933이 2001년 서명 알고리즘을
-  등록했고 RFC 8624는 그것을 쓰지 말라고 합니다. 2012년 알고리즘들은 그보다
-  나중의 자체 등록(RFC 9558)을 가지고 있습니다. DNSKEY 유틸리티가 어떤 DNSSEC
-  알고리즘 번호를 지원할지는 현행 IANA 레지스트리 대조 확인이 필요합니다.
+신뢰성과 생태계 통합 계획은 완료되었습니다. 현재 동작은
+[아키텍처와 개념](CONCEPTS.ko.md), 호출자 계약은 [`specs/`](../specs),
+빌드와 보안 절차는 [빌드와 검증](BUILDING.ko.md) 및
+[`SECURITY.ko.md`](../SECURITY.ko.md)가 관리합니다. 폐지 확인과 완전한 RFC 5280
+인증서 정책 처리는 core 경로 검증에 포함된 것처럼 취급하지 않고 validator의
+명시적인 미지원 기능으로 남아 있습니다.
 
 ## 상세 문서
 

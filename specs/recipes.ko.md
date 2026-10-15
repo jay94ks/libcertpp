@@ -92,6 +92,28 @@ const COctet& serial  = cert.serialNumber();
 ERetCode rc = leaf.verifyBy(issuer);
 ```
 
+전체 경로 검사는 신뢰 앵커를 명시하고 진단 결과를 확인합니다:
+
+```cpp
+CTrustStore trust;
+trust.add(root);
+
+CCertCollection intermediates;
+size_t ignored = 0;
+intermediates.add(intermediate, ignored);
+
+SPathValidationPolicy policy;
+policy.requiredExtendedKeyPurpose = COid::PURPOSE_SERVER_AUTH;
+SPathValidationResult result = CPathValidator::validate(
+    leaf, intermediates, trust, policy);
+if (!result) {
+    // result.status와 result.certificateIndex가 실패를 가리킵니다.
+}
+```
+
+`EPATH_OK`는 `SPathValidationPolicy`가 지정한 검사를 뜻하며 살아 있는 폐기 확인이나
+RFC 5280 정책 트리 처리를 의미하지 않습니다.
+
 ## 인증서의 키로 데이터 서명·검증
 
 ```cpp
@@ -159,8 +181,8 @@ IHasher::create(EHASH_SHA256, hasher);
 hasher->reset();
 hasher->push(SReadOnlyByteSpan(data, length));
 
-uint8_t digest[32];                       // hasher->byteWidth() 바이트
-hasher->finish(SByteSpan(digest, sizeof(digest)));
+COctet digest;
+hasher->finish(digest);                   // hasher->byteWidth() 바이트를 할당합니다
 ```
 
 `push()`는 여러 번 호출할 수 있고, 결과는 입력을 어떻게 쓪았는지에 의존하지
@@ -232,14 +254,13 @@ algo->generateKeyPair(SKeySize(256), pair);
 IAsymmetricContextPtr ctx = algo->createContext();
 ctx->keyPair(pair);
 
-uint8_t sig[160];
-SByteSpan signature(sig, sizeof(sig));
-ctx->sign(digest, signature);           // ECDSA는 다이제스트에 서명합니다
+COctet signature;
+ctx->sign(digest, signature);             // ECDSA는 다이제스트에 서명합니다
 
 // 검증에는 공개키 쪽만 필요합니다.
 IAsymmetricContextPtr verifier = algo->createContext();
 verifier->keyPair(pair.publicKey, nullptr);
-verifier->verify(digest, SReadOnlyByteSpan(signature.data, signature.size));
+verifier->verify(digest.toSpan(), signature.toSpan());
 ```
 
 `generateKeyPair()`는 비트 단위 크기에 엄격합니다: Ed448은 448이 아니라
@@ -284,17 +305,13 @@ IKemPtr kem = IKem::builtIn(EKEM_MLKEM768);
 SKemKeyPair pair;
 kem->generateKeyPair(SKeySize(768), pair);
 
-// 보내는 쪽:
-uint8_t ct[1088], ss[32];
-SByteSpan ciphertext(ct, sizeof(ct));
-SByteSpan sharedSecret(ss, sizeof(ss));
+// 보내는 쪽: 소유형 overload가 선택한 파라미터 집합에 맞춰 두 출력을 할당합니다.
+COctet ciphertext, sharedSecret;
 senderCtx->encapsulate(ciphertext, sharedSecret);
 
 // 받는 쪽:
-uint8_t ss2[32];
-SByteSpan recovered(ss2, sizeof(ss2));
-receiverCtx->decapsulate(SReadOnlyByteSpan(ciphertext.data, ciphertext.size),
-                         recovered);
+COctet recovered;
+receiverCtx->decapsulate(ciphertext, recovered);
 ```
 
 ML-KEM은 암묵적 거부(implicit rejection) 방식입니다: 손상된 암호문은 오류가
@@ -319,9 +336,8 @@ if (col.buildChain(0, chain) == ECHAINRES_OK) {
     // chain은 리프부터 자기 발급 루트까지의 인덱스입니다
 }
 
-// 순서를 정하는 것은 검증이 아닙니다. 이것은 각 링크의 서명만 확인하며,
-// 유효 기간·basicConstraints·이름 제약·폐기 여부·신뢰 앵커 선택은 여전히
-// 호출자의 몫입니다.
+// 순서를 정하는 것은 검증이 아닙니다. 이것은 각 링크의 서명만 확인합니다.
+// 정책을 적용하는 경로 검증에는 명시적인 CTrustStore와 CPathValidator를 쓰세요.
 col.verifyLinks(chain);
 
 // 개인키가 정말 그 인증서의 것인지 확인 -- 직렬화된 키 비교가 아니라

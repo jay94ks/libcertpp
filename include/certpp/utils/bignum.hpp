@@ -53,7 +53,7 @@ namespace certpp {
             const uint32_t* src, size_t len32, unsigned long long* dst64, size_t len64
         );
 
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("bmi2,adx")))
 #endif
         static void mulAccelerated(
@@ -354,10 +354,10 @@ namespace certpp {
         static CBigNum modExp(const CBigNum& base, const CBigNum& exponent, const CBigNum& modulus);
 
         /**
-         * Conditionally swaps a and b. NOT constant-time (a plain branch) -- this class's
-         * schoolbook arithmetic already isn't constant-time, so this adds no new side channel;
-         * correctness/simplicity over side-channel hardening, consistent with this library's
-         * other early-stage priorities (see eccurve.hpp's own doc comment).
+         * Conditionally swaps a and b with a limb mask instead of branching on swap. The
+         * operation is still not a constant-time primitive: CBigNum has variable-length storage,
+         * so allocation, padding, and canonical trimming depend on operand lengths and values.
+         * It only removes the direct control-flow dependency on the condition.
          * @param swap Whether to swap a and b.
          * @param a One value.
          * @param b The other value.

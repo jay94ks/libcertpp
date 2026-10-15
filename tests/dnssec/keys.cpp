@@ -75,6 +75,11 @@ TEST_CASE("CDnssecKeys: the published DNSKEYs convert to keys and back unchanged
         "AwEAAdHoNTOW+et86KuJOWRDp1pndvwb6Y83nSVXXyLA3DLroROUkN6X0O6p"
         "nWnjJQujX/AyhqFDxj13tOnD9u/1kTg7cV6rklMrZDtJCQ5PCl/D7QNPsgVs"
         "Mu1J2Q8gpMpztNFLpPBz1bWXjDtaR7ZQBlZ3PFY12ZTSncorffcGmhOL")));
+
+    // RFC 9558 2.2 -- GOST 2012 parameter set A, algorithm 23.
+    CHECK(roundTrips(makeKey(256, EDNSALG_ECC_GOST12,
+        "XGiiHlKUJd5fSeAK5O3L4tUNCPxs4pGqum6wKbqjdkqu"
+        "IQ8nOXrilXZ9HcY8b2AETkWrtWHfwvJD4twPPJFQSA==")));
 }
 
 TEST_CASE("CDnssecKeys: the RSA exponent really is read as 65537") {
@@ -179,6 +184,10 @@ TEST_CASE("CDnssecKeys: algorithm numbers map to the right key type and hash") {
 
     CHECK_FALSE(CDnssecKeys::asymmetricOf(EDNSALG_ECC_GOST, which));
     CHECK_FALSE(CDnssecKeys::hasherOf(EDNSALG_ECC_GOST, hasher));
+    REQUIRE(CDnssecKeys::asymmetricOf(EDNSALG_ECC_GOST12, which));
+    CHECK(which == crypto::EASYM_GOST256A);
+    REQUIRE(CDnssecKeys::hasherOf(EDNSALG_ECC_GOST12, hasher));
+    CHECK(hasher == crypto::EHASH_STREEBOG256);
 }
 
 TEST_CASE("CDnssecKeys: an ECDSA signature round-trips between r|s and DER") {
@@ -290,6 +299,28 @@ TEST_CASE("CDnssecKeys: EdDSA and RSA signatures pass through unchanged") {
 
     CHECK_FALSE(CDnssecKeys::signatureToNative(
         EDNSALG_ECC_GOST, SReadOnlyByteSpan(rsa, sizeof(rsa)), rejected));
+}
+
+TEST_CASE("CDnssecKeys: GOST 2012 signatures are fixed-width pass-throughs") {
+    CBuffer signature = fromBase64(
+        "EuLO0Qpn6zT1pzj9T2H5AWjcgzfmjNiK/vj811bExa0V"
+        "HMOVD9ma8rpf0B+D+V4Q0CWu1Ayzu+H/SyndnOWGxw==");
+    REQUIRE(signature.size() == 64);
+
+    TArray<uint8_t> native;
+    REQUIRE(CDnssecKeys::signatureToNative(
+        EDNSALG_ECC_GOST12, signature.toSpan(), native));
+    REQUIRE(native.size() == 64);
+    CHECK(std::memcmp(native.begin(), signature.toPtr(), 64) == 0);
+
+    TArray<uint8_t> wire;
+    REQUIRE(CDnssecKeys::signatureFromNative(
+        EDNSALG_ECC_GOST12, SReadOnlyByteSpan(native.begin(), native.size()), wire));
+    CHECK(std::memcmp(wire.begin(), signature.toPtr(), 64) == 0);
+
+    wire.clear();
+    CHECK_FALSE(CDnssecKeys::signatureToNative(
+        EDNSALG_ECC_GOST12, SReadOnlyByteSpan(signature.toPtr(), 63), wire));
 }
 
 TEST_CASE("CDnssecKeys: a converted DNSKEY verifies a signature made with its own key pair") {

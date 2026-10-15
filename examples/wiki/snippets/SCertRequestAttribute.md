@@ -3,7 +3,7 @@ One PKCS#10 attribute, with `values` meaning the same bytes in both directions -
 ```cpp
 // given: const CCertRequest& request, CCertRequestBuilder& builder
 for (const SCertRequestAttribute& attr : request.attributes()) {
-    if (attr.oid == CString(CCertRequest::OID_EXTENSION_REQUEST)) {
+    if (attr.oid == COid(CCertRequest::OID_EXTENSION_REQUEST)) {
         // builder.extensions writes this attribute itself; a second copy is rejected
         continue;
     }

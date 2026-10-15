@@ -65,20 +65,17 @@ Single-link signature verification is in place: `CCert::verifyBy(issuer)`,
 `verifySignature()` each answer "did this key sign this?" against the original
 signed bytes (`CCert::tbsCertificate()`/`CCrlReader::tbsCertList()`/
 `CCertRequest::certificationRequestInfo()` expose those bytes for a caller
-  that wants to do it by hand). `CCertCollection::buildChain()` orders a set
-  by issuer/subject names and `verifyLinks()` applies those single-link checks.
-  What is still missing is certification-path validation:
-
-- **Certification-path validation** -- validity windows,
-  `BasicConstraints`/`KeyUsage`/`NameConstraints` enforcement, policies,
-  revocation and trust-anchor decisions, and
-  RFC 5280's "reject an unrecognized critical extension" rule. This library
-  parses and preserves the relevant inputs and does not enforce those policies;
-  see this document's own scope note at the top. The same gap shows up on the
-  CA side of PKCS#10: `CCertBuilder::subjectFrom()` hands over a verified
-  request's subject and key, and deciding whether that subject name and those
-  requested extensions *should* be certified is policy this library does not
-  model.
+that wants to do it by hand). `CCertCollection::buildChain()` orders a set by
+issuer/subject names and `verifyLinks()` applies those single-link checks.
+`CPathValidator` is the policy-aware entry point: it builds a leaf-first path
+to an explicit `CTrustStore`, then checks validity windows, signatures,
+`BasicConstraints`, `KeyUsage`, an optional EKU, supported `NameConstraints`,
+path length, and unknown critical extensions. Its diagnostic result identifies
+both the reason and the certificate index. Revocation and RFC 5280 policy-tree
+processing are not claimed; requesting either returns an explicit unavailable
+status. On the CA side of PKCS#10, `CCertBuilder::subjectFrom()` hands over a
+verified request's subject and key, while deciding whether that name and the
+requested extensions should be certified remains application policy.
 
 ## Umbrella header and test integration
 
@@ -140,7 +137,9 @@ between, and that is the whole purpose of this module.
   exponent, then the modulus, where this library wants a DER
   `SEQUENCE { INTEGER modulus, INTEGER exponent }` -- note that the two
   operands even appear in opposite order. ECDSA (RFC 6605) writes `x | y`,
-  which is the SEC1 uncompressed point less its `0x04` prefix. EdDSA
+  which is the SEC1 uncompressed point less its `0x04` prefix. GOST 2012
+  (RFC 9558 algorithm 23) fixes the 256-bit parameter set A and carries the
+  little-endian `x | y` key and `r | s` signature forms directly. EdDSA
   (RFC 8080) is already in the right form, and is handled by an explicit case
   rather than a default, so that an algorithm nobody has implemented is
   rejected instead of silently treated as raw. Signatures go the same way,

@@ -325,7 +325,8 @@ namespace x509 {
          * subjectPublicKey BIT STRING } tag-length-value for key, appending it to out --
          * including the per-algorithm parameters field (an EC namedCurve OID, a DSA Dss-Parms
          * SEQUENCE split back out of key's own serialize() by splitDsaPublicKeyBlob(), an
-         * explicit NULL for RSA, nothing at all for RFC 8410/ML-DSA). The exact inverse of
+         * explicit NULL for RSA, a curve/digest OID sequence plus wrapped little-endian key for
+         * GOST 2012, and nothing at all for RFC 8410/ML-DSA). The exact inverse of
          * decodeSubjectPublicKeyInfo(). Shared by CCertBuilder::build() and
          * CCertRequestBuilder::build(), which embed a byte-identical SPKI.
          *
@@ -348,9 +349,10 @@ namespace x509 {
 
         /* Builds a live public key from decodeSubjectPublicKeyInfo()'s raw output -- the one
          * place that knows DSA's X.509 representation has to go back through
-         * buildDsaPublicKeyBlob() first, so CCert::publicKey() and CCertRequest::publicKey()
-         * can't drift apart on it. Null if asym is null (an unresolved algorithm) or the bytes
-         * don't parse under it. */
+         * buildDsaPublicKeyBlob() first. GOST's OCTET STRING wrapper is removed while decoding
+         * the SPKI, so its raw little-endian x||y key reaches the ordinary key factory here.
+         * CCert::publicKey() and CCertRequest::publicKey() therefore cannot drift apart. Null if
+         * asym is null (an unresolved algorithm) or the bytes don't parse under it. */
         static crypto::IPublicKeyPtr makePublicKey(
             const crypto::IAsymmetricPtr& asym,
             bool isDsa,
@@ -447,7 +449,8 @@ namespace x509 {
          * CCertBuilder::build() needs to embed: outOid is always set (KEY_ALGOS's own OID, or
          * OID_EC_PUBLIC_KEY for any EC/EC2 curve); outIsDsa/outIsEc flag which further handling
          * the caller needs (DSA's Dss-Parms split, EC's namedCurve parameter -- outEcCurveOid --
-         * respectively); neither is set for RSA/Ed25519/Ed448/X25519. The exact inverse of
+         * respectively). GOST also returns its parameter-set OID in outEcCurveOid, while neither
+         * flag is set for RSA/Ed25519/Ed448/X25519/GOST. The exact inverse of
          * resolveKeyAlgo(), built from the same KEY_ALGOS/EC_CURVES tables so the two can never
          * disagree. False if which isn't a value this library implements (shouldn't happen for
          * an EAsymmetrics a real IKeyBase::algorithm() reported).
@@ -876,6 +879,12 @@ namespace x509 {
         }
 
         /**
+         * @brief Gets every parsed extension in certificate order.
+         * @return The parsed extensions, including unknown extensions retained by OID and value.
+         */
+        inline const std::vector<IExtensionPtr>& extensions() const { return _extensions; }
+
+        /**
          * @brief Gets the subject key identifier of the certificate.
          * @param out The output subject key identifier.
          * @return The result code of the operation.
@@ -1075,12 +1084,14 @@ namespace x509 {
          * INTEGER x, with p/q/g as the AlgorithmIdentifier's Dss-Parms parameters; EC wraps a
          * SEC1 ECPrivateKey (RFC 5915), with the curve OID as the parameters; and
          * Ed25519/Ed448/X25519 wrap a further DER-encoded OCTET STRING around the raw seed, with
-         * no parameters at all (RFC 8410 section 7).
+         * no parameters at all (RFC 8410 section 7). GOST 2012 private-key export is not
+         * currently implemented and returns ERET_NOTSUP.
          * @param key The key to wrap; must not be null.
          * @param out Receives the DER-encoded PrivateKeyInfo.
          * @return ERET_OK, ERET_INVAL if key is null, ERET_NOTSUP if the key's algorithm has no
-         * PKCS#8 encoding this library writes (the ML-DSA parameter sets, whose PKCS#8 form is a
-         * CHOICE of seed and expanded key that this library's own key blob is neither of), or
+         * PKCS#8 encoding this library writes (GOST 2012, or the ML-DSA parameter sets whose
+         * PKCS#8 form is a CHOICE of seed and expanded key that this library's own key blob is
+         * neither of), or
          * ERET_KEY_FORMAT if the key does not serialize to the shape its algorithm should.
          */
         static ERetCode exportPkcs8PrivateKey(const crypto::IPrivateKeyPtr& key, COctet& out);

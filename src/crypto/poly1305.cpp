@@ -45,14 +45,22 @@ namespace crypto {
             static const bool supported = [] {
 #if defined(_MSC_VER)
                 int info[4] = { 0, 0, 0, 0 };
-                __cpuidex(info, 7, 0);
-                return (info[1] & (1 << 21)) != 0;
-#else
-                unsigned int eax, ebx, ecx, edx;
-                if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                __cpuid(info, 0);
+                if (info[0] < 7) {
                     return false;
                 }
-                return (ebx & (1u << 21)) != 0;
+                __cpuidex(info, 1, 0);
+                if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0 ||
+                    (_xgetbv(0) & 0xE6) != 0xE6) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 16)) != 0 &&
+                       (info[1] & (1 << 21)) != 0;
+#else
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f") != 0 &&
+                       __builtin_cpu_supports("avx512ifma") != 0;
 #endif
             }();
             return supported;
@@ -180,28 +188,6 @@ namespace crypto {
             mulLimbs(tmp, r, t); reduce9(t, tmp);
             store(7, tmp);                                                        // r^8
         }
-        /* Sums the eight lanes of a vector into one integer.
-         *
-         * Every lane is under 2^58, so the total is under 2^61 and no overflow is possible in the
-         * 64-bit adds. A reduction in this shape costs several shuffle-add steps, which is why it
-         * is done nine times per group rather than once per block: the whole point is that eight
-         * multiplies share one set of them. */
-        inline uint64_t horizontalSum(__m512i v);
-#if defined(__GNUC__) && !defined(_MSC_VER)
-        __attribute__((target("avx512ifma,avx512f")))
-#endif
-        inline uint64_t horizontalSumImpl(__m512i v) {
-            alignas(64) uint64_t lanes[8];
-            _mm512_store_epi64(lanes, v);
-            uint64_t total = 0;
-            for (int i = 0; i < 8; ++i) { total += lanes[i]; }
-            return total;
-        }
-
-        inline uint64_t horizontalSum(__m512i v) {
-            return horizontalSumImpl(v);
-        }
-
         /* Eight whole blocks at once: sum_{i=1..8} n_i * r^{9-i}, nine limbs of it, reduced to
          * five and added to the accumulator along with a * r^8.
          *
@@ -209,7 +195,7 @@ namespace crypto {
          * power -- lane 0 by r^8, lane 7 by r^1 -- which is why the powers arrive five-wide per
          * limb rather than broadcast. A single broadcast would compute n_i * r^k for the same k
          * on every lane, which is a different sum. */
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("avx512ifma,avx512f")))
 #endif
         void absorb8(uint32_t accumulator[5], const uint64_t powers[5][8],
@@ -227,7 +213,7 @@ namespace crypto {
                 alignas(64) uint64_t lanes[8];
                 for (int m = 0; m < 5; ++m) {
                     for (int j = 0; j < 8; ++j) { lanes[j] = bl[j].v[m]; }
-                    n[m] = _mm512_load_epi64(lanes);
+                    n[m] = _mm512_loadu_si512(lanes);
                 }
             }
 
@@ -258,7 +244,14 @@ namespace crypto {
                     acc = _mm512_add_epi64(acc, _mm512_madd52lo_epu64(_mm512_setzero_si512(),
                                                                       n[i], p[j]));
                 }
-                sum[k] = horizontalSum(acc);
+                // Keep the 512-bit value inside this target-attributed function. Passing an
+                // __m512i through a helper crosses an ABI boundary on Clang/Windows and corrupted
+                // the indirect vector argument before the first load. Every lane is under 2^58,
+                // so their scalar sum remains below 2^61.
+                alignas(64) uint64_t lanes[8];
+                _mm512_storeu_si512(lanes, acc);
+                sum[k] = 0;
+                for (int lane = 0; lane < 8; ++lane) { sum[k] += lanes[lane]; }
             }
 
             // --> a * r^8, the serial half, done scalarly -- this library's own mulLimbs().

@@ -19,6 +19,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Read an extension | `x509/cert.hpp`, `x509/ext.hpp`, `x509/exts/*.hpp` | `CCert::extensionOf(oid, out)`; ten concrete types under `exts/` |
 | Read RSASSA-PSS parameters | `x509/cert.hpp` | `CCert::rsaPssParams()` |
 | Verify one chain link | `x509/cert.hpp` | `CCert::verifyBy(issuer)` |
+| Build and validate a path to explicit trust anchors | `x509/validator.hpp` | `CTrustStore`, `SPathValidationPolicy`, `CPathValidator::validate()` |
 | Sign / verify arbitrary data with a certificate's key | `x509/cert.hpp` | `CCert::signData()`, `verifyData()` |
 | Issue or self-sign a certificate | `x509/cert.hpp` | `CCertBuilder` |
 | Parse or build a CRL | `x509/crl.hpp` | `CCrlReader`, `CCrlWriter`, `CCrlRevokationInfo` |
@@ -26,6 +27,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Hold a set of certificates and order them | `x509/chain.hpp` | `CCertCollection`, `SCertEntry`, `EChainResults` |
 | Read or write PEM collections | `x509/chain/pem.hpp` | `CPemChainFormat` |
 | Read or write PKCS#12/PFX collections | `x509/chain/pfx.hpp` | `CPfxFormat` |
+| Decode or encode an ML-KEM SubjectPublicKeyInfo | `x509/kemspki.hpp` | `CKemSubjectPublicKeyInfo::decode()`, `encode()` |
 | Distinguished names | `name.hpp` | `CDistinguishedName`, `CName`, `ENameType` |
 
 ## Hashing, MACs, KDFs
@@ -63,9 +65,13 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Curve parameters | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; `CEc2Curve` for binary curves |
 | ML-KEM (post-quantum KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, then `encapsulate()`/`decapsulate()`; or raw-span `CMlKem` |
 | ML-DSA (post-quantum signature) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, via `IAsymmetric::builtIn(EASYM_MLDSA87)` |
+| Classify algorithms for new output | `crypto/policy.hpp` | `CAlgorithmPolicy::classify()`, `allowsGeneration()` |
 
 Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`,
 `ESymmetrics`) and `crypto/hasher.hpp` (`EHashers`).
+Hash `finish()`, asymmetric `sign()`/`signPss()`, and KEM
+`encapsulate()`/`decapsulate()` provide owning `COctet` overloads. Prefer them
+unless the caller deliberately manages an exactly sized output span.
 
 ## DNSSEC
 

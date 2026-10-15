@@ -148,8 +148,9 @@
   RSA/DSA key generation. `fromHex`/`fromLittleEndian`/`toLittleEndian`/
   `fromBigEndianTruncated` round out construction/serialization (the hex
   parsing itself lives in the standalone `CHex` utility, see below);
-  `condSwap` is a conditional swap for branch-based scalar-multiplication
-  ladders (e.g. `crypto/asyms/x25519.cpp`'s Montgomery ladder). Lives under
+  `condSwap` exchanges already-allocated limbs with an arithmetic mask for
+  scalar-multiplication ladders; the surrounding variable-width type is still
+  not a constant-time backend. Lives under
   `utils/` rather than `crypto/`, since the type itself is generic math, not
   tied to any one algorithm (or even to `crypto/` specifically) -- only its
   callers are cryptographic.

@@ -258,8 +258,11 @@
   rather than re-deriving a true inverse key schedule. `DES`/`TripleDES`/
   have no equivalent: there is no mainstream x86 hardware extension for
   DES/3DES's Feistel network. ChaCha20's ARX rounds have no dedicated
-  extension either, but they vectorize across blocks, so it has an SSE2 path
-  of its own under `CERTPP_DISABLE_HWACCEL_SIMD` -- see the
+  extension either, but they vectorize across blocks: groups of four use
+  SSE2, groups of eight use AVX2, and groups of sixteen use AVX-512F after
+  runtime CPU and OS vector-state checks. The paths are governed by
+  `CERTPP_DISABLE_HWACCEL_SIMD`, with the AVX-512 tier separately suppressible
+  through `CERTPP_DISABLE_HWACCEL_AVX512` -- see the
   `src/crypto/syms/chacha20core.hpp` bullet above.
   Verified by the same SP 800-38A/FIPS-46/RFC 8439 known-answer vectors
   this module already runs -- on an AES-NI-capable CPU they exercise the
@@ -274,5 +277,7 @@
   no padding and places no block-alignment requirement on input length;
   `sizeOfBlock()` (64, once a key is bound) only reports the cipher's
   internal keystream-generation granularity, not an alignment requirement.
-  Verified against RFC 8439 Appendix A.1's block-function known-answer
-  vector.
+  Verified against RFC 8439 Appendix A.1's block-function known-answer vector
+  and an independent scalar implementation at every length through 600 bytes
+  plus 1, 4, 16, and 64 KiB boundaries, which exercises every vector tier and
+  scalar remainder.

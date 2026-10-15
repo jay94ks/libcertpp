@@ -13,6 +13,7 @@ and build output are intentionally excluded.
 | --- | --- |
 | [Project README](../README.md) | [프로젝트 README](../README.ko.md) |
 | [Contribution guide](../CONTRIB.md) | [기여 가이드](../CONTRIB.ko.md) |
+| [Security policy](../SECURITY.md) | [보안 정책](../SECURITY.ko.md) |
 | [Documentation guide](README.md) | [문서 안내](README.ko.md) |
 | [Documentation index](INDEX.md) | [문서 인덱스](INDEX.ko.md) |
 

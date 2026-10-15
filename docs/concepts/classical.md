@@ -130,10 +130,8 @@
   affine `add()`/`doublePoint()`/`isOnCurve()` deliberately stay on
   `CBigNum`'s general path, since a single group operation is dominated by its
   one modular inversion and there is nothing to amortize a context over.
-  `scalarMulBase()` additionally
-  uses a lazily-built, per-instance-cached table of small multiples of `g`
-  (`_baseTable`, a 4-bit window, 16 entries) to cut the number of additions
-  from one per bit to one per 4 bits. `doublePointJac()`/`addJac()`
+  `scalarMulBase()` uses the same fixed-width ladder as an arbitrary base,
+  avoiding the former secret-indexed fixed-base table. `doublePointJac()`/`addJac()`
   (Bernstein/Lange `dbl-2007-bl`/`add-2007-bl`, general `a`) and the
   Lopez-Dahab equivalents in `ec2curve.cpp` are written to mutate a
   `CBigNum`/`CGf2m` operand in place whenever that operand's current value
@@ -141,10 +139,11 @@
   variable first (each such spot has a comment naming which read is that
   operand's last) -- same in-place-over-copy discipline `CBigNum`/`CGf2m`'s
   own methods follow (see their own doc comments above), just carried
-  through to these free functions' local variables too. Like `CBigNum`,
-  this still has no constant-time hardening (the ladder swaps aren't
-  constant-time either) -- correctness/auditability over full side-channel
-  resistance remains this library's stance.
+  through to these free functions' local variables too. The ladder processes
+  the full group-order width and its register exchange uses masked limb swaps,
+  but `CBigNum` still allocates and trims variable-width values and its general
+  arithmetic is not constant-time. The prime-curve stack therefore makes no
+  complete side-channel-resistance claim.
   `EEcKnownCurves` (`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, plus 14 `ECURVE_BPOOLxxxR1`/
   `ECURVE_BPOOLxxxT1` values for the Brainpool curves) names this library's
@@ -176,9 +175,10 @@
   -- an early version stored a raw `const CEcCurve*` there instead, which
   dangled and crashed in exactly that pattern. Private keys serialize as
   this library's own
-  `SEQUENCE { version INTEGER (0), d INTEGER, publicKey OCTET STRING }`
-  (no `SubjectPublicKeyInfo`/curve-OID modeling yet); public keys as a bare
-  SEC1 uncompressed point. Signatures serialize as the standard
+  `SEQUENCE { version INTEGER (0), d INTEGER, publicKey OCTET STRING }`;
+  public keys as a bare SEC1 uncompressed point. The X.509 layer separately
+  maps the supported named-curve OIDs to and from `SubjectPublicKeyInfo`.
+  Signatures serialize as the standard
   `Ecdsa-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279/SEC 1).
   `keySizes()` accepts exactly one size, the chosen curve's fixed field
   width (160/192/224/256/320/384/512/521 bits, depending on curve).

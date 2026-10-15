@@ -72,9 +72,10 @@ signature checks out. Neither looks at a single validity period,
 `basicConstraints`, `keyUsage`, name constraint, policy or CRL, and neither
 asks whether that self-issued certificate at the end is a root you trust.
 Load an attacker's self-signed CA and a leaf it issued into one collection and
-both calls succeed, reporting a complete, fully-verified chain. Treat the
-ordered chain as the *input* to a validator you still have to write or
-delegate.
+both calls succeed, reporting a complete, fully-verified chain. Pass the leaf,
+intermediates, an explicit `CTrustStore`, and an application policy to
+`CPathValidator`; its `EPATH_OK` covers the documented core checks but still
+does not claim revocation or full RFC 5280 policy-tree processing.
 
 **`ECHAINRES_OK` does not mean the root is self-signed.** `buildChain()` stops
 at a self-*issued* certificate — subject equal to issuer — because that is a
@@ -147,11 +148,13 @@ chaining.** `a.mulMod(b, m)` modifies `a`. Copy first if you still need the
 original — this is the single most common way to corrupt a computation here.
 
 **`CBigNum` is not constant-time**, by its own documentation: it trims leading
-zero limbs, so every operation's cost depends on its operands, and
-`condSwap()` is a plain branch. Prime-curve ECDSA and ECDH inherit this. For an
-online handshake with ephemeral keys that is a timing side channel — prefer
-X25519, whose ladder is constant-time over `Fe25519`, where the protocol lets
-you choose.
+zero limbs and uses variable-size arithmetic, so operation cost depends on its
+operands. `condSwap()` now exchanges existing limbs with a mask, prime-curve
+scalar multiplication uses a fixed group-width ladder, and fixed-base
+multiplication no longer performs secret-indexed table lookups. Those local
+changes do not make the variable-width backend constant-time, so prime-curve
+ECDSA and ECDH still carry timing risk. Prefer X25519, whose ladder uses the
+fixed-width `Fe25519` backend, where the protocol permits it.
 
 **Two moduli live on these curves and they are not interchangeable.** The field
 prime (coordinates) and the group order (scalars) are different numbers.

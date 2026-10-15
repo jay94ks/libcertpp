@@ -30,6 +30,9 @@ namespace dnssec {
      *   what this library wants. These two are pass-throughs, and are handled explicitly rather
      *   than by falling through a default, so that an algorithm nobody has implemented yet is
      *   rejected instead of being silently treated as raw.
+     * - **GOST 2012** (RFC 9558): algorithm 23 fixes parameter set A and Streebog-256; both the
+     *   `x | y` little-endian key and `s | r` big-endian signature match CGost3410's native
+     *   encoding and are therefore length-checked pass-throughs.
      *
      * Every conversion here is purely a re-encoding: nothing is signed, verified or derived, and
      * no key is generated. What it does do is reject material whose length disagrees with its

@@ -37,6 +37,14 @@ ctest --test-dir build -C Debug --output-on-failure
 so a new test file is picked up automatically — no need to list it anywhere.
 Set `-DCERTPP_BUILD_TESTS=OFF` to skip building tests entirely.
 
+CMake undefines `NDEBUG` for test targets and force-includes
+[`tests/support/runtime.hpp`](../../tests/support/runtime.hpp) in every test
+translation unit. Standard `assert` therefore remains active in Release and
+prints the failed expression and source location to `stderr`. On Windows the
+runtime shim routes CRT reports and aborts to the console while suppressing
+modal error dialogs. A failed unattended CTest run therefore terminates and
+leaves a log instead of waiting for a button click.
+
 A test needing on-disk fixture data (e.g.
 [`tests/x509/realcerts.cpp`](../../tests/x509/realcerts.cpp)'s `certs/`
 subdirectory of real certificate files) can locate it via the
@@ -71,6 +79,46 @@ of these lists because the test already imports their symbols from `certpp`;
 adding them again would create duplicate definitions. Adding a private unit is
 therefore a deliberate CMake change. Everything else is tested through the
 public surface.
+
+## Installed consumer, fuzzers, and audit tools
+
+The regular CTest run includes `install_consumer`. It installs the selected
+configuration, configures a separate project through `find_package(certpp)`,
+builds and runs it, and checks that the public header and linked library report
+the same version. Run only this release-facing check with:
+
+```sh
+ctest --test-dir build -C Debug -R install_consumer --output-on-failure
+```
+
+Build parser fuzzers with Clang in their own directory:
+
+```sh
+cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ \
+  -DCERTPP_BUILD_FUZZERS=ON -DCERTPP_BUILD_TESTS=OFF \
+  -DCERTPP_BUILD_EXAMPLES=OFF
+cmake --build build-fuzz --config Debug
+./build-fuzz/certpp_fuzz_asn1_der -runs=1000
+```
+
+The other targets are `certpp_fuzz_containers`, `certpp_fuzz_dnssec`,
+`certpp_fuzz_json_bson`, and `certpp_fuzz_x509_objects`. They use libFuzzer
+with AddressSanitizer and UndefinedBehaviorSanitizer. A clean bounded run is a
+smoke check; sustained campaigns should supply persistent corpora outside the
+source tree.
+
+The ML-DSA timing review tool is opt-in:
+
+```sh
+cmake -S . -B build-audit -DCERTPP_BUILD_AUDIT_TOOLS=ON \
+  -DCERTPP_BUILD_TESTS=OFF -DCERTPP_BUILD_EXAMPLES=OFF
+cmake --build build-audit --config Release
+./build-audit/certpp_mldsa_timing_audit
+```
+
+It reports per-outcome timing distributions so reviewers can compare rejection
+classes. It is evidence for manual review, not a constant-time certification or
+a stable benchmark threshold.
 
 ## Examples
 

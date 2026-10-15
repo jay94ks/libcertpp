@@ -5,7 +5,7 @@ One certificate policy OID out of (or into) a CertificatePolicies extension. The
 auto policies = cert.extension<CPoliciesExtension>();
 if (policies) {
     for (const CPolicyInformation& policy : policies->policies()) {
-        if (policy.policyIdentifier() == CString(CPoliciesExtension::OID_ANY_POLICY)) {
+        if (policy.policyIdentifier() == COid(CPoliciesExtension::OID_ANY_POLICY)) {
             // anyPolicy: this certificate asserts no named policy at all
         }
     }

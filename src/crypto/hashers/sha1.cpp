@@ -67,8 +67,8 @@ namespace crypto {
          * equivalent -- it allows using intrinsics for any instruction set unconditionally, and
          * relies on the runtime hasSha() check above to avoid actually executing them on a CPU
          * that lacks the feature). */
-#if defined(__GNUC__) && !defined(_MSC_VER)
-        __attribute__((target("sha,sse4.1")))
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("sha,ssse3,sse4.1")))
 #endif
         void SHA1::transformAccelerated(uint32_t state[5], const uint8_t block[64]) {
             const __m128i SHUF_MASK = _mm_set_epi64x(0x0001020304050607LL, 0x08090a0b0c0d0e0fLL);
