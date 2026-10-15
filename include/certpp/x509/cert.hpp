@@ -751,7 +751,7 @@ namespace x509 {
          *
          * This is a single-link check and nothing more: it does not walk a chain, match issuer
          * and subject names, check validity dates, or enforce BasicConstraints/KeyUsage. A caller
-         * building a validator supplies all of that itself; see docs/architecture.md's scope note.
+         * building a validator supplies all of that itself; see docs/concepts/scope.md.
          * Pass *this as the issuer to check a self-signed certificate.
          * @param issuer The certificate whose public key is expected to have signed this one.
          * @return ERET_OK if the signature verifies; ERET_INVAL if either certificate is empty or

@@ -54,7 +54,8 @@ namespace crypto {
      * available internal-consistency test.
      *
      * Signing is a rejection loop whose iteration count depends on the key and the message, so
-     * it is not constant-time and FIPS 204 offers no way to make it so; see docs/pqc-review.md.
+     * it is not constant-time and FIPS 204 offers no way to make it so; see
+     * docs/pqc/engineering.md and docs/pqc/implementation.md.
      * This class is also where randomness enters: the raw algorithm under `src/` takes its seed
      * and signing randomness as parameters so it can be driven from a test vector, while
      * generateKeyPair()/sign() here draw from CRng. Signing is **hedged** -- a fresh 32-byte rnd

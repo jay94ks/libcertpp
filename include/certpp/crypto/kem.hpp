@@ -298,8 +298,8 @@ namespace crypto {
          * receiver can decapsulate a ciphertext produced by a peer it has never spoken to.
          * An invalid/corrupted ciphertext must not be observably
          * distinguishable (in timing or in the returned ERetCode) from a valid one that simply
-         * decapsulates to a different secret -- see docs/pqc-review.md's "What's genuinely hard"
-         * section on the Fujisaki-Okamoto implicit-rejection requirement this implies for any
+         * decapsulates to a different secret -- see docs/pqc/engineering.md on the
+         * Fujisaki-Okamoto implicit-rejection requirement this implies for any
          * concrete IKemContext implementation.
          *
          * @param ciphertext The ciphertext produced by the peer's encapsulate() call.

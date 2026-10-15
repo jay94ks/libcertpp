@@ -50,7 +50,7 @@ namespace crypto {
      * Signing is a **rejection loop**. Each iteration draws a fresh masking vector and discards
      * everything if any of four bounds fails, so the number of iterations depends on the key and
      * the message -- there is no constant-time story to tell here, and FIPS 204 does not offer
-     * one. See docs/pqc-review.md.
+     * one. See docs/pqc/engineering.md and docs/pqc/implementation.md.
      */
     class MlDsaScheme {
     public:

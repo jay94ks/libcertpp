@@ -11,7 +11,7 @@ namespace crypto {
      * Arithmetic in ML-KEM's polynomial ring R_q = Z_q[X]/(X^256 + 1), q = 3329 (FIPS 203 2.4.4)
      * -- the primitive both K-PKE and ML-KEM proper are built on. Private to the PQ
      * implementation: nothing here is part of the public API, so (per
-     * docs/coding-conventions.md) it takes no type prefix.
+     * docs/rules/api.md) it takes no type prefix.
      *
      * Two things about this ring drive everything below. It is *negacyclic*: X^256 == -1, so a
      * product that overflows degree 255 wraps round with its sign flipped rather than simply

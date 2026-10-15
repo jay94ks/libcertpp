@@ -49,7 +49,7 @@ namespace crypto {
      *   from a random source; this class does not enforce a minimum, because a caller
      *   reproducing somebody else's container has to accept whatever salt is in it.
      *
-     * There is no `IKdf` interface here yet, for the reason `CHkdf`'s doc comment gives: the two
+     * There is no `IKdf` interface, for the reason `CHkdf`'s doc comment gives: the two
      * KDFs in this library take parameters that do not line up (salt plus iteration count
      * against salt plus `info`), and an interface wide enough for both would describe neither.
      * The shared shape is a static `derive()` taking spans, which is enough.

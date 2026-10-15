@@ -382,7 +382,7 @@ namespace crypto {
      * (1632/2400/3168). Since a decapsulation key embeds its own encapsulation key,
      * IKemPrivateKey::publicKey() reads it out rather than recomputing it. The
      * SubjectPublicKeyInfo wrapping that a certificate needs is not here; see
-     * docs/pqc-review.md's Phase 6.
+     * docs/pqc/implementation.md's ML-KEM certificate-integration task.
      *
      * This is also the layer where randomness enters. CMlKem::generateKeyPair()/encapsulate()
      * take their seeds and message as parameters so they can be driven from a test vector;

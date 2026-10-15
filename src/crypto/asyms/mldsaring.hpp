@@ -9,7 +9,7 @@ namespace crypto {
     /**
      * Arithmetic in ML-DSA's polynomial ring R_q = Z_q[X]/(X^256 + 1), q = 8380417 (FIPS 204 4)
      * -- the primitive everything in ML-DSA is built on. Private to the PQ implementation:
-     * nothing here is part of the public API, so (per docs/coding-conventions.md) it takes no
+     * nothing here is part of the public API, so (per docs/rules/api.md) it takes no
      * type prefix.
      *
      * This is *not* ML-KEM's ring with different numbers, and the differences are the whole

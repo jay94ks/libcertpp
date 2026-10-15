@@ -16,7 +16,7 @@ using namespace certpp::asn1;
  *
  * Nothing here relies solely on "this library built it, this library parsed it" -- a builder and
  * a parser that share one mistake agree with each other perfectly, which is how most of the bugs
- * in docs/changelog.md got in. So the acceptance fixtures below are all externally produced:
+ * recorded in docs/HISTORY.md got in. So the acceptance fixtures below are all externally produced:
  *
  *  - OSSL_* are real `openssl req` output (OpenSSL 3.4.0), one per signature family, including
  *    one with no attributes at all and one with a PKCS#9 extensionRequest.

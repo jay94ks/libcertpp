@@ -56,7 +56,7 @@ namespace crypto {
      *   default.** A 5x5 multiply is 25 products, each a 64x64->128 that is one `mulq` on
      *   x86-64, and measured against the 2^25.5 layout's 100 products the product accumulation
      *   *in isolation* is **4.6--4.9x cheaper**. It is still not faster here, end to end: see
-     *   below, and `docs/roadmap.md`. It is kept because it is correct and because it is the
+     *   below, and `docs/history/08-curve25519-and-performance.md`. It is kept because it is correct and because it is the
      *   thing that has to be re-measured before anyone concludes the layout is the problem.
      * - **Radix 2^25.5, ten limbs, everywhere else.** Alternating 26- and 25-bit limbs, so every
      *   product fits in `int64_t`: the worst-case accumulator is 10 * (2^26-1)^2 * 38 = 2^60,

@@ -458,7 +458,7 @@ namespace crypto {
 
         // --> GOST R 34.10-2012's own parameter sets. Every one of these was parsed out of
         // the RFC named beside it and then machine-checked (base point on the curve, q*P == O,
-        // non-singular discriminant) before being emitted here -- see docs/changelog.md.
+        // non-singular discriminant) before being emitted here -- see docs/HISTORY.md.
 
         // ECURVE_GOST256TEST: id-GostR3410-2001-TestParamSet -- RFC 7091 section 7.1 (same curve as RFC 4357's
         // own id-GostR3410-2001-TestParamSet). Testing only.

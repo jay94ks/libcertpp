@@ -619,7 +619,8 @@ namespace crypto {
         // off-diagonal pairs appears twice and is computed once.
         //
         // The merged factors are GENERATED, not written by hand, and this is the whole point.
-        // Two earlier attempts at deriving them by hand were both wrong, and docs/roadmap.md
+        // Two earlier attempts at deriving them by hand were both wrong, and
+        // docs/history/09-field-and-aead.md
         // names the reason: the 2^25.5 radix applies its corrections *asymmetrically*, so the
         // matrix is symmetric in value but not in correction and the merged factor for a pair
         // is the SUM of the two single-term factors rather than twice one of them. Deriving

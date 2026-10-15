@@ -14,6 +14,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Task | Header | Type / entry point |
 | --- | --- | --- |
 | Parse a certificate | `x509/cert.hpp` | `CCert::importDer()`, `importPem()` |
+| Parse or build a certification request | `x509/csr.hpp` | `CCertRequest`, `CCertRequestBuilder` |
 | Read its fields | `x509/cert.hpp` | `subject()`, `issuer()`, `serialNumber()`, `notBefore()`, `notAfter()`, `keyAlgo()`, `signAlgo()`, `publicKey()` |
 | Read an extension | `x509/cert.hpp`, `x509/ext.hpp`, `x509/exts/*.hpp` | `CCert::extensionOf(oid, out)`; ten concrete types under `exts/` |
 | Read RSASSA-PSS parameters | `x509/cert.hpp` | `CCert::rsaPssParams()` |
@@ -23,6 +24,8 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Parse or build a CRL | `x509/crl.hpp` | `CCrlReader`, `CCrlWriter`, `CCrlRevokationInfo` |
 | Parse or build OCSP | `x509/ocsp.hpp` | `COcspRequest`, `COcspRequestBuilder`, `COcspResponse`, `COcspCertId`, `COcspEntry` |
 | Hold a set of certificates and order them | `x509/chain.hpp` | `CCertCollection`, `SCertEntry`, `EChainResults` |
+| Read or write PEM collections | `x509/chain/pem.hpp` | `CPemChainFormat` |
+| Read or write PKCS#12/PFX collections | `x509/chain/pfx.hpp` | `CPfxFormat` |
 | Distinguished names | `name.hpp` | `CDistinguishedName`, `CName`, `ENameType` |
 
 ## Hashing, MACs, KDFs
@@ -33,6 +36,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Available hashes | `crypto/hashers/*.hpp` | MD4, MD5, SHA-1, SHA-224/256/384/512, SHA3-256/512, SHAKE128/256, BLAKE2s, Streebog-256/512 |
 | HMAC | `crypto/hmac.hpp` | `CHmac::compute(hasher, key, message, out)`, `CHmac::verify(...)` |
 | HKDF | `crypto/hkdf.hpp` | `CHkdf::derive(hasher, salt, inputKey, info, out)`; also `extract()`/`expand()` |
+| PBKDF2 | `crypto/pbkdf2.hpp` | `CPbkdf2::derive(hasherType, password, salt, iterations, out)` |
 | Poly1305 one-time MAC | `crypto/poly1305.hpp` | `CPoly1305::compute(key, message, out)` |
 | BLAKE2s native keyed MAC | `crypto/blake2smac.hpp` | `CBlake2sMac` — *not* the same as HMAC-BLAKE2s |
 | SipHash-2-4 | `crypto/siphash.hpp` | `CSipHash` |
@@ -41,7 +45,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 
 | Task | Header | Entry point |
 | --- | --- | --- |
-| Block / stream cipher | `crypto/sym.hpp`, `crypto/syms/*.hpp` | `ISymmetric::builtIn(ESYM_AES)` etc.; AES, DES, TripleDES, ChaCha20 |
+| Block / stream cipher | `crypto/sym.hpp`, `crypto/syms/*.hpp` | `ISymmetric::builtIn(ESYM_AES)` etc.; AES, ARIA, DES, TripleDES, ChaCha20 |
 | CBC padding mode | `crypto/sym.hpp` | `ISymmetricContext::padding(ESYMPAD_PKCS7 \| ESYMPAD_NONE)` |
 | ChaCha20-Poly1305 | `crypto/aeads/chacha20poly1305.hpp` | `CChaCha20Poly1305` |
 | XChaCha20-Poly1305 (192-bit nonce) | `crypto/aeads/xchacha20poly1305.hpp` | `CXChaCha20Poly1305` |
@@ -60,8 +64,8 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | ML-KEM (post-quantum KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, then `encapsulate()`/`decapsulate()`; or raw-span `CMlKem` |
 | ML-DSA (post-quantum signature) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, via `IAsymmetric::builtIn(EASYM_MLDSA87)` |
 
-Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`),
-`crypto/hasher.hpp` (`EHashers`) and `crypto/sym.hpp` (`ESymAlgos`).
+Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`,
+`ESymmetrics`) and `crypto/hasher.hpp` (`EHashers`).
 
 ## DNSSEC
 
@@ -78,7 +82,7 @@ Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`),
 | --- | --- | --- |
 | Decode / encode TLVs | `asn1/decoder.hpp`, `asn1/encoder.hpp` | `CDecoder`, `CEncoder` |
 | Sequential reading / writing | `asn1/reader.hpp`, `asn1/writer.hpp` | `CReader`, `CWriter` |
-| Tags | `asn1/tag.hpp` | `CTag`, `ETagClass`, `EAsn1UniversalTag` |
+| Tags | `asn1/tag.hpp` | `CTag`, `ETagClass`, `EUniversalTags` |
 | Big-integer and SEQUENCE helpers | `asn1/der.hpp` | `CDer::appendBigInteger()`, `appendSequence()`, `readOuterSequence()`, `readBigInteger()`, `maxSignatureSize()` |
 
 ## Utilities
@@ -93,6 +97,7 @@ Algorithm enumerators live in `crypto/keys.hpp` (`EAsymmetrics`, `EKems`),
 | Hex | `utils/hex.hpp` | `CHex` |
 | Parse / build JSON values and BSON documents | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
 | Random bytes | `crypto/rng.hpp` | `CRng::fill(span)` |
+| Object identifiers | `oid.hpp` | `SRawOid`, `SKnownOid`, `COid`; parse/format arbitrary OIDs and compare against the named constants |
 
 ## Buffers and spans
 

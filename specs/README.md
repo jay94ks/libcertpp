@@ -8,8 +8,9 @@ They answer "which header, which type, which call, and what will silently go
 wrong".
 
 If you are changing the library rather than calling it, you want
-[`CLAUDE.md`](../CLAUDE.md), [`docs/architecture.md`](../docs/architecture.md)
-and [`docs/coding-conventions.md`](../docs/coding-conventions.md) instead.
+[`CONTRIB.md`](../CONTRIB.md) and the
+[`docs/` guide](../docs/README.md) instead. AI coding agents must also follow
+[`AGENTS.md`](../AGENTS.md).
 
 | Document | What it is for |
 | --- | --- |
@@ -33,7 +34,7 @@ recalled. They can still drift, so:
   know whether some edge case is handled, the test for that unit usually
   answers it directly, and it answers it in code that runs.
 
-To re-verify a signature quickly: `grep -n "<name>" include/certpp/**/*.hpp`.
+To re-verify a signature quickly: `rg -n "<name>" include/certpp`.
 
 ## Conventions you need to know before reading any snippet
 

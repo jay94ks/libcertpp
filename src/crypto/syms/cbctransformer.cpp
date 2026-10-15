@@ -40,7 +40,7 @@ namespace crypto {
         // pointers stay valid for this whole call; _buffer is only reassigned at the very end,
         // past every use below. The per-byte loops that remain are XOR combines, which neither
         // memcpy nor memset can express -- but they still go through a raw pointer rather than
-        // CBuffer::operator[], per docs/coding-conventions.md's "Buffer handling".
+        // CBuffer::operator[], per docs/rules/api.md's "Buffer handling".
         uint8_t* scratchPtr = _scratch.toPtr();
         uint8_t* chainPtr = _chain.toPtr();
 

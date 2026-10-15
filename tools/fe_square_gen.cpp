@@ -2,7 +2,7 @@
 //
 // WHY THIS IS A PROGRAM AND NOT A COMMENT
 //
-// docs/roadmap.md records two attempts at writing a dedicated squaring for
+// docs/history/09-field-and-aead.md records two attempts at writing a dedicated squaring for
 // `Fe25519`, and both were wrong. The reason is specific: the 2^25.5 radix applies its
 // corrections *asymmetrically* -- the odd-index doubling belongs to one operand and the
 // 19-fold to the other -- so the product matrix is symmetric in value but not in

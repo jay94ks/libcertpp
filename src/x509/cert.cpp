@@ -2126,9 +2126,9 @@ namespace x509 {
         return ERET_NOTSUP;
     }
 
-    /* Exports the certificate in DER format: this class has no from-scratch Certificate encoder
-     * (see docs/architecture.md's "Where this will grow" -- parsing only, so far), so this simply
-     * hands back the exact raw DER bytes importDer()/importPem() themselves parsed. */
+    /* Exports the certificate in DER format. CCert is the immutable parsed/built representation
+     * and CCertBuilder performs encoding, so this returns the exact DER retained by CCert. See
+     * docs/concepts/certificates.md. */
     ERetCode CCert::exportDer(COctet& output) const {
         if (empty()) {
             return ERET_INVAL;

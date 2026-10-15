@@ -8,10 +8,9 @@
 조용히 잘못될 수 있는가"에 답하는 문서들입니다.
 
 라이브러리를 호출하는 쪽이 아니라 라이브러리를 수정하려는 경우라면
-[`CLAUDE.md`](../CLAUDE.md)(영문),
-[`docs/architecture.ko.md`](../docs/architecture.ko.md),
-[`docs/coding-conventions.ko.md`](../docs/coding-conventions.ko.md)를 보셔야
-합니다.
+[`CONTRIB.ko.md`](../CONTRIB.ko.md)와
+[`docs/` 안내](../docs/README.ko.md)를 보셔야 합니다. AI 코딩 에이전트는
+[`AGENTS.md`](../AGENTS.md)(영문)도 따라야 합니다.
 
 | 문서 | 용도 |
 | --- | --- |
@@ -35,7 +34,7 @@
   처리되는지 알아야 한다면, 해당 유닛의 테스트가 대개 그 질문에 직접 답해
   주며, 그것도 실제로 실행되는 코드로 답해 줍니다.
 
-시그니처를 빨리 다시 확인하려면: `grep -n "<name>" include/certpp/**/*.hpp`.
+시그니처를 빨리 다시 확인하려면: `rg -n "<name>" include/certpp`.
 
 ## 어떤 코드 조각이든 읽기 전에 알아야 할 규칙
 

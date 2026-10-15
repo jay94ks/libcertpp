@@ -69,6 +69,7 @@
 #include <certpp/crypto/asyms/mldsa.hpp>
 #include <certpp/crypto/kems/mlkem.hpp>
 #include <certpp/crypto/syms/aes.hpp>
+#include <certpp/crypto/syms/aria.hpp>
 #include <certpp/crypto/syms/des.hpp>
 #include <certpp/crypto/syms/des3.hpp>
 #include <certpp/crypto/poly1305.hpp>

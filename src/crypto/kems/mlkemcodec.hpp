@@ -11,7 +11,7 @@ namespace crypto {
     /**
      * ML-KEM's wire encoding: the bit-packing of FIPS 203 Algorithms 5/6 (ByteEncode/ByteDecode)
      * and the lossy coefficient rounding of Algorithms 3/4 (Compress/Decompress). Private to the
-     * PQ implementation, so no type prefix (see docs/coding-conventions.md).
+     * PQ implementation, so no type prefix (see docs/rules/api.md).
      *
      * This is the layer that decides what an ML-KEM key or ciphertext actually looks like as
      * bytes, so a mistake here is purely an interoperability failure -- everything still round

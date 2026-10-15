@@ -9,7 +9,7 @@ using namespace certpp::crypto;
 /* SHAKE128/SHAKE256::squeeze() -- the genuine extendable-output interface, added because
  * finish() can only ever produce the one fixed byteWidth() an instance was constructed with, and
  * FIPS 203/204's rejection samplers read from a SHAKE stream until enough candidates are accepted,
- * with no length known in advance (see docs/pqc-review.md's Phase 2).
+ * with no length known in advance (see docs/concepts/post-quantum.md).
  *
  * The property that actually matters is chunk-invariance: squeezing n bytes must give the same n
  * bytes no matter how they are split across calls, including splits that land exactly on, just

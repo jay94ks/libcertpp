@@ -740,7 +740,7 @@ TEST_CASE("convert<T>() round-trips Korean, Japanese, and accented Latin text un
     }
 
     // Codepoints as plain hex integers, not \u string escapes -- this file must stay pure ASCII
-    // on disk (see coding-conventions.md), and \u escapes risk being decoded into raw UTF-8
+    // on disk (see docs/rules/style.md), and \u escapes risk being decoded into raw UTF-8
     // bytes before they ever reach the compiler. Each array is the wchar_t ground truth; the
     // UTF-8 bytes are produced by convert<char>() itself and checked by converting back.
     const wchar_t korean[] = { 0xC548, 0xB155 };                        // Korean "an-nyeong" (informal "hi")

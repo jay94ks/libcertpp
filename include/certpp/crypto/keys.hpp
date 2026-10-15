@@ -509,7 +509,7 @@ namespace crypto {
      * MLKEM class (crypto/kems/mlkem.hpp) -- the same arrangement CEcdsa has across its curves.
      * A parameter set is not a key size that can be scaled: 512/768/1024 are names, and the
      * SKeySize each accepts is that same number rather than a modulus width or a security
-     * strength. See docs/pqc-review.md.
+     * strength. See docs/pqc/design.md.
      */
     enum EKems {
         EKEM_MLKEM512 = 0,      /**< ML-KEM-512 (FIPS 203), NIST security category 1 */

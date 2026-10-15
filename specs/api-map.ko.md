@@ -14,6 +14,7 @@
 | 작업 | 헤더 | 타입 / 진입점 |
 | --- | --- | --- |
 | 인증서 파싱 | `x509/cert.hpp` | `CCert::importDer()`, `importPem()` |
+| 인증 요청 파싱 또는 빌드 | `x509/csr.hpp` | `CCertRequest`, `CCertRequestBuilder` |
 | 인증서의 필드 읽기 | `x509/cert.hpp` | `subject()`, `issuer()`, `serialNumber()`, `notBefore()`, `notAfter()`, `keyAlgo()`, `signAlgo()`, `publicKey()` |
 | 확장 읽기 | `x509/cert.hpp`, `x509/ext.hpp`, `x509/exts/*.hpp` | `CCert::extensionOf(oid, out)`; `exts/` 아래의 10종 구체 타입 |
 | RSASSA-PSS 매개변수 읽기 | `x509/cert.hpp` | `CCert::rsaPssParams()` |
@@ -23,6 +24,8 @@
 | CRL 파싱 또는 빌드 | `x509/crl.hpp` | `CCrlReader`, `CCrlWriter`, `CCrlRevokationInfo` |
 | OCSP 파싱 또는 빌드 | `x509/ocsp.hpp` | `COcspRequest`, `COcspRequestBuilder`, `COcspResponse`, `COcspCertId`, `COcspEntry` |
 | 여러 인증서를 담아 두고 순서대로 정렬 | `x509/chain.hpp` | `CCertCollection`, `SCertEntry`, `EChainResults` |
+| PEM 컬렉션 읽기 또는 쓰기 | `x509/chain/pem.hpp` | `CPemChainFormat` |
+| PKCS#12/PFX 컬렉션 읽기 또는 쓰기 | `x509/chain/pfx.hpp` | `CPfxFormat` |
 | 식별 이름(DN) | `name.hpp` | `CDistinguishedName`, `CName`, `ENameType` |
 
 ## 해시, MAC, KDF
@@ -33,6 +36,7 @@
 | 사용할 수 있는 해시 | `crypto/hashers/*.hpp` | MD4, MD5, SHA-1, SHA-224/256/384/512, SHA3-256/512, SHAKE128/256, BLAKE2s, Streebog-256/512 |
 | HMAC | `crypto/hmac.hpp` | `CHmac::compute(hasher, key, message, out)`, `CHmac::verify(...)` |
 | HKDF | `crypto/hkdf.hpp` | `CHkdf::derive(hasher, salt, inputKey, info, out)`; `extract()`/`expand()`도 있습니다 |
+| PBKDF2 | `crypto/pbkdf2.hpp` | `CPbkdf2::derive(hasherType, password, salt, iterations, out)` |
 | Poly1305 일회용 MAC | `crypto/poly1305.hpp` | `CPoly1305::compute(key, message, out)` |
 | BLAKE2s 네이티브 키드 MAC | `crypto/blake2smac.hpp` | `CBlake2sMac` — HMAC-BLAKE2s와 같은 것이 *아닙니다* |
 | SipHash-2-4 | `crypto/siphash.hpp` | `CSipHash` |
@@ -41,7 +45,7 @@
 
 | 작업 | 헤더 | 진입점 |
 | --- | --- | --- |
-| 블록/스트림 암호 | `crypto/sym.hpp`, `crypto/syms/*.hpp` | `ISymmetric::builtIn(ESYM_AES)` 등; AES, DES, TripleDES, ChaCha20 |
+| 블록/스트림 암호 | `crypto/sym.hpp`, `crypto/syms/*.hpp` | `ISymmetric::builtIn(ESYM_AES)` 등; AES, ARIA, DES, TripleDES, ChaCha20 |
 | CBC padding 모드 | `crypto/sym.hpp` | `ISymmetricContext::padding(ESYMPAD_PKCS7 \| ESYMPAD_NONE)` |
 | ChaCha20-Poly1305 | `crypto/aeads/chacha20poly1305.hpp` | `CChaCha20Poly1305` |
 | XChaCha20-Poly1305(192비트 nonce) | `crypto/aeads/xchacha20poly1305.hpp` | `CXChaCha20Poly1305` |
@@ -60,8 +64,8 @@
 | ML-KEM(양자내성 KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, 그다음 `encapsulate()`/`decapsulate()`; 또는 span을 직접 받는 `CMlKem` |
 | ML-DSA(양자내성 서명) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, `IAsymmetric::builtIn(EASYM_MLDSA87)`을 통해 |
 
-알고리즘 열거자(enumerator)는 `crypto/keys.hpp`(`EAsymmetrics`, `EKems`),
-`crypto/hasher.hpp`(`EHashers`), `crypto/sym.hpp`(`ESymAlgos`)에 있습니다.
+알고리즘 열거자(enumerator)는 `crypto/keys.hpp`(`EAsymmetrics`, `EKems`,
+`ESymmetrics`)와 `crypto/hasher.hpp`(`EHashers`)에 있습니다.
 
 ## DNSSEC
 
@@ -78,7 +82,7 @@
 | --- | --- | --- |
 | TLV 디코딩/인코딩 | `asn1/decoder.hpp`, `asn1/encoder.hpp` | `CDecoder`, `CEncoder` |
 | 순차 읽기/쓰기 | `asn1/reader.hpp`, `asn1/writer.hpp` | `CReader`, `CWriter` |
-| 태그 | `asn1/tag.hpp` | `CTag`, `ETagClass`, `EAsn1UniversalTag` |
+| 태그 | `asn1/tag.hpp` | `CTag`, `ETagClass`, `EUniversalTags` |
 | 큰 정수 및 SEQUENCE 헬퍼 | `asn1/der.hpp` | `CDer::appendBigInteger()`, `appendSequence()`, `readOuterSequence()`, `readBigInteger()`, `maxSignatureSize()` |
 
 ## 유틸리티
@@ -93,6 +97,7 @@
 | 16진수 | `utils/hex.hpp` | `CHex` |
 | JSON 값과 BSON 문서 파싱/생성 | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
 | 무작위 바이트 | `crypto/rng.hpp` | `CRng::fill(span)` |
+| 객체 식별자 | `oid.hpp` | `SRawOid`, `SKnownOid`, `COid`; 임의 OID 파싱/포맷과 이름 붙은 상수 비교 |
 
 ## 버퍼와 span
 

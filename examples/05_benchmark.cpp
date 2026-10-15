@@ -2,7 +2,7 @@
 //
 // Unlike examples 01-04 this one is standalone -- it reads and writes nothing under
 // examples/output/ and can be run on its own, in any order. It exists because the figures in
-// README.md and docs/roadmap.md are otherwise unverifiable claims: a reader who wants to know
+// docs/concepts/performance.md would otherwise contain unverifiable claims: a reader who wants to know
 // what libcertpp costs on *their* hardware should be able to run the same harness that produced
 // them rather than take a number on trust.
 //
@@ -338,7 +338,7 @@ namespace {
 
         // --> AES-256-GCM lands *below* ChaCha20-Poly1305 here despite AES-NI, because GHASH is
         // the bottleneck rather than the cipher, and the two compose as 1/total = 1/cipher +
-        // 1/mac. See docs/changelog.md's AES-GCM entry.
+        // 1/mac. See docs/HISTORY.md's field-and-AEAD chapter.
         CAesGcm gcm;
         if (gcm.reset(keySpan)) {
             printThroughput("AES-256-GCM", bulk.size(), [&] {
@@ -349,8 +349,7 @@ namespace {
     }
 
     /* The per-call cost a small record actually pays, which the 64 KiB numbers above average away.
-     * docs/roadmap.md's small-record target (150 ns for a 64 B seal()) is written against this, and
-     * until now nothing in this harness measured it.
+     * The small-record table in docs/concepts/performance.md is produced by this path.
      *
      * --> Reusing one key and one nonce is not flattering the result: CChaCha20Poly1305::seal()
      * re-derives the one-time key through ChaCha20Core::block() on every call and builds a new

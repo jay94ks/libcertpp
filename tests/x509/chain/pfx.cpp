@@ -12,7 +12,7 @@
 //
 //     openssl pkcs12 -info -in pfx-written-by-certpp.p12 -passin pass:correct-horse -nodes
 //
-// which is how the interoperability claim in docs/changelog.md was actually established.
+// which is how the interoperability claim recorded in docs/HISTORY.md was established.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>

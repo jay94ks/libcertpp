@@ -24,7 +24,7 @@ namespace crypto {
      * leaves the sponge untouched, so it may be called repeatedly and push() still works
      * afterwards.
      *
-     * Added because ML-KEM needs it as FIPS 203's G function (see docs/pqc-review.md), but it
+     * Added because ML-KEM needs it as FIPS 203's G function (see docs/concepts/post-quantum.md), but it
      * is an ordinary member of the EHashers family (EHASH_SHA3_512) and usable anywhere a hasher
      * is.
      */
