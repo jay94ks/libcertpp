@@ -35,6 +35,7 @@ using namespace certpp::crypto;
 
 namespace {
     constexpr int OUTER = 5;
+    constexpr int SIGNATURE_ITERS = 200;
 
     double fastestNs(int iters, const std::function<void()>& body) {
         double best = 0.0;
@@ -219,7 +220,7 @@ int main() {
     }
 
     // --------------------------------------------------------------- signatures
-    std::printf("\n-- Sign --\n");
+    std::printf("\n-- Signatures --\n");
     {
         struct S {
             const char* name;
@@ -266,22 +267,53 @@ int main() {
             EVP_MD_CTX* mctx = EVP_MD_CTX_new();
             std::vector<uint8_t> osslSig(64);
             size_t sigLen = osslSig.size();
-            if (EVP_DigestSignInit(mctx, nullptr, nullptr, nullptr, pkey) != 1) {
-                std::printf("  %-24s OpenSSL sign init failed\n", s.name);
+            if (!mctx
+                || EVP_DigestSignInit(mctx, nullptr, nullptr, nullptr, pkey) != 1
+                || EVP_DigestSign(mctx, osslSig.data(), &sigLen,
+                    msg.data(), msg.size()) != 1) {
+                std::printf("  %-24s OpenSSL sign setup failed\n", s.name);
             } else {
-                const double a = fastestNs(20, [&] {
+                char label[96];
+                const double a = fastestNs(SIGNATURE_ITERS, [&] {
                     std::vector<uint8_t> o(ctx->sizeOfSign());
                     SByteSpan sp(o.data(), o.size());
                     ctx->sign(msgSpan, sp);
                 });
-                const double b = fastestNs(20, [&] {
+                const double b = fastestNs(SIGNATURE_ITERS, [&] {
                     sigLen = osslSig.size();
                     EVP_DigestSignInit(mctx, nullptr, nullptr, nullptr, pkey);
                     EVP_DigestSign(mctx, osslSig.data(), &sigLen,
                         msg.data(), msg.size());
                 });
+                std::snprintf(label, sizeof(label), "%s sign", s.name);
                 std::printf("  %-24s %8.3f ms      %8.3f ms      %6.2fx\n",
-                    s.name, a / 1e6, b / 1e6, a / b);
+                    label, a / 1e6, b / 1e6, a / b);
+
+                const SReadOnlyByteSpan certppSig(sig.data(), sigSpan.size);
+                EVP_MD_CTX* verifyCtx = EVP_MD_CTX_new();
+                if (ctx->verify(msgSpan, certppSig) != ERET_OK
+                    || !verifyCtx
+                    || EVP_DigestVerifyInit(
+                        verifyCtx, nullptr, nullptr, nullptr, pkey) != 1
+                    || EVP_DigestVerify(verifyCtx, osslSig.data(), sigLen,
+                        msg.data(), msg.size()) != 1) {
+                    std::printf("  %-24s verification setup failed\n", s.name);
+                } else {
+                    const double verifyA = fastestNs(SIGNATURE_ITERS, [&] {
+                        ctx->verify(msgSpan, certppSig);
+                    });
+                    const double verifyB = fastestNs(SIGNATURE_ITERS, [&] {
+                        EVP_DigestVerifyInit(
+                            verifyCtx, nullptr, nullptr, nullptr, pkey);
+                        EVP_DigestVerify(verifyCtx, osslSig.data(), sigLen,
+                            msg.data(), msg.size());
+                    });
+                    std::snprintf(label, sizeof(label), "%s verify", s.name);
+                    std::printf("  %-24s %8.3f ms      %8.3f ms      %6.2fx\n",
+                        label, verifyA / 1e6, verifyB / 1e6,
+                        verifyA / verifyB);
+                }
+                EVP_MD_CTX_free(verifyCtx);
             }
 
             EVP_MD_CTX_free(mctx);

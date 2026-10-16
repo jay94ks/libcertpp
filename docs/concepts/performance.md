@@ -58,8 +58,9 @@ digit. Verification keeps the strict subgroup checks and uses windowing only for
 
 ## Against OpenSSL
 
-A number means nothing in isolation, so the same algorithms were measured against OpenSSL 3.0.13
-on the same machine.
+A number means nothing in isolation, so the repository also measures the same algorithms against
+OpenSSL on the same machine with
+[`examples/06_openssl_compare.cpp`](../../examples/06_openssl_compare.cpp).
 
 **Both sides are timed alone, in their own loops.** Interleaving the two implementations in one
 loop -- the obvious way to keep them on equal footing -- turns out to corrupt both: certpp's
@@ -69,13 +70,34 @@ library's wrapper, which measures the cryptography rather than the per-call allo
 through `certpp` would add. Both sides are warmed up first: OpenSSL resolves its constructors
 lazily, and a cold first SHA-256 of 64 KiB costs 963 us against 38.9 us warm.
 
-Each figure is the best of three runs of the harness on a quiet machine, so the spread between
-runs is 1--3% for a side measured alone -- the ratios hold, but a single run's absolute value is
-not the algorithm's speed.
+Each figure is the best of three runs of the harness on a quiet machine. Run-to-run ranges are
+recorded for the refreshed comparison below where they materially affect the ratio; one run's
+absolute value should not be treated as the algorithm's universal speed.
 
-The Ed25519 row from that comparison was invalidated by the point-arithmetic optimization above.
-Its old OpenSSL measurement is retained as context, but a current ratio requires rerunning both
-implementations in the same session and is therefore not inferred from separate runs.
+### Current Ed25519 comparison
+
+The Ed25519 row was refreshed on 2026-10-16 after the point-arithmetic optimization above. This
+was a native Windows Release build with GCC 16.2.0 and OpenSSL 3.6.4 from MSYS2 MinGW64. Three
+complete harness runs were made; each run measured each side independently after warm-up and took
+the fastest of five 200-operation batches.
+
+| Operation | certpp | OpenSSL EVP | certpp latency |
+|---|---:|---:|---:|
+| Ed25519 sign, 32-byte message | 0.059 ms | **0.040 ms** | **1.49x** |
+| Ed25519 verify, 32-byte message | 0.430 ms | **0.107 ms** | **4.03x** |
+
+The three sign ratios were 1.46x, 1.49x, and 1.42x; verify was 3.97x, 3.99x, and 4.03x. OpenSSL
+still has lower latency, but the current matched signing comparison is much closer than the
+earlier 4.5x row. That old result used a different compiler and OpenSSL session, so the change in
+ratio is evidence of the present gap, not a compiler-isolated attribution of the whole gain.
+The verification row is end-to-end API behavior rather than an isolated group-equation benchmark:
+certpp retains its strict full `L·R` subgroup check on the signature point in addition to checking
+the signature equation.
+
+### Earlier full comparison
+
+The broader table below is the earlier OpenSSL 3.0.13 session. It remains the matched reference
+for the other primitives; Ed25519 is reported only in the current table above.
 
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
@@ -87,7 +109,6 @@ implementations in the same session and is therefore not inferred from separate 
 | SHA-512, 64 KiB | 385 MiB/s | 655 MiB/s | 0.58x |
 | AES-256-CBC, 64 KiB | 1280 MiB/s | 1350 MiB/s | 0.95x |
 | ARIA-256-CBC, 64 KiB | 27 MiB/s | 103 MiB/s | 0.26x |
-| Ed25519 sign | superseded; see current check | 0.036 ms | matched rerun required |
 
 SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.58x is the clearest row
 where neither does. The gap narrowed from 0.51x after BMI2 RORX optimization (+7.5% SHA-512).
