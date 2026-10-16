@@ -212,24 +212,26 @@
   self-consistency round-trip alone could.
 
   `pointAdd()` (affine) stays the reference implementation for the
-  single-operation case; `scalarMul()` (an arbitrary point) and
-  `scalarMulBase()` (the base point `B` specifically, e.g. every sign()/
-  verify() call's `B*r`/`B*s` term) work internally in extended projective
-  coordinates (`EdPointProj`: Hisil/Wong/Carter/Dawson's `X/Z, Y/Z, T=XY/Z`,
-  "Twisted Edwards Curves Revisited") via the same branch-free-R0/R1-ladder
-  shape `CEcCurve::scalarMul()` uses (`crypto/eccurve.hpp`'s doc comment),
-  simpler here since `pointAddProj()` is unconditionally complete (handles
-  `P+P` and the identity with no special-casing, so the ladder needs no
-  separate doubling step) and pays for exactly one modular inversion at the
-  very end instead of one per bit. `scalarMulBase()` additionally uses a
-  lazily-built, process-lifetime-cached table of small multiples of `B`
-  (`baseTable()`, a 4-bit window) -- unlike `CEcCurve`'s per-`CEcCurve`-
-  instance table, this file's base point is a single, fixed, file-scope
-  constant, so one process-wide table suffices. Both read the scalar over a
-  fixed 256 bits rather than over `CBigNum::bitLength()`, so the number of
-  iterations does not depend on how large a secret scalar happens to be;
-  `CBigNum::testBit()` reads false past the top limb, and a leading zero bit
-  adds the identity and leaves the ladder invariant intact.
+  single-operation case. Scalar multiplication works internally in extended
+  projective coordinates (`EdPointProj`: Hisil/Wong/Carter/Dawson's `X/Z,
+  Y/Z, T=XY/Z`, "Twisted Edwards Curves Revisited") and converts to affine
+  once at the boundary. Unlike points use the complete `pointAddProj()` law;
+  repeated-point steps use the dedicated `pointDoubleProj()` formula, which
+  costs four field multiplications and four squarings instead of a unified
+  addition's nine multiplications.
+
+  Secret fixed-base multiplication (`scalarMulBase()`, used for `B*r` and
+  `B*s`) recodes the scalar into 64 signed radix-16 digits. Its process-wide
+  table has 32 rows containing `(1..8) * 256^i * B`; each selection scans all
+  eight entries under arithmetic masks, and zero digits still perform an
+  addition. Summing odd digits, doubling four times, then summing even digits
+  reduces each operation from 256 point doublings to four without introducing
+  a secret-indexed lookup. Arbitrary-point multiplication retains the
+  branch-free 256-bit ladder for secret scalars. Verification additionally
+  uses a 4-bit window only where both the point and scalar are public: the
+  fixed subgroup-order check and `k*A`, where `k = SHA-512(R || A || M) mod L`.
+  The optional radix-51 field layout retains the unified-addition ladder for
+  arbitrary points; its fixed-base signed-radix-16 path remains enabled.
 - **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`** define
   `Ed448` (EdDSA over edwards448/"Ed448-Goldilocks", RFC 8032) --
   structurally `Ed25519`'s twin, with its own field/point arithmetic (a
@@ -253,9 +255,10 @@
   bytes). Verified against RFC 8032's own TEST 1 vector, for the same
   reason as `Ed25519`.
 
-  `scalarMul()`/`scalarMulBase()` use the same extended-projective-
-  coordinates/branch-free-ladder/fixed-base-table approach as `Ed25519`
-  (see its own doc comment above), but edwards448 is *untwisted* (`a = 1`,
+  `scalarMul()`/`scalarMulBase()` use extended projective coordinates with
+  their own branch-free ladder and fixed-base table; they do not share
+  Ed25519's newer signed-radix-16 table or dedicated doubling formula.
+  Edwards448 is *untwisted* (`a = 1`,
   vs. edwards25519's `a = -1`), so `pointAddProj()` here uses the general
   `a`-parametrized addition law rather than `Ed25519`'s `a = -1`-specialized
   one -- derived directly from the affine addition law (see this function's

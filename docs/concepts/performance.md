@@ -19,7 +19,9 @@ output reports "(unavailable)", which was the point of covering all of them.
 GF(2^m) curves appear under signatures but not under key agreement because that is what they
 implement: they do ECDSA and not ECDH.
 
-## Current hardware-acceleration check
+## Current optimization checks
+
+### AVX-512 AEAD
 
 The ChaCha20-Poly1305 bulk result was refreshed on 2026-10-16 after adding the
 sixteen-block AVX-512F ChaCha20 path and removing the Poly1305 AVX-512 vector-argument ABI
@@ -38,6 +40,22 @@ ChaCha20 and Poly1305 individually. The larger tables below remain the original 
 cross-toolchain run; their conditions are stated separately so results from different compiler
 versions are not mixed into one column.
 
+### Ed25519 point arithmetic
+
+The same Windows/Clang 22.1.8 Release harness was run before and after replacing
+unified-addition doubling with a dedicated formula, using a public-scalar window during
+verification, and changing fixed-base multiplication to a masked signed-radix-16 table.
+
+| Operation | Before | Current | Speedup |
+|---|---:|---:|---:|
+| Ed25519 sign | 0.153 ms | **0.056 ms** | **2.73x** |
+| Ed25519 verify | 0.675 ms | **0.388 ms** | **1.74x** |
+
+These are the corresponding rows from [`examples/05_benchmark.cpp`](../../examples/05_benchmark.cpp),
+which reports the fastest of three 20-iteration batches. The signing path now performs four
+fixed-base point doublings instead of 256 and scans every candidate table entry for each secret
+digit. Verification keeps the strict subgroup checks and uses windowing only for public values.
+
 ## Against OpenSSL
 
 A number means nothing in isolation, so the same algorithms were measured against OpenSSL 3.0.13
@@ -55,6 +73,10 @@ Each figure is the best of three runs of the harness on a quiet machine, so the 
 runs is 1--3% for a side measured alone -- the ratios hold, but a single run's absolute value is
 not the algorithm's speed.
 
+The Ed25519 row from that comparison was invalidated by the point-arithmetic optimization above.
+Its old OpenSSL measurement is retained as context, but a current ratio requires rerunning both
+implementations in the same session and is therefore not inferred from separate runs.
+
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
 | SHA-256, 64 KiB | 1490 MiB/s | 1550 MiB/s | 0.97x |
@@ -65,7 +87,7 @@ not the algorithm's speed.
 | SHA-512, 64 KiB | 385 MiB/s | 655 MiB/s | 0.58x |
 | AES-256-CBC, 64 KiB | 1280 MiB/s | 1350 MiB/s | 0.95x |
 | ARIA-256-CBC, 64 KiB | 27 MiB/s | 103 MiB/s | 0.26x |
-| Ed25519 sign | 0.162 ms | 0.036 ms | 4.5x slower |
+| Ed25519 sign | superseded; see current check | 0.036 ms | matched rerun required |
 
 SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.58x is the clearest row
 where neither does. The gap narrowed from 0.51x after BMI2 RORX optimization (+7.5% SHA-512).

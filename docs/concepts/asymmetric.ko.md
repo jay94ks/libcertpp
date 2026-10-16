@@ -199,25 +199,24 @@
   전체(연산, 유도된 상수, clamping, 그리고 서명 알고리즘 자체)를 훨씬 강하게
   검증합니다.
 
-  `pointAdd()`(아핀)은 단일 연산 경우의 참조 구현으로 남습니다.
-  `scalarMul()`(임의의 점)과 `scalarMulBase()`(구체적으로 기준점 `B`. 예컨대
-  모든 sign()/verify() 호출의 `B*r`/`B*s` 항)는 `CEcCurve::scalarMul()`이
-  쓰는 것과 같은 분기 없는 R0/R1 ladder
-  모양(`crypto/eccurve.hpp`의 doc 주석)으로 내부적으로 확장 투영
-  좌표(`EdPointProj`: Hisil/Wong/Carter/Dawson의 `X/Z, Y/Z, T=XY/Z`,
-  "Twisted Edwards Curves Revisited")에서 작동합니다. 여기서는 더 단순한데,
-  `pointAddProj()`가 무조건 완전해서(`P+P`와 항등원을 특수 처리 없이
-  다루므로 ladder에 별도 배가 단계가 필요 없습니다) 비트당 하나가 아니라
-  맨 마지막에 정확히 한 번의 모듈러 역원 비용만 치릅니다.
-  `scalarMulBase()`는 추가로 `B`의 작은 배수들을 담은, 지연 생성되어 프로세스
-  수명 동안 캐시되는 테이블을
-  씁니다(`baseTable()`. 4비트 window) — `CEcCurve`의 `CEcCurve` 인스턴스별
-  테이블과 달리, 이 파일의 기준점은 하나의 고정된 파일 스코프 상수이므로
-  프로세스 전체에 테이블 하나로 충분합니다. 둘 다 스칼라를
-  `CBigNum::bitLength()`가 아니라 고정된 256비트에 걸쳐 읽으므로, 반복 횟수가
-  비밀 스칼라가 얼마나 큰지에 의존하지 않습니다. `CBigNum::testBit()`는
-  최상위 limb를 넘어서면 false를 돌려주고, 선행 0 비트는 항등원을 더하며
-  ladder의 불변식을 그대로 유지합니다.
+  `pointAdd()`(아핀)은 단일 연산 경우의 참조 구현으로 남습니다. 스칼라 곱은
+  내부적으로 확장 투영 좌표(`EdPointProj`: Hisil/Wong/Carter/Dawson의 `X/Z,
+  Y/Z, T=XY/Z`, "Twisted Edwards Curves Revisited")에서 작동하고 경계에서 한 번만
+  아핀으로 변환합니다. 서로 다른 점에는 완전한 `pointAddProj()` 법칙을 쓰고,
+  반복되는 같은 점에는 전용 `pointDoubleProj()` 공식을 씁니다. 전용 공식은
+  통합 덧셈의 필드 곱셈 9회 대신 곱셈 4회와 제곱 4회를 사용합니다.
+
+  비밀 고정 기저 곱 `scalarMulBase()`(`B*r`과 `B*s`에 사용)는 스칼라를 부호 있는
+  radix-16 숫자 64개로 재부호화합니다. 프로세스 전체 표의 32개 행에는
+  `(1..8) * 256^i * B`가 들어 있습니다. 각 선택은 산술 mask로 8개 항목을 모두
+  스캔하고, 0인 숫자도 덧셈을 수행합니다. 홀수 위치를 합하고 네 번 배가한 뒤
+  짝수 위치를 합하므로, 한 연산의 점 배가가 256회에서 4회로 줄면서 비밀 인덱스
+  조회도 생기지 않습니다. 임의 점 곱은 비밀 스칼라를 위해 분기 없는 256비트
+  ladder를 유지합니다. 검증은 점과 스칼라가 모두 공개인 경우에만 4비트 window를
+  추가로 씁니다. 고정된 부분군 위수 검사와
+  `k = SHA-512(R || A || M) mod L`인 `k*A`가 그 경우입니다.
+  선택형 radix-51 필드 배치는 임의 점에 통합 덧셈 ladder를 유지하며, 고정 기저
+  signed-radix-16 경로는 그대로 활성화합니다.
 - **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`**는
   `Ed448`(edwards448/"Ed448-Goldilocks" 위의 EdDSA, RFC 8032)을 정의합니다 —
   구조적으로 `Ed25519`의 쌍둥이이고, 자기만의 체/점 연산(다른 소수이고,
@@ -238,9 +237,9 @@
   키/서명은 RFC 8032의 원시 바이트 인코딩(57/57/114바이트)으로 직렬화됩니다.
   `Ed25519`와 같은 이유로 RFC 8032 자신의 TEST 1 벡터에 대해 검증했습니다.
 
-  `scalarMul()`/`scalarMulBase()`는 `Ed25519`와 같은
-  확장-투영-좌표/분기-없는-ladder/고정-기저-테이블 접근(위의 그 doc 주석
-  참고)을 쓰지만, edwards448은 *untwisted*이므로(`a = 1`. edwards25519의
+  `scalarMul()`/`scalarMulBase()`는 자체 분기 없는 ladder와 고정 기저 표를 둔
+  확장 투영 좌표를 사용하며, Ed25519의 새 signed-radix-16 표나 전용 배가 공식은
+  공유하지 않습니다. Edwards448은 *untwisted*이므로(`a = 1`. edwards25519의
   `a = -1`에 대해) 여기의 `pointAddProj()`는 `Ed25519`의 `a = -1` 특화
   법칙이 아니라 일반 `a` 파라미터화 덧셈 법칙을 씁니다 — 이 모양에 대한
   널리 알려진 이름 붙은 공식이 `a = -1`에 특화되어 있으므로, 참조에서 옮겨

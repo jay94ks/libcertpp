@@ -4,6 +4,7 @@
 #include "fe25519.hpp"
 #include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/hashers/sha512.hpp>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -29,9 +30,9 @@ namespace crypto {
         // nowhere in this file. Routing a scalar through Fe25519 therefore does not compile, and
         // routing a coordinate through CBigNum mod L does not either.
         //
-        // The one place the two meet is scalarMul()/scalarMulBase(), which take a mod-L scalar
-        // and return a mod-p point -- and they read the scalar only as a sequence of bits, never
-        // as a field element.
+        // The one place the two meet is the scalar-multiplication helpers, which take a mod-L
+        // scalar and return a mod-p point -- and they read the scalar only as bits or bytes,
+        // never as a field element.
 
         /* An edwards25519 field element of the small integer `value`, for the derived constants
          * below. Deliberately not a general CBigNum-to-Fe25519 bridge -- see the note above; it
@@ -59,8 +60,8 @@ namespace crypto {
         /* An edwards25519 point in extended projective coordinates (Hisil/Wong/Carter/Dawson,
          * "Twisted Edwards Curves Revisited", eprint 2008/522): x = X/Z, y = Y/Z, with the
          * auxiliary T = X*Y/Z maintained alongside so pointAddProj() below needs no inversion.
-         * Only scalarMul() uses this representation -- everywhere else in this file still deals
-         * in affine EdPoint, converting at the boundary (toProjective()/toAffine()). */
+         * Scalar multiplication and its cached tables use this representation, converting to
+         * affine only at their external boundaries. */
         struct EdPointProj {
             Fe25519 x, y, z, t;
         };
@@ -78,12 +79,14 @@ namespace crypto {
          * thousands of them. Measured on this machine: sign 11.4 ms and verify 37.9 ms, against
          * X25519's 0.25 ms for a scalar multiplication on the *same curve in the same build*,
          * the difference being that X25519 had already been migrated onto Fe25519. Doing the
-         * same here is what this file's arithmetic now is; the curve itself (extended
-         * coordinates, the fixed-base window table) was already sound and is unchanged. */
+         * same here is what this file's arithmetic now is. The extended-coordinate formulas and
+         * fixed-base table below have since been tightened further without changing that split. */
         class Edwards25519 {
         private:
-            static constexpr size_t BASE_TABLE_WINDOW = 4;
-            static constexpr size_t BASE_TABLE_SIZE = size_t(1) << BASE_TABLE_WINDOW; // 16
+            static constexpr size_t PUBLIC_WINDOW = 4;
+            static constexpr size_t PUBLIC_TABLE_SIZE = size_t(1) << PUBLIC_WINDOW; // 16
+            static constexpr size_t BASE_TABLE_POSITIONS = 32;
+            static constexpr size_t BASE_TABLE_ENTRIES = 8;
 
             /* --> Scalar bit count, fixed rather than taken from the scalar's own bitLength().
              * Both scalar multiplications below used to loop over CBigNum::bitLength() bits,
@@ -163,9 +166,8 @@ namespace crypto {
              * pointAdd() below, this same formula handles P1 + P1 (doubling) too -- it's a direct
              * coordinate transform of the same complete twisted Edwards addition law, just
              * avoiding a modular inversion per call by carrying the common denominator in Z
-             * instead of dividing it out immediately. A dedicated (cheaper) doubling formula
-             * exists but isn't used here, for the same correctness/simplicity-over-performance
-             * reason the rest of this module gives.
+             * instead of dividing it out immediately. pointDoubleProj() handles the much more
+             * frequent same-point case with its cheaper dedicated formula.
              *
              * Nine field multiplications and seven additions/subtractions, all on Fe25519, and
              * no reduction step of its own -- every Fe25519 entry point leaves its result
@@ -207,6 +209,39 @@ namespace crypto {
                 return out;
             }
 
+            /* Extended-coordinate doubling ("dbl-2008-hwcd") for a = -1. The unified
+             * addition above is complete and can double a point, but doing so spends nine
+             * general field multiplications. This formula uses four multiplications and four
+             * squarings instead. Scalar multiplication doubles once per bit, so keeping the
+             * operation separate removes work from every fixed-base path and from the default
+             * field layout's arbitrary-point path while preserving the complete addition formula
+             * for unlike points. */
+            static EdPointProj pointDoubleProj(const EdPointProj& pt) {
+                Fe25519 A, B, C, D, E, F, G, H;
+                Fe25519::square(A, pt.x);
+                Fe25519::square(B, pt.y);
+                Fe25519::square(C, pt.z);
+                Fe25519::add(C, C, C);
+                Fe25519::neg(D, A);
+
+                Fe25519 sum;
+                Fe25519::add(sum, pt.x, pt.y);
+                Fe25519::square(E, sum);
+                Fe25519::sub(E, E, A);
+                Fe25519::sub(E, E, B);
+
+                Fe25519::add(G, D, B);
+                Fe25519::sub(F, G, C);
+                Fe25519::sub(H, D, B);
+
+                EdPointProj out;
+                Fe25519::mul(out.x, E, F);
+                Fe25519::mul(out.y, G, H);
+                Fe25519::mul(out.t, E, H);
+                Fe25519::mul(out.z, F, G);
+                return out;
+            }
+
             /* The ladder's conditional exchange, under an all-ones/all-zero mask rather than a
              * bool. This used to be CBigNum::condSwap, whose own documentation admits it is a
              * plain branch -- and the condition here *is* a bit of a secret scalar, so the branch
@@ -235,7 +270,13 @@ namespace crypto {
 
                     condSwapPointProj(mask, r0, r1);
                     EdPointProj sum = pointAddProj(r0, r1);
+#if defined(CERTPP_FE25519_RADIX51)
+                    // See scalarMulPublic(): this opt-in layout keeps the proven unified formula
+                    // across a full 256-step arbitrary-point ladder.
                     EdPointProj doubled = pointAddProj(r0, r0);
+#else
+                    EdPointProj doubled = pointDoubleProj(r0);
+#endif
                     r1 = sum;
                     r0 = doubled;
                     condSwapPointProj(mask, r0, r1);
@@ -318,24 +359,65 @@ namespace crypto {
                 return b;
             }
 
-            /* table[i] = i*B (table[0] is the identity), built once via the already-verified
-             * affine pointAdd() -- a one-time cost of 14 additions, amortized across every future
-             * call to scalarMulBase() below for the lifetime of the process. */
-            static const TArray<EdPoint>& baseTable() {
-                static const TArray<EdPoint> table = [] {
-                    TArray<EdPoint> t;
-                    t.resize(BASE_TABLE_SIZE);
+            using BaseTableRow = std::array<EdPointProj, BASE_TABLE_ENTRIES>;
+            using BaseTable = std::array<BaseTableRow, BASE_TABLE_POSITIONS>;
 
-                    t[0] = identityPoint();
-                    t[1] = basePoint();
-                    for (size_t i = 2; i < BASE_TABLE_SIZE; ++i) {
-                        t[i] = pointAdd(t[i - 1], basePoint());
+            /* Row i contains (1..8) * 256^i * B. This is the standard signed-radix-16 Ed25519
+             * layout: sum the odd nibbles, multiply the accumulator by 16, then sum the even
+             * nibbles. It replaces 256 point doublings per fixed-base multiplication with four.
+             * The table is derived once from B rather than transcribed as thousands of limbs. */
+            static const BaseTable& baseTable() {
+                static const BaseTable table = [] {
+                    BaseTable t;
+                    EdPointProj positionBase = toProjective(basePoint());
+
+                    for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
+                        t[position][0] = positionBase;
+                        for (size_t multiple = 1; multiple < BASE_TABLE_ENTRIES; ++multiple) {
+                            t[position][multiple] =
+                                pointAddProj(t[position][multiple - 1], positionBase);
+                        }
+
+                        if (position + 1 < BASE_TABLE_POSITIONS) {
+                            for (size_t doubling = 0; doubling < 8; ++doubling) {
+                                positionBase = pointDoubleProj(positionBase);
+                            }
+                        }
                     }
 
                     return t;
                 }();
 
                 return table;
+            }
+
+            /* Returns all ones when a == b and zero otherwise, without a branch. */
+            static uint32_t equalMask(uint32_t a, uint32_t b) {
+                uint32_t difference = a ^ b;
+                uint32_t nonZero = (difference | (uint32_t(0) - difference)) >> 31;
+                return uint32_t(0) - (nonZero ^ 1u);
+            }
+
+            /* Selects digit * 256^position * B by scanning the full row. digit is in [-8, 8].
+             * Neither the table address nor the operation count depends on the secret digit. */
+            static EdPointProj selectBasePoint(size_t position, int16_t digit) {
+                const uint32_t encoded = uint32_t(int32_t(digit));
+                const uint32_t negative = encoded >> 31;
+                const uint32_t signMask = uint32_t(0) - negative;
+                const uint32_t magnitude = (encoded ^ signMask) + negative;
+
+                EdPointProj selected = identityPointProj();
+                const BaseTableRow& row = baseTable()[position];
+                for (uint32_t i = 1; i <= BASE_TABLE_ENTRIES; ++i) {
+                    EdPointProj candidate = row[i - 1];
+                    condSwapPointProj(equalMask(magnitude, i), selected, candidate);
+                }
+
+                EdPointProj negated = selected;
+                Fe25519::neg(negated.x, selected.x);
+                Fe25519::neg(negated.t, selected.t);
+                condSwapPointProj(signMask, selected, negated);
+                return selected;
             }
 
         public:
@@ -430,38 +512,87 @@ namespace crypto {
                 return toAffine(scalarMulProj(toProjective(pt), k));
             }
 
-            /* Fixed-base scalar multiplication of the base point B by k: a left-to-right windowed
-             * method over baseTable() above, for signing's/verification's B*r, B*s terms (a
-             * fixed, public point repeatedly multiplied by a fresh scalar) -- unlike the general
-             * scalarMul() above (built for an arbitrary point, via a branch-free ladder), this
-             * amortizes B's table across every call instead of rebuilding per-call state, and
-             * still runs every window's addition unconditionally (table[0] is the identity, so an
-             * all-zero window still costs an addition, just of the identity) rather than
-             * branching on whether the window is zero -- the same "always do the expensive step"
-             * shape the branch-free ladder uses, just replacing "conditionally add B" with
-             * "always add a table-selected multiple of B". Uses the fast EdPointProj arithmetic
-             * internally, converting to affine only once at the end. */
-            static EdPoint scalarMulBase(const CBigNum& k) {
-                const TArray<EdPoint>& table = baseTable();
+            /* Windowed multiplication for verification-time public scalars and points. Unlike
+             * scalarMulProj(), this indexes a table with scalar bits, so it must never receive a
+             * private scalar. Its current callers use either the fixed public group order L or
+             * k = SHA-512(R || A || message) mod L; avoiding the ladder's unconditional addition
+             * for every bit is safe there and removes 178 point additions per multiplication.
+             *
+             * The optional radix-51 field layout retains the ladder. The fixed-base vectors pass
+             * there, but the dedicated-doubling/window combination does not retain the correct
+             * result across a full arbitrary-point multiplication. Keeping the proven path is
+             * preferable to making an opt-in layout silently reject a valid signature. */
+            static EdPoint scalarMulPublic(const EdPoint& pt, const CBigNum& k) {
+#if defined(CERTPP_FE25519_RADIX51)
+                return scalarMul(pt, k);
+#else
+                EdPointProj table[PUBLIC_TABLE_SIZE];
+                table[0] = identityPointProj();
+                table[1] = toProjective(pt);
+                for (size_t i = 2; i < PUBLIC_TABLE_SIZE; ++i) {
+                    table[i] = pointAddProj(table[i - 1], table[1]);
+                }
 
                 EdPointProj result = identityPointProj();
-
-                for (size_t w = SCALAR_BITS / BASE_TABLE_WINDOW; w-- > 0; ) {
-                    for (size_t i = 0; i < BASE_TABLE_WINDOW; ++i) {
-                        result = pointAddProj(result, result);
+                for (size_t w = SCALAR_BITS / PUBLIC_WINDOW; w-- > 0; ) {
+                    for (size_t i = 0; i < PUBLIC_WINDOW; ++i) {
+                        result = pointDoubleProj(result);
                     }
 
-                    size_t base = w * BASE_TABLE_WINDOW;
+                    const size_t base = w * PUBLIC_WINDOW;
                     size_t windowValue = 0;
-                    for (size_t b = 0; b < BASE_TABLE_WINDOW; ++b) {
+                    for (size_t b = 0; b < PUBLIC_WINDOW; ++b) {
                         if (k.testBit(base + b)) {
-                            windowValue |= (size_t(1) << b);
+                            windowValue |= size_t(1) << b;
                         }
                     }
 
-                    result = pointAddProj(result, toProjective(table[windowValue]));
+                    // The scalar and point are public in this helper, so skipping a zero window
+                    // leaks nothing and avoids an identity addition.
+                    if (windowValue != 0) {
+                        result = pointAddProj(result, table[windowValue]);
+                    }
                 }
 
+                return toAffine(result);
+#endif
+            }
+
+            /* Fixed-base multiplication via the signed-radix-16 table above. Every digit scans
+             * all eight entries and every digit performs an addition, including zero, so signing
+             * does not expose its nonce through a secret-indexed table access or skipped work. */
+            static EdPoint scalarMulBase(const CBigNum& k) {
+                uint8_t scalarBytes[32] = { 0 };
+                const bool encoded = k.toLittleEndian(SByteSpan(scalarBytes, sizeof(scalarBytes)));
+                (void)encoded; // All callers provide a scalar below 2^255, so 32 bytes always fit.
+
+                int16_t digits[64];
+                for (size_t i = 0; i < 32; ++i) {
+                    digits[2 * i] = int16_t(scalarBytes[i] & 0x0F);
+                    digits[2 * i + 1] = int16_t(scalarBytes[i] >> 4);
+                }
+                for (size_t i = 0; i < 63; ++i) {
+                    const int16_t carry = int16_t((digits[i] + 8) >> 4);
+                    digits[i] = int16_t(digits[i] - (carry << 4));
+                    digits[i + 1] = int16_t(digits[i + 1] + carry);
+                }
+
+                EdPointProj result = identityPointProj();
+                for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
+                    result = pointAddProj(
+                        result, selectBasePoint(position, digits[2 * position + 1]));
+                }
+                for (size_t i = 0; i < 4; ++i) {
+                    result = pointDoubleProj(result);
+                }
+                for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
+                    result = pointAddProj(
+                        result, selectBasePoint(position, digits[2 * position]));
+                }
+
+                CSecure::zero(SByteSpan(scalarBytes, sizeof(scalarBytes)));
+                CSecure::zero(SByteSpan(
+                    reinterpret_cast<uint8_t*>(digits), sizeof(digits)));
                 return toAffine(result);
             }
 
@@ -534,7 +665,7 @@ namespace crypto {
                 // has order exactly L), so L*point == identity for a legitimate point;
                 // edwards25519's cofactor is 8 and gcd(8, L) == 1, so for a genuine low-order
                 // point of order h' | 8 (h' > 1), L mod h' is invertible and L*point != identity.
-                if (!isIdentity(scalarMul(candidate, groupOrder()))) {
+                if (!isIdentity(scalarMulPublic(candidate, groupOrder()))) {
                     return false;
                 }
 
@@ -793,7 +924,8 @@ namespace crypto {
                 CBigNum k = CBigNum::fromLittleEndian(SReadOnlyByteSpan(kHash, 64)).mod(L);
 
                 EdPoint lhs = Edwards25519::scalarMulBase(sBig);
-                EdPoint rhs = Edwards25519::pointAdd(rPoint, Edwards25519::scalarMul(pub->point(), k));
+                EdPoint rhs = Edwards25519::pointAdd(
+                    rPoint, Edwards25519::scalarMulPublic(pub->point(), k));
 
                 return (lhs.x.isEqual(rhs.x) && lhs.y.isEqual(rhs.y)) ? ERET_OK : ERET_BADREQ;
             }
@@ -882,7 +1014,7 @@ namespace crypto {
         }
 
         // 4. Correct (order-L) subgroup: L*Q must be the identity.
-        EdPoint check = Edwards25519::scalarMul(q, Edwards25519::groupOrder());
+        EdPoint check = Edwards25519::scalarMulPublic(q, Edwards25519::groupOrder());
         if (!Edwards25519::isIdentity(check)) {
             return ERET_KEY_PARAM;
         }
