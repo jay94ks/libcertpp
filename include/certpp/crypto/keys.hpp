@@ -318,6 +318,11 @@ namespace crypto {
 
     protected:
         /**
+         * Constructs an empty key with an unknown algorithm.
+         */
+        ISymmetricKey() : _algorithm(ESYM_UNKNOWN) {}
+
+        /**
          * Sets the key data.
          * @param rawKey The key data to set.
          */

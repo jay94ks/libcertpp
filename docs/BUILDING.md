@@ -31,4 +31,4 @@ cmake --build build
 ## Detailed pages
 
 - [Configuration and installation](building/configuration.md)
-- [Tests and examples](building/verification.md)
+- [Tests, examples, and static analysis](building/verification.md)

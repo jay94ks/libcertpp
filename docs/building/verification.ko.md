@@ -1,4 +1,4 @@
-# 테스트와 예제
+# 테스트, 예제 및 정적 분석
 
 [English](verification.md)
 
@@ -113,6 +113,77 @@ cmake --build build-audit --config Release
 
 거부 결과별 타이밍 분포를 출력하여 검토자가 비교할 수 있게 합니다. 수동 검토를 위한
 근거이며 constant-time 인증이나 안정적인 벤치마크 임계값은 아닙니다.
+
+## Cppcheck 정적 분석
+
+유지 보수하는 FLOSS 정적 분석 기준선은 2026-10-16에 WSL 2의 Ubuntu 24.04에서
+Ubuntu 패키지 Cppcheck 2.13.0으로 갱신했습니다. 주 분석은 CMake의 GCC 컴파일
+데이터베이스를 사용하므로 Cppcheck가 라이브러리 빌드와 같은 소스 파일, include
+경로, 언어 표준 및 프로젝트 정의를 확인합니다. 설치 및 재현 명령은 다음과 같습니다.
+
+```sh
+sudo apt-get update
+sudo apt-get install -y cppcheck
+cmake -S . -B build-cppcheck \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCERTPP_BUILD_SHARED=OFF \
+  -DCERTPP_BUILD_TESTS=OFF \
+  -DCERTPP_BUILD_EXAMPLES=OFF
+mkdir -p build-cppcheck/cppcheck-cache
+cppcheck --project=build-cppcheck/compile_commands.json \
+  --cppcheck-build-dir=build-cppcheck/cppcheck-cache \
+  --enable=all --inconclusive --check-level=exhaustive \
+  --inline-suppr --suppress=missingIncludeSystem \
+  --suppress=unmatchedSuppression \
+  --xml --xml-version=2 \
+  2> build-cppcheck/cppcheck-library.xml
+```
+
+이 검사는 라이브러리 번역 단위 121개 전부와 그 번역 단위에서 도달하는 공개·비공개
+헤더를 포함했습니다. 수정 후 진단 529건의 분류는 다음과 같습니다.
+
+| 심각도 | 개수 | 검토 결과 |
+| --- | ---: | --- |
+| error | 0 | 남은 Cppcheck 오류가 없습니다. |
+| warning | 15 | 모두 helper를 통한 초기화 또는 첫 읽기 전 보호 조건을 인식하지 못한 오탐으로 검토했습니다. |
+| performance | 60 | 주로 생성자 초기화 목록 제안이며, 정확성 결함은 확인되지 않았습니다. |
+| style | 453 | 대부분 공개 API를 미사용으로 판단한 결과, 의도적인 암시적 변환 및 광범위한 리팩터링 제안입니다. |
+| information | 1 | checker 적용 보고: 이 구성에서 592개 중 172개가 활성화되었습니다. |
+
+남은 경고 15건의 원인은 세 가지입니다. 10건은 변환 생성자가 명시적으로 초기화하는
+`TString` 필드와 `memset`으로 초기화하는 `TStringConverter::_state`를 지적합니다.
+4건은 `CBuffer`와 `COctet`의 복사 대입이 저장 필드를 갱신하지 않는다고 판단하지만,
+두 연산자 모두 해당 필드를 갱신하거나 비우는 `store()`에 위임합니다. 마지막 경고는
+`ChaCha20Transformer::_keystream`에 관한 것입니다. `_keystreamPos`가 블록 크기로
+시작하므로 배열을 처음 읽으려 할 때 반드시 먼저 블록을 생성합니다.
+
+검토 범위에서 발견한 조치 가능한 경고는 모두 수정했습니다.
+
+- `SDateTime::now()`에서 UTC 조기 반환 뒤 도달할 수 없던 두 번째 `asUtc` 분기를
+  제거했습니다.
+- `ISymmetricKey`가 알고리즘을 `ESYM_UNKNOWN`으로 초기화하여, 향후 파생 키 타입이
+  값을 설정하기 전에 미정 값을 노출할 수 없게 했습니다.
+- 인증서 발급 예제 3개가 SHA-1 해시 객체 생성 결과를 역참조하기 전에 검사합니다.
+  이에 따라 possible-null 경고 6건이 없어졌습니다.
+
+컴파일 데이터베이스를 이용해 컴파일 대상 예제 16개를 추가 검사한 결과 오류는 없었고,
+경고 10건은 모두 위에서 검토한 `TString` 오탐과 같았습니다. ML-DSA 타이밍 감사 도구와
+독립 실행형 Fe25519 제곱 생성기에서는 error와 warning이 나오지 않았습니다. 생성된 위키
+snippet은 따로 검사하지 않았으며, 그 원본인 유지 보수 대상 C++ 예제 소스는 예제 검사에
+포함했습니다.
+
+선택형 radix-51 소스도 x86-64 GCC의 `__int128` 기능 매크로를 명시하여 직접 검사했고
+error와 warning이 없었습니다. Cppcheck 2.13.0은 컴파일 데이터베이스에서 GCC 내장
+`__SIZEOF_INT128__`를 추론하지 않으므로, `CERTPP_ENABLE_FE25519_RADIX51=ON`인 전체
+프로젝트를 별도 정의 없이 검사하면 헤더의 의도적인 미지원 대상 `#error`에 도달합니다.
+이는 소스 결함이 아니라 분석기 모델의 한계입니다.
+
+요청에 따라 WSL에서 실행했으므로 이 기준선은 Linux 전용입니다. MSVC 또는 Windows
+CRT에서만 선택되는 분기는 포함하지 않습니다. 테스트 소스는 벤더링된 doctest 헤더를
+각 테스트 번역 단위에서 전개하는 Cppcheck 2.13.0 정밀 검사가 현실적으로 너무 느려
+제외했습니다. 이 파일들의 검증은 컴파일러 빌드와 CTest가 계속 담당합니다. 원시 XML과
+Cppcheck 캐시는 무시되는 빌드 디렉터리에 두며 유지 보수 문서로 추적하지 않습니다.
 
 ## 예제
 

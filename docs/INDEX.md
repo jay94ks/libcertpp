@@ -56,7 +56,7 @@ Operational instructions without translated counterparts:
 | English | Korean |
 | --- | --- |
 | [Configuration and installation](building/configuration.md) | [구성과 설치](building/configuration.ko.md) |
-| [Tests and examples](building/verification.md) | [테스트와 예제](building/verification.ko.md) |
+| [Tests, examples, and static analysis](building/verification.md) | [테스트, 예제 및 정적 분석](building/verification.ko.md) |
 | [API design rules](rules/api.md) | [API 설계 규칙](rules/api.ko.md) |
 | [Source and documentation style](rules/style.md) | [소스와 문서 스타일](rules/style.ko.md) |
 | [Versioning and tests](rules/maintenance.md) | [버전 관리와 테스트](rules/maintenance.ko.md) |

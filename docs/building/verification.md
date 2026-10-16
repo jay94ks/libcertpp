@@ -1,4 +1,4 @@
-# Tests and examples
+# Tests, examples, and static analysis
 
 [한국어](verification.ko.md)
 
@@ -119,6 +119,82 @@ cmake --build build-audit --config Release
 It reports per-outcome timing distributions so reviewers can compare rejection
 classes. It is evidence for manual review, not a constant-time certification or
 a stable benchmark threshold.
+
+## Cppcheck static analysis
+
+The maintained FLOSS static-analysis baseline was refreshed on 2026-10-16 with Cppcheck
+2.13.0 from Ubuntu 24.04 under WSL 2. The primary pass uses CMake's GCC compile
+database so that Cppcheck sees the same source files, include paths, language
+standard, and project definitions as the library build. Install and reproduce
+that pass with:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y cppcheck
+cmake -S . -B build-cppcheck \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCERTPP_BUILD_SHARED=OFF \
+  -DCERTPP_BUILD_TESTS=OFF \
+  -DCERTPP_BUILD_EXAMPLES=OFF
+mkdir -p build-cppcheck/cppcheck-cache
+cppcheck --project=build-cppcheck/compile_commands.json \
+  --cppcheck-build-dir=build-cppcheck/cppcheck-cache \
+  --enable=all --inconclusive --check-level=exhaustive \
+  --inline-suppr --suppress=missingIncludeSystem \
+  --suppress=unmatchedSuppression \
+  --xml --xml-version=2 \
+  2> build-cppcheck/cppcheck-library.xml
+```
+
+The pass covered all 121 library translation units and the public and private
+headers reachable from them. Its post-remediation result was 529 diagnostics:
+
+| Severity | Count | Review result |
+| --- | ---: | --- |
+| error | 0 | No Cppcheck error remained. |
+| warning | 15 | All were reviewed as false positives caused by initialization through helpers or by a guarded first read. |
+| performance | 60 | Suggestions, principally constructor initializer lists; no correctness defect was established. |
+| style | 453 | Mostly public API reported as unused, intentional implicit conversions, and broad refactoring suggestions. |
+| information | 1 | Checker coverage report: 172 of 592 checkers active for this configuration. |
+
+The 15 residual warnings have three causes. Ten point at `TString` fields that
+are initialized explicitly in the converting constructor or, for
+`TStringConverter::_state`, by `memset`. Four claim that `CBuffer` and `COctet`
+copy assignment omit their storage fields; both operators delegate to
+`store()`, which updates or clears those fields. The remaining warning concerns
+`ChaCha20Transformer::_keystream`; `_keystreamPos` starts at the block size, so
+the first attempted read generates a block before reading that array.
+
+The audit fixed every actionable warning found in the reviewed scope:
+
+- `SDateTime::now()` no longer contains a second `asUtc` branch that was
+  unreachable after the UTC early return;
+- `ISymmetricKey` now initializes its algorithm to `ESYM_UNKNOWN`, so future
+  derived key types cannot expose an indeterminate algorithm before setting it;
+- the three certificate-issuing examples check SHA-1 hasher creation before
+  dereferencing the result. Their six possible-null warnings are gone.
+
+An additional compile-database pass over the 16 compiled examples reported no
+errors and ten warnings, all the same reviewed `TString` false positives. The
+ML-DSA timing audit tool and the standalone Fe25519 squaring generator reported
+no error or warning. Generated wiki snippets were not analyzed independently;
+their maintained C++ example sources were included in the example pass.
+
+The opt-in radix-51 source was also checked directly with the x86-64 GCC
+`__int128` capability macros and reported no error or warning. Cppcheck 2.13.0
+does not infer GCC's `__SIZEOF_INT128__` built-in from the compile database, so
+an unqualified project pass with `CERTPP_ENABLE_FE25519_RADIX51=ON` reaches the
+header's intentional unsupported-target `#error`. That is an analyzer model
+limitation rather than a source finding.
+
+This baseline is Linux-specific because the requested analysis ran in WSL. It
+does not cover branches selected only by MSVC or the Windows CRT. Test sources
+are excluded from the exhaustive pass because expanding the vendored doctest
+header for every test translation unit makes Cppcheck 2.13.0 impractically
+slow; compiler builds and CTest remain the validation owners for those files.
+Raw XML and Cppcheck caches belong under an ignored build directory and are not
+maintained documentation.
 
 ## Examples
 

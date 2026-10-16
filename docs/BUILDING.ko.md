@@ -31,4 +31,4 @@ cmake --build build
 ## 상세 문서
 
 - [구성과 설치](building/configuration.ko.md)
-- [테스트와 예제](building/verification.ko.md)
+- [테스트, 예제 및 정적 분석](building/verification.ko.md)

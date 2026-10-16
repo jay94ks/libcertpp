@@ -44,33 +44,18 @@ namespace certpp {
 
         SDateTime ret;
 
-        if (asUtc) {
-            if (!gmtimeSafe(&now, &tm)) {
-                return SDateTime();
-            }
-
-            ret.isUtc = true;
-            ret.year = static_cast<uint16_t>(tm.tm_year + 1900);
-            ret.month = static_cast<uint8_t>(tm.tm_mon + 1);
-            ret.day = static_cast<uint8_t>(tm.tm_mday);
-            ret.hour = static_cast<uint8_t>(tm.tm_hour);
-            ret.minute = static_cast<uint8_t>(tm.tm_min);
-            ret.second = static_cast<uint8_t>(tm.tm_sec);
-            ret.millisecond = 0; // Milliseconds are not available from std::tm
-        } else {
-            if (!localtimeSafe(&now, &tm)) {
-                return SDateTime();
-            }
-
-            ret.isUtc = false;
-            ret.year = static_cast<uint16_t>(tm.tm_year + 1900);
-            ret.month = static_cast<uint8_t>(tm.tm_mon + 1);
-            ret.day = static_cast<uint8_t>(tm.tm_mday);
-            ret.hour = static_cast<uint8_t>(tm.tm_hour);
-            ret.minute = static_cast<uint8_t>(tm.tm_min);
-            ret.second = static_cast<uint8_t>(tm.tm_sec);
-            ret.millisecond = 0; // Milliseconds are not available from std::tm
+        if (!localtimeSafe(&now, &tm)) {
+            return SDateTime();
         }
+
+        ret.isUtc = false;
+        ret.year = static_cast<uint16_t>(tm.tm_year + 1900);
+        ret.month = static_cast<uint8_t>(tm.tm_mon + 1);
+        ret.day = static_cast<uint8_t>(tm.tm_mday);
+        ret.hour = static_cast<uint8_t>(tm.tm_hour);
+        ret.minute = static_cast<uint8_t>(tm.tm_min);
+        ret.second = static_cast<uint8_t>(tm.tm_sec);
+        ret.millisecond = 0; // Milliseconds are not available from std::tm
 
         return ret;
     }

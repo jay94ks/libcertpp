@@ -52,7 +52,10 @@ int main() {
     }
 
     IHasherPtr sha1;
-    IHasher::create(EHASH_SHA1, sha1);
+    if (IHasher::create(EHASH_SHA1, sha1) != ERET_OK || !sha1) {
+        std::fprintf(stderr, "failed to create the SHA-1 hasher\n");
+        return 1;
+    }
     uint8_t skiBytes[20];
     sha1->push(leafPublicKeyBytes.toSpan());
     sha1->finish(SByteSpan(skiBytes, sizeof(skiBytes)));
