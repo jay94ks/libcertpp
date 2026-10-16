@@ -19,6 +19,25 @@ output reports "(unavailable)", which was the point of covering all of them.
 GF(2^m) curves appear under signatures but not under key agreement because that is what they
 implement: they do ECDSA and not ECDH.
 
+## Current hardware-acceleration check
+
+The ChaCha20-Poly1305 bulk result was refreshed on 2026-10-16 after adding the
+sixteen-block AVX-512F ChaCha20 path and removing the Poly1305 AVX-512 vector-argument ABI
+boundary. This focused comparison used the same i7-11370H host under Windows, Clang 22.1.8
+targeting the MSVC ABI, Ninja, and a Release build. It ran the 64 KiB row from
+[`examples/05_benchmark.cpp`](../../examples/05_benchmark.cpp); each build kept all other
+hardware acceleration enabled.
+
+| ChaCha20-Poly1305 seal, 64 KiB | Throughput | Relative |
+|---|---:|---:|
+| AVX-512F ChaCha20 + AVX512-IFMA Poly1305 | **1979.7 MiB/s** | **4.00x** |
+| `CERTPP_DISABLE_HWACCEL_AVX512=ON` (AVX2/SSE2 retained) | 494.8 MiB/s | 1.00x |
+
+This isolates the combined effect of the two AVX-512 tiers. It does not assign the gain to
+ChaCha20 and Poly1305 individually. The larger tables below remain the original full MSVC/GCC
+cross-toolchain run; their conditions are stated separately so results from different compiler
+versions are not mixed into one column.
+
 ## Against OpenSSL
 
 A number means nothing in isolation, so the same algorithms were measured against OpenSSL 3.0.13
