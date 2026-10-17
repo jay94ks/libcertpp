@@ -491,6 +491,41 @@ namespace crypto {
         return toAffineFromLD(result);
     }
 
+    /* Joint multiplication for public verification scalars. It shares one Lopez-Dahab
+     * accumulator and final field inversion instead of performing two independent scalar
+     * multiplications and an affine addition. */
+    SEc2Point CEc2Curve::linearCombination(
+        const CBigNum& k1, const SEc2Point& p1,
+        const CBigNum& k2, const SEc2Point& p2
+    ) const {
+        const size_t bits1 = k1.bitLength();
+        const size_t bits2 = k2.bitLength();
+        const size_t iterations = bits1 > bits2 ? bits1 : bits2;
+        if (iterations == 0) {
+            return SEc2Point();
+        }
+
+        const EC2PointLD l1 = toLD(p1, *field);
+        const EC2PointLD l2 = toLD(p2, *field);
+        const EC2PointLD l12 = addLD(l1, l2, a, b);
+        EC2PointLD accumulator = infinityLD();
+
+        for (size_t i = iterations; i-- > 0; ) {
+            accumulator = doublePointLD(accumulator, a, b);
+            const bool bit1 = k1.testBit(i);
+            const bool bit2 = k2.testBit(i);
+            if (bit1 && bit2) {
+                accumulator = addLD(accumulator, l12, a, b);
+            } else if (bit1) {
+                accumulator = addLD(accumulator, l1, a, b);
+            } else if (bit2) {
+                accumulator = addLD(accumulator, l2, a, b);
+            }
+        }
+
+        return toAffineFromLD(accumulator);
+    }
+
     bool CEc2Curve::encodePoint(const SEc2Point& pt, TArray<uint8_t>& out) const {
         if (pt.infinity) {
             out.resize(1);

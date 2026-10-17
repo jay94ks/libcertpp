@@ -1,4 +1,5 @@
 #include "cbctransformer.hpp"
+#include <cstdint>
 #include <cstring>
 
 namespace certpp {
@@ -239,6 +240,41 @@ namespace crypto {
     }
 
     ERetCode CbcTransformer::transform(const SReadOnlyByteSpan& input, SByteSpan& output) {
+        /* Whole-block encryption can stream directly from the caller when no earlier partial
+         * block is pending. Besides avoiding an input-sized copy, this also avoids allocating a
+         * second empty buffer after processBuffered() consumes the copied data. Keep the buffered
+         * path for forward-overlapping output, where writing ciphertext could overwrite plaintext
+         * that the bulk function has not read yet. Exact in-place operation and output at or below
+         * the input address are safe because each input block is loaded before its output block is
+         * stored. */
+        if (_encrypting && _bulkBlockFn && _buffer.size() == 0
+            && input.size >= _blockBytes && output.size >= _blockBytes) {
+            const uintptr_t inputAddress = reinterpret_cast<uintptr_t>(input.data);
+            const uintptr_t outputAddress = reinterpret_cast<uintptr_t>(output.data);
+            const bool safeOverlap = outputAddress <= inputAddress
+                || outputAddress - inputAddress >= input.size;
+
+            if (safeOverlap) {
+                size_t blocks = input.size / _blockBytes;
+                const size_t fitting = output.size / _blockBytes;
+                if (blocks > fitting) {
+                    blocks = fitting;
+                }
+
+                const size_t written = blocks * _blockBytes;
+                _bulkBlockFn(input.data, output.data, blocks, _chain.toPtr());
+
+                const size_t remainder = input.size - written;
+                if (remainder > 0) {
+                    _buffer.resize(remainder);
+                    std::memcpy(_buffer.toPtr(), input.data + written, remainder);
+                }
+
+                output = SByteSpan(output.data, written);
+                return ERET_OK;
+            }
+        }
+
         size_t old = _buffer.size();
         _buffer.resize(old + input.size);
 

@@ -188,6 +188,13 @@ shared `validatePublicValue()` that both paths call, so nothing is weakened —
 the comparison that was dropped was between a value and itself. Measured:
 540 → 333 µs, consistent with three ladders becoming two.
 
+A later OpenSSL-comparison pass removed the remaining cofactor ladder as well. Both validation
+sites operate on a value derived from the standard base point with a clamped scalar. Because the
+clamp makes the scalar a multiple of 8, that derivation has already cleared the base point's
+cofactor; a nonzero result is in the prime-order subgroup, so computing `8*u` cannot reject an
+additional case. Keeping the structural range and all-zero checks reduced the current median
+key-generation latency from 0.270 to 0.139 ms.
+
 #### What was tried and reverted
 
 `carryPass()` was unrolled with literal shift amounts, on the theory that

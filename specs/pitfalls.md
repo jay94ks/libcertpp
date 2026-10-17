@@ -156,6 +156,11 @@ changes do not make the variable-width backend constant-time, so prime-curve
 ECDSA and ECDH still carry timing risk. Prefer X25519, whose ladder uses the
 fixed-width `Fe25519` backend, where the protocol permits it.
 
+**`CEcCurve::linearCombination()` and `CEc2Curve::linearCombination()` accept
+public scalars only.** They branch on scalar bits to accelerate signature
+verification. Passing a private scalar to either method creates a direct timing
+and control-flow leak; use `scalarMul()` or `scalarMulBase()` for private values.
+
 **Two moduli live on these curves and they are not interchangeable.** The field
 prime (coordinates) and the group order (scalars) are different numbers.
 `Fe25519` implements only the field prime 2^255−19; it has no conversion to or

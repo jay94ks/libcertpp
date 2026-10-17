@@ -1,6 +1,16 @@
 #include "blake2score.hpp"
 #include <cstring>
 
+/* BLAKE2s applies four independent G functions to each column/diagonal step. SSE2 can therefore
+ * evaluate all four at once inside one message block; unlike the multi-buffer techniques used by
+ * some hash implementations, this does not change buffering or require four independent inputs.
+ * SSE2 is part of the x86-64 ABI, so no runtime feature check is needed there. The portable path
+ * remains compiled everywhere else and when SIMD acceleration is disabled. */
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && (defined(_M_X64) || defined(__x86_64__))
+#define CERTPP_BLAKE2S_SSE2 1
+#include <emmintrin.h>
+#endif
+
 namespace certpp {
 namespace crypto {
 
@@ -48,6 +58,78 @@ namespace crypto {
             v[b] = rotr(v[b] ^ v[c], 7);
         }
 
+#if defined(CERTPP_BLAKE2S_SSE2)
+        template <int N>
+        inline __m128i rotr32x4(__m128i value) {
+            return _mm_or_si128(
+                _mm_srli_epi32(value, N), _mm_slli_epi32(value, 32 - N));
+        }
+
+        /* Four G functions in parallel. Each lane is one column or diagonal; x and y already
+         * carry the four message words selected by the current SIGMA row. */
+        inline void mixGx4(
+            __m128i& a, __m128i& b, __m128i& c, __m128i& d,
+            const __m128i& x, const __m128i& y
+        ) {
+            a = _mm_add_epi32(_mm_add_epi32(a, b), x);
+            d = rotr32x4<16>(_mm_xor_si128(d, a));
+            c = _mm_add_epi32(c, d);
+            b = rotr32x4<12>(_mm_xor_si128(b, c));
+            a = _mm_add_epi32(_mm_add_epi32(a, b), y);
+            d = rotr32x4<8>(_mm_xor_si128(d, a));
+            c = _mm_add_epi32(c, d);
+            b = rotr32x4<7>(_mm_xor_si128(b, c));
+        }
+
+        inline __m128i message4(
+            const uint32_t m[16], const uint8_t* s, size_t offset
+        ) {
+            return _mm_set_epi32(
+                static_cast<int>(m[s[offset + 6]]),
+                static_cast<int>(m[s[offset + 4]]),
+                static_cast<int>(m[s[offset + 2]]),
+                static_cast<int>(m[s[offset + 0]]));
+        }
+
+        /* Runs all ten rounds with the four rows of v held in vector registers. Rotating lanes
+         * turns the column layout into the diagonal layout from RFC 7693, then the inverse
+         * rotations restore it for the next round. */
+        inline void compressSse2(
+            uint32_t state[8], const uint32_t m[16], uint64_t counter, bool last
+        ) {
+            __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(state));
+            __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(state + 4));
+            const __m128i savedA = a;
+            const __m128i savedB = b;
+            __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i*>(IV));
+            __m128i d = _mm_set_epi32(
+                static_cast<int>(IV[7]),
+                static_cast<int>(IV[6] ^ (last ? 0xFFFFFFFFu : 0u)),
+                static_cast<int>(IV[5] ^ uint32_t(counter >> 32)),
+                static_cast<int>(IV[4] ^ uint32_t(counter)));
+
+            for (size_t round = 0; round < 10; ++round) {
+                const uint8_t* s = SIGMA[round];
+                mixGx4(a, b, c, d, message4(m, s, 0), message4(m, s, 1));
+
+                b = _mm_shuffle_epi32(b, _MM_SHUFFLE(0, 3, 2, 1));
+                c = _mm_shuffle_epi32(c, _MM_SHUFFLE(1, 0, 3, 2));
+                d = _mm_shuffle_epi32(d, _MM_SHUFFLE(2, 1, 0, 3));
+
+                mixGx4(a, b, c, d, message4(m, s, 8), message4(m, s, 9));
+
+                b = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 1, 0, 3));
+                c = _mm_shuffle_epi32(c, _MM_SHUFFLE(1, 0, 3, 2));
+                d = _mm_shuffle_epi32(d, _MM_SHUFFLE(0, 3, 2, 1));
+            }
+
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(state),
+                _mm_xor_si128(savedA, _mm_xor_si128(a, c)));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(state + 4),
+                _mm_xor_si128(savedB, _mm_xor_si128(b, d)));
+        }
+#endif
+
     } // namespace
 
     /* Runs the compression function F over one block. */
@@ -56,12 +138,22 @@ namespace crypto {
     ) {
         // --> BLAKE2s reads its message words little-endian, unlike the big-endian SHA-2 family.
         uint32_t m[16];
+#if defined(_WIN32) \
+    || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+        std::memcpy(m, block, sizeof(m));
+#else
         for (size_t i = 0; i < 16; ++i) {
             m[i] = uint32_t(block[i * 4 + 0])
                  | (uint32_t(block[i * 4 + 1]) << 8)
                  | (uint32_t(block[i * 4 + 2]) << 16)
                  | (uint32_t(block[i * 4 + 3]) << 24);
         }
+#endif
+
+#if defined(CERTPP_BLAKE2S_SSE2)
+        compressSse2(state, m, counter, last);
+        return;
+#endif
 
         uint32_t v[16];
         std::memcpy(v, state, sizeof(uint32_t) * 8);

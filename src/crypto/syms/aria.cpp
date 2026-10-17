@@ -70,6 +70,9 @@ namespace crypto {
                     shared_from_this(), true, ARIA_BLOCK_BYTES, iv().toSpan(), padding(),
                     [encKeys, nr](const uint8_t* in, uint8_t* o) {
                         AriaCore::encryptBlock(in, o, encKeys.begin(), nr);
+                    },
+                    [encKeys, nr](const uint8_t* in, uint8_t* o, size_t blocks, uint8_t* chain) {
+                        AriaCore::encryptCbcBulk(in, o, blocks, chain, encKeys.begin(), nr);
                     }
                 );
                 return ERET_OK;

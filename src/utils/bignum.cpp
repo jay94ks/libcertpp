@@ -1,5 +1,6 @@
 #include <certpp/utils/bignum.hpp>
 #include <certpp/utils/hex.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/utils/secure.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
@@ -1064,6 +1065,13 @@ namespace certpp {
         CBigNum nMinus3(nMinus1);
         nMinus3.sub(CBigNum(uint64_t(2)));
 
+        // Every candidate reaching Miller-Rabin is odd. Keep the repeated modular squarings in
+        // Montgomery form so primality testing does not pay a Knuth-D division for every bit of
+        // every witness. Prime generation is dominated by this loop for RSA and DSA keys.
+        const CMontgomery mont(*this);
+        const CBigNum oneMont = mont.one();
+        const CBigNum nMinus1Mont = mont.toMont(nMinus1);
+
         for (size_t i = 0; i < rounds; ++i) {
             CBigNum witness;
             if (!randomBelow(nMinus3, witness)) {
@@ -1072,16 +1080,21 @@ namespace certpp {
 
             witness.add(CBigNum(uint64_t(2)));
 
-            CBigNum x = modExp(witness, d, *this);
+            CBigNum x = mont.modExp(witness, d);
             if (x == CBigNum(uint64_t(1)) || x == nMinus1) {
                 continue;
             }
 
+            x = mont.toMont(x);
+
             bool composite = true;
             for (size_t j = 1; j < r; ++j) {
-                x.mulMod(x, *this);
-                if (x == nMinus1) {
+                mont.mul(x, x);
+                if (x == nMinus1Mont) {
                     composite = false;
+                    break;
+                }
+                if (x == oneMont) {
                     break;
                 }
             }

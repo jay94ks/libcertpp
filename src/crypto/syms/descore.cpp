@@ -25,17 +25,6 @@ namespace crypto {
         33,  1, 41,  9, 49, 17, 57, 25,
     };
 
-    const uint8_t DesCore::EXPANSION[48] = {
-        32,  1,  2,  3,  4,  5,
-         4,  5,  6,  7,  8,  9,
-         8,  9, 10, 11, 12, 13,
-        12, 13, 14, 15, 16, 17,
-        16, 17, 18, 19, 20, 21,
-        20, 21, 22, 23, 24, 25,
-        24, 25, 26, 27, 28, 29,
-        28, 29, 30, 31, 32,  1,
-    };
-
     const uint8_t DesCore::PBOX[32] = {
         16,  7, 20, 21,
         29, 12, 28, 17,
@@ -133,22 +122,107 @@ namespace crypto {
         return output;
     }
 
-    uint32_t DesCore::feistel(uint32_t r, uint64_t roundKey) {
-        uint64_t expanded = permute(static_cast<uint64_t>(r), EXPANSION, 48, 32) ^ roundKey;
-
-        uint32_t sboxOut = 0;
-        for (int i = 0; i < 8; ++i) {
-            uint8_t block6 = static_cast<uint8_t>((expanded >> (42 - 6 * i)) & 0x3F);
-            uint8_t row = static_cast<uint8_t>(((block6 & 0x20) >> 4) | (block6 & 0x01));
-            uint8_t col = static_cast<uint8_t>((block6 >> 1) & 0x0F);
-
-            sboxOut = (sboxOut << 4) | SBOX[i][row * 16 + col];
-        }
-
-        return static_cast<uint32_t>(permute(sboxOut, PBOX, 32, 32));
+    const DesCore::SpBoxes& DesCore::spBoxes() {
+        static const SpBoxes boxes = [] {
+            SpBoxes result{};
+            for (size_t box = 0; box < 8; ++box) {
+                for (uint32_t input = 0; input < 64; ++input) {
+                    const uint8_t row = static_cast<uint8_t>(
+                        ((input & 0x20u) >> 4) | (input & 0x01u));
+                    const uint8_t column = static_cast<uint8_t>((input >> 1) & 0x0fu);
+                    const uint32_t substituted =
+                        uint32_t(SBOX[box][row * 16 + column]) << (28 - 4 * box);
+                    result.values[box][input] = static_cast<uint32_t>(
+                        permute(substituted, PBOX, 32, 32));
+                }
+            }
+            return result;
+        }();
+        return boxes;
     }
 
-    void DesCore::keySchedule(const uint8_t key[8], uint64_t roundKeys[16]) {
+    const DesCore::BlockPermutations& DesCore::blockPermutations() {
+        static const BlockPermutations tables = [] {
+            BlockPermutations result{};
+            for (size_t byte = 0; byte < 8; ++byte) {
+                const size_t shift = (7 - byte) * 8;
+                for (uint64_t value = 0; value < 256; ++value) {
+                    const uint64_t placed = value << shift;
+                    result.initial[byte][value] = permute(placed, IP, 64, 64);
+                    result.final[byte][value] = permute(placed, FP, 64, 64);
+                }
+            }
+            return result;
+        }();
+        return tables;
+    }
+
+    uint64_t DesCore::permuteBlock(uint64_t input, const uint64_t table[8][256]) {
+        return table[0][(input >> 56) & 0xffu]
+            | table[1][(input >> 48) & 0xffu]
+            | table[2][(input >> 40) & 0xffu]
+            | table[3][(input >> 32) & 0xffu]
+            | table[4][(input >> 24) & 0xffu]
+            | table[5][(input >> 16) & 0xffu]
+            | table[6][(input >> 8) & 0xffu]
+            | table[7][input & 0xffu];
+    }
+
+    uint32_t DesCore::feistel(uint32_t r, const RoundKey& roundKey, const SpBoxes& boxes) {
+        const uint32_t rotated = (r << 7) | (r >> 25);
+        const uint32_t even = rotated ^ roundKey.even;
+        const uint32_t odd = ((r << 3) | (r >> 29)) ^ roundKey.odd;
+        return boxes.values[0][(even >> 2) & 0x3fu]
+            | boxes.values[6][(even >> 10) & 0x3fu]
+            | boxes.values[4][(even >> 18) & 0x3fu]
+            | boxes.values[2][(even >> 26) & 0x3fu]
+            | boxes.values[7][(odd >> 2) & 0x3fu]
+            | boxes.values[5][(odd >> 10) & 0x3fu]
+            | boxes.values[3][(odd >> 18) & 0x3fu]
+            | boxes.values[1][(odd >> 26) & 0x3fu];
+    }
+
+    uint64_t DesCore::loadBlock(const uint8_t in[8]) {
+        uint64_t value = 0;
+        for (size_t i = 0; i < 8; ++i) {
+            value = (value << 8) | in[i];
+        }
+        return value;
+    }
+
+    void DesCore::storeBlock(uint64_t value, uint8_t out[8]) {
+        for (int i = 7; i >= 0; --i) {
+            out[i] = static_cast<uint8_t>(value);
+            value >>= 8;
+        }
+    }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+    __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+    __forceinline
+#endif
+    uint64_t DesCore::processPermuted(
+        uint64_t input, const RoundKey roundKeys[16], const SpBoxes& boxes
+    ) {
+        uint32_t l = static_cast<uint32_t>(input >> 32);
+        uint32_t r = static_cast<uint32_t>(input);
+
+#if defined(__clang__)
+#pragma clang loop unroll(full)
+#elif defined(__GNUC__) && !defined(_MSC_VER)
+#pragma GCC unroll 16
+#endif
+        for (int round = 0; round < 16; ++round) {
+            const uint32_t next = l ^ feistel(r, roundKeys[round], boxes);
+            l = r;
+            r = next;
+        }
+
+        return (uint64_t(r) << 32) | l;
+    }
+
+    void DesCore::keySchedule(const uint8_t key[8], RoundKey roundKeys[16]) {
         uint64_t k64 = 0;
         for (int i = 0; i < 8; ++i) {
             k64 = (k64 << 8) | key[i];
@@ -164,34 +238,79 @@ namespace crypto {
             d = ((d << shift) | (d >> (28 - shift))) & 0x0FFFFFFFu;
 
             uint64_t cd = (static_cast<uint64_t>(c) << 28) | d;
-            roundKeys[round] = permute(cd, PC2, 48, 56);
+            const uint64_t roundKey = permute(cd, PC2, 48, 56);
+            const uint32_t k0 = static_cast<uint32_t>((roundKey >> 42) & 0x3fu);
+            const uint32_t k1 = static_cast<uint32_t>((roundKey >> 36) & 0x3fu);
+            const uint32_t k2 = static_cast<uint32_t>((roundKey >> 30) & 0x3fu);
+            const uint32_t k3 = static_cast<uint32_t>((roundKey >> 24) & 0x3fu);
+            const uint32_t k4 = static_cast<uint32_t>((roundKey >> 18) & 0x3fu);
+            const uint32_t k5 = static_cast<uint32_t>((roundKey >> 12) & 0x3fu);
+            const uint32_t k6 = static_cast<uint32_t>((roundKey >> 6) & 0x3fu);
+            const uint32_t k7 = static_cast<uint32_t>(roundKey & 0x3fu);
+            roundKeys[round].even = (k0 << 2) | (k6 << 10) | (k4 << 18) | (k2 << 26);
+            roundKeys[round].odd = (k7 << 2) | (k5 << 10) | (k3 << 18) | (k1 << 26);
         }
     }
 
-    void DesCore::processBlock(const uint8_t in[8], uint8_t out[8], const uint64_t roundKeys[16]) {
-        uint64_t block = 0;
-        for (int i = 0; i < 8; ++i) {
-            block = (block << 8) | in[i];
+    void DesCore::processBlock(const uint8_t in[8], uint8_t out[8], const RoundKey roundKeys[16]) {
+        const uint64_t block = loadBlock(in);
+        const BlockPermutations& permutations = blockPermutations();
+        const SpBoxes& boxes = spBoxes();
+        const uint64_t afterIp = permuteBlock(block, permutations.initial);
+        const uint64_t preOutput = processPermuted(afterIp, roundKeys, boxes);
+        storeBlock(permuteBlock(preOutput, permutations.final), out);
+    }
+
+    void DesCore::processTripleBlock(
+        const uint8_t in[8], uint8_t out[8], const RoundKey roundKeys[3][16]
+    ) {
+        const BlockPermutations& permutations = blockPermutations();
+        const SpBoxes& boxes = spBoxes();
+        uint64_t value = permuteBlock(loadBlock(in), permutations.initial);
+        value = processPermuted(value, roundKeys[0], boxes);
+        value = processPermuted(value, roundKeys[1], boxes);
+        value = processPermuted(value, roundKeys[2], boxes);
+        storeBlock(permuteBlock(value, permutations.final), out);
+    }
+
+    void DesCore::encryptCbcBulk(
+        const uint8_t* in, uint8_t* out, size_t blocks, uint8_t chain[8],
+        const RoundKey roundKeys[16]
+    ) {
+        const BlockPermutations& permutations = blockPermutations();
+        const SpBoxes& boxes = spBoxes();
+        uint64_t chaining = loadBlock(chain);
+
+        for (size_t block = 0; block < blocks; ++block) {
+            uint64_t value = loadBlock(in + block * 8) ^ chaining;
+            value = permuteBlock(value, permutations.initial);
+            value = processPermuted(value, roundKeys, boxes);
+            chaining = permuteBlock(value, permutations.final);
+            storeBlock(chaining, out + block * 8);
         }
 
-        uint64_t afterIp = permute(block, IP, 64, 64);
-        uint32_t l = static_cast<uint32_t>(afterIp >> 32);
-        uint32_t r = static_cast<uint32_t>(afterIp & 0xFFFFFFFFu);
+        storeBlock(chaining, chain);
+    }
 
-        for (int round = 0; round < 16; ++round) {
-            uint32_t newR = l ^ feistel(r, roundKeys[round]);
-            l = r;
-            r = newR;
+    void DesCore::encryptTripleCbcBulk(
+        const uint8_t* in, uint8_t* out, size_t blocks, uint8_t chain[8],
+        const RoundKey roundKeys[3][16]
+    ) {
+        const BlockPermutations& permutations = blockPermutations();
+        const SpBoxes& boxes = spBoxes();
+        uint64_t chaining = loadBlock(chain);
+
+        for (size_t block = 0; block < blocks; ++block) {
+            uint64_t value = permuteBlock(
+                loadBlock(in + block * 8) ^ chaining, permutations.initial);
+            value = processPermuted(value, roundKeys[0], boxes);
+            value = processPermuted(value, roundKeys[1], boxes);
+            value = processPermuted(value, roundKeys[2], boxes);
+            chaining = permuteBlock(value, permutations.final);
+            storeBlock(chaining, out + block * 8);
         }
 
-        // --> R16||L16 (the pre-FP swap is folded in here instead of an explicit 17th swap).
-        uint64_t preOutput = (static_cast<uint64_t>(r) << 32) | l;
-        uint64_t result = permute(preOutput, FP, 64, 64);
-
-        for (int i = 7; i >= 0; --i) {
-            out[i] = static_cast<uint8_t>(result & 0xFF);
-            result >>= 8;
-        }
+        storeBlock(chaining, chain);
     }
 
 } // namespace crypto

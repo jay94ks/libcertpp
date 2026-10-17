@@ -106,8 +106,8 @@ tests/
       xchacha20poly1305.cpp          # CXChaCha20Poly1305 테스트 케이스 (draft-irtf-cfrg-xchacha A.3의 벡터, HChaCha20 부분키를 A.1에 대조, 그리고 마지막 8바이트가 반복되는 192비트 nonce가 키스트림을 반복하지 않는다는 것)
       aesgcm.cpp                     # CAesGcm 테스트 케이스 (GCM 명세 부록 B의 96비트 IV 케이스 1–4/7–10/13–16, aliasing, tag 절단, 조작, 오류 경로)
       ghash.cpp                       # Ghash 테스트 케이스 (GCM 비트 순서에서의 체 항등식, x 곱셈을 shift에 대조, chunk 처리, 이식 가능 경로 대 PCLMULQDQ 차분)
-    eccurve.cpp                   # CEcCurve/SEcPoint 테스트 케이스 (군 법칙, SEC1 인코딩, 군 위수 검사)
-    ec2curve.cpp                  # CEc2Curve/SEc2Point 테스트 케이스. 알려진 10개 곡선 전부에 대해 (곡선 위에 있음, 부정, 군 법칙, SEC1 인코딩, 군 위수 검사)
+    eccurve.cpp                   # CEcCurve/SEcPoint 테스트 케이스 (군 법칙, 동시 곱, SEC1 인코딩, 군 위수 검사)
+    ec2curve.cpp                  # CEc2Curve/SEc2Point 테스트 케이스. 알려진 10개 곡선 전부에 대해 (곡선 위에 있음, 부정, 군 법칙, 동시 곱, SEC1 인코딩, 군 위수 검사)
     policy.cpp                    # CAlgorithmPolicy 기본값과 레거시 알고리즘 opt-in 동작
     safe_api.cpp                  # 공개 crypto API의 소유형 출력 overload와 실패 상태 검사
   x509/
@@ -175,11 +175,11 @@ CMake는 하나의 타깃 `certpp`(별칭 `certpp::certpp`)를 빌드하며, sha
   `MD5`는 영향을 받지 않습니다. SHA-384/SHA-512와 SHA-3/SHAKE에는 BMI 기반
   가속 경로가 있지만 이 SHA 확장 스위치가 아니라
   `CERTPP_DISABLE_HWACCEL_SIMD`가 제어합니다.
-- `CERTPP_DISABLE_HWACCEL_AES`(기본 `OFF`)는 `AesCore`의 블록
-  함수들(`src/crypto/syms/aescore.cpp`)이 AES-NI
-  명령(AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) 대신 항상 이식 가능 라운드
-  루프를 쓰게 강제하며, 자기 런타임 CPUID 검사(`hasAesNi()`. leaf 1, ECX
-  비트 25)에 관문이 걸려 있습니다. `DES`/`TripleDES`에는 가속 경로가 없고
+- `CERTPP_DISABLE_HWACCEL_AES`(기본 `OFF`)는 `AesCore`
+  (`src/crypto/syms/aescore.cpp`)가 단일 블록/CBC의 AES-NI와 병렬 GCM 카운터의
+  VAES 대신 이식 가능 라운드를 쓰게 강제합니다. AES-NI는 자기 런타임 CPUID
+  검사(`hasAesNi()`. leaf 1, ECX 비트 25)를 사용하고 VAES는 AVX2와 OS가 활성화한
+  XMM/YMM 상태도 검사합니다. `DES`/`TripleDES`에는 가속 경로가 없고
   영향을 받지 않습니다. `ChaCha20`은 AES 확장 대신 SSE2/AVX2/AVX-512F를 사용하며
   `CERTPP_DISABLE_HWACCEL_SIMD`에 응답합니다 — 복호 쪽이 쓰는
   Equivalent Inverse Cipher 구성은 위의 `crypto/syms/aes.hpp` 항목을

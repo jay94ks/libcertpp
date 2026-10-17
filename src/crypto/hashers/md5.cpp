@@ -1,21 +1,24 @@
 #include <certpp/crypto/hashers/md5.hpp>
+#include <certpp/arch.hpp>
 #include <cstring>
+
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+#define CERTPP_MD5_AVX512 1
+#include <immintrin.h>
+#endif
+
+#if defined(CERTPP_ARCH_HAS_ANDN) && \
+    (defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER)))
+#define CERTPP_MD5_BMI1 1
+#endif
 
 namespace certpp {
 namespace crypto {
 
-    /* Runs the MD5 compression function over one 64-byte block, updating state in place. */
-    void MD5::transform(uint32_t state[4], const uint8_t block[64]) {
-        /* Per-round left-rotate amounts, 4 groups of 4, repeated across the 4 rounds of 16 steps each. */
-        static constexpr uint32_t SHIFTS[64] = {
-            7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
-            5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
-            4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
-            6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,
-        };
+    namespace {
 
         /* Round constants: floor(abs(sin(i + 1)) * 2^32), for i in [0, 64). */
-        static constexpr uint32_t K[64] = {
+        constexpr uint32_t MD5_K[64] = {
             0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
             0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
             0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
@@ -34,7 +37,232 @@ namespace crypto {
             0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
         };
 
+        inline uint32_t loadMd5Le32(const uint8_t* src) {
+            uint32_t value;
+            std::memcpy(&value, src, sizeof(value));
+            return value;
+        }
+
+#if defined(CERTPP_MD5_BMI1)
+        bool hasBmi1Md5() {
+            static const bool supported = __builtin_cpu_supports("bmi");
+            return supported;
+        }
+
+        /* The scalar form keeps the working state in general-purpose registers. Writing all
+         * steps explicitly exposes every rotate count and message index to the compiler. BMI1
+         * then folds each complemented AND into ANDN, while destructive ROL updates the working
+         * word in place; RORX was measured slower for this dependency pattern. */
+        __attribute__((target("bmi,no-bmi2")))
+        void transformMd5Bmi1Blocks(uint32_t* __restrict state,
+                                    const uint8_t* __restrict block,
+                                    size_t blocks) {
+            while (blocks-- != 0) {
+            uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+            size_t stepIndex = 0;
+
+#define CERTPP_MD5_SCALAR_STEP(x, booleanValue, addend, index, shift) do { \
+            const uint32_t rotateValue = (x) + (booleanValue) \
+                + loadMd5Le32(block + (index) * 4) + MD5_K[stepIndex]; \
+            (x) = (addend) + ((rotateValue << (shift)) \
+                | (rotateValue >> (32 - (shift)))); \
+            ++stepIndex; \
+        } while (false)
+#define CERTPP_MD5_F(x, p, q, r, addend, index, shift) \
+        CERTPP_MD5_SCALAR_STEP(x, ((p) & (q)) | (~(p) & (r)), addend, index, shift)
+#define CERTPP_MD5_G(x, p, q, r, addend, index, shift) \
+        CERTPP_MD5_SCALAR_STEP(x, ((p) & (q)) | (~(p) & (r)), addend, index, shift)
+#define CERTPP_MD5_H(x, p, q, r, addend, index, shift) \
+        CERTPP_MD5_SCALAR_STEP(x, (p) ^ (q) ^ (r), addend, index, shift)
+#define CERTPP_MD5_I(x, p, q, r, addend, index, shift) \
+        CERTPP_MD5_SCALAR_STEP(x, (q) ^ ((p) | ~(r)), addend, index, shift)
+
+            CERTPP_MD5_F(a, b, c, d, b,  0,  7); CERTPP_MD5_F(d, a, b, c, a,  1, 12);
+            CERTPP_MD5_F(c, d, a, b, d,  2, 17); CERTPP_MD5_F(b, c, d, a, c,  3, 22);
+            CERTPP_MD5_F(a, b, c, d, b,  4,  7); CERTPP_MD5_F(d, a, b, c, a,  5, 12);
+            CERTPP_MD5_F(c, d, a, b, d,  6, 17); CERTPP_MD5_F(b, c, d, a, c,  7, 22);
+            CERTPP_MD5_F(a, b, c, d, b,  8,  7); CERTPP_MD5_F(d, a, b, c, a,  9, 12);
+            CERTPP_MD5_F(c, d, a, b, d, 10, 17); CERTPP_MD5_F(b, c, d, a, c, 11, 22);
+            CERTPP_MD5_F(a, b, c, d, b, 12,  7); CERTPP_MD5_F(d, a, b, c, a, 13, 12);
+            CERTPP_MD5_F(c, d, a, b, d, 14, 17); CERTPP_MD5_F(b, c, d, a, c, 15, 22);
+
+            CERTPP_MD5_G(a, d, b, c, b,  1,  5); CERTPP_MD5_G(d, c, a, b, a,  6,  9);
+            CERTPP_MD5_G(c, b, d, a, d, 11, 14); CERTPP_MD5_G(b, a, c, d, c,  0, 20);
+            CERTPP_MD5_G(a, d, b, c, b,  5,  5); CERTPP_MD5_G(d, c, a, b, a, 10,  9);
+            CERTPP_MD5_G(c, b, d, a, d, 15, 14); CERTPP_MD5_G(b, a, c, d, c,  4, 20);
+            CERTPP_MD5_G(a, d, b, c, b,  9,  5); CERTPP_MD5_G(d, c, a, b, a, 14,  9);
+            CERTPP_MD5_G(c, b, d, a, d,  3, 14); CERTPP_MD5_G(b, a, c, d, c,  8, 20);
+            CERTPP_MD5_G(a, d, b, c, b, 13,  5); CERTPP_MD5_G(d, c, a, b, a,  2,  9);
+            CERTPP_MD5_G(c, b, d, a, d,  7, 14); CERTPP_MD5_G(b, a, c, d, c, 12, 20);
+
+            CERTPP_MD5_H(a, b, c, d, b,  5,  4); CERTPP_MD5_H(d, a, b, c, a,  8, 11);
+            CERTPP_MD5_H(c, d, a, b, d, 11, 16); CERTPP_MD5_H(b, c, d, a, c, 14, 23);
+            CERTPP_MD5_H(a, b, c, d, b,  1,  4); CERTPP_MD5_H(d, a, b, c, a,  4, 11);
+            CERTPP_MD5_H(c, d, a, b, d,  7, 16); CERTPP_MD5_H(b, c, d, a, c, 10, 23);
+            CERTPP_MD5_H(a, b, c, d, b, 13,  4); CERTPP_MD5_H(d, a, b, c, a,  0, 11);
+            CERTPP_MD5_H(c, d, a, b, d,  3, 16); CERTPP_MD5_H(b, c, d, a, c,  6, 23);
+            CERTPP_MD5_H(a, b, c, d, b,  9,  4); CERTPP_MD5_H(d, a, b, c, a, 12, 11);
+            CERTPP_MD5_H(c, d, a, b, d, 15, 16); CERTPP_MD5_H(b, c, d, a, c,  2, 23);
+
+            CERTPP_MD5_I(a, b, c, d, b,  0,  6); CERTPP_MD5_I(d, a, b, c, a,  7, 10);
+            CERTPP_MD5_I(c, d, a, b, d, 14, 15); CERTPP_MD5_I(b, c, d, a, c,  5, 21);
+            CERTPP_MD5_I(a, b, c, d, b, 12,  6); CERTPP_MD5_I(d, a, b, c, a,  3, 10);
+            CERTPP_MD5_I(c, d, a, b, d, 10, 15); CERTPP_MD5_I(b, c, d, a, c,  1, 21);
+            CERTPP_MD5_I(a, b, c, d, b,  8,  6); CERTPP_MD5_I(d, a, b, c, a, 15, 10);
+            CERTPP_MD5_I(c, d, a, b, d,  6, 15); CERTPP_MD5_I(b, c, d, a, c, 13, 21);
+            CERTPP_MD5_I(a, b, c, d, b,  4,  6); CERTPP_MD5_I(d, a, b, c, a, 11, 10);
+            CERTPP_MD5_I(c, d, a, b, d,  2, 15); CERTPP_MD5_I(b, c, d, a, c,  9, 21);
+
+#undef CERTPP_MD5_I
+#undef CERTPP_MD5_H
+#undef CERTPP_MD5_G
+#undef CERTPP_MD5_F
+#undef CERTPP_MD5_SCALAR_STEP
+
+            state[0] += a;
+            state[1] += b;
+            state[2] += c;
+            state[3] += d;
+            block += 64;
+            }
+        }
+#endif
+
+#if defined(CERTPP_MD5_AVX512)
+        bool hasAvx512Md5() {
+            static const bool supported = __builtin_cpu_supports("avx512f")
+                && __builtin_cpu_supports("avx512vl");
+            return supported;
+        }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx512f,avx512vl")))
+#endif
+        void transformMd5Avx512(uint32_t state[4], const uint8_t block[64]) {
+            __m128i a = _mm_cvtsi32_si128(static_cast<int>(state[0]));
+            __m128i b = _mm_cvtsi32_si128(static_cast<int>(state[1]));
+            __m128i c = _mm_cvtsi32_si128(static_cast<int>(state[2]));
+            __m128i d = _mm_cvtsi32_si128(static_cast<int>(state[3]));
+
+#define CERTPP_MD5_STEP(x, p, q, r, addend, index, shift, truth) do { \
+            const __m128i booleanValue = _mm_ternarylogic_epi32((p), (q), (r), (truth)); \
+            const __m128i messageValue = _mm_cvtsi32_si128(static_cast<int>( \
+                loadMd5Le32(block + (index) * 4) + MD5_K[stepIndex])); \
+            (x) = _mm_add_epi32((addend), _mm_rol_epi32( \
+                _mm_add_epi32(_mm_add_epi32((x), booleanValue), messageValue), (shift))); \
+            ++stepIndex; \
+        } while (false)
+
+            size_t stepIndex = 0;
+            CERTPP_MD5_STEP(a, b, c, d, b,  0,  7, 0xCA);
+            CERTPP_MD5_STEP(d, a, b, c, a,  1, 12, 0xCA);
+            CERTPP_MD5_STEP(c, d, a, b, d,  2, 17, 0xCA);
+            CERTPP_MD5_STEP(b, c, d, a, c,  3, 22, 0xCA);
+            CERTPP_MD5_STEP(a, b, c, d, b,  4,  7, 0xCA);
+            CERTPP_MD5_STEP(d, a, b, c, a,  5, 12, 0xCA);
+            CERTPP_MD5_STEP(c, d, a, b, d,  6, 17, 0xCA);
+            CERTPP_MD5_STEP(b, c, d, a, c,  7, 22, 0xCA);
+            CERTPP_MD5_STEP(a, b, c, d, b,  8,  7, 0xCA);
+            CERTPP_MD5_STEP(d, a, b, c, a,  9, 12, 0xCA);
+            CERTPP_MD5_STEP(c, d, a, b, d, 10, 17, 0xCA);
+            CERTPP_MD5_STEP(b, c, d, a, c, 11, 22, 0xCA);
+            CERTPP_MD5_STEP(a, b, c, d, b, 12,  7, 0xCA);
+            CERTPP_MD5_STEP(d, a, b, c, a, 13, 12, 0xCA);
+            CERTPP_MD5_STEP(c, d, a, b, d, 14, 17, 0xCA);
+            CERTPP_MD5_STEP(b, c, d, a, c, 15, 22, 0xCA);
+
+            CERTPP_MD5_STEP(a, d, b, c, b,  1,  5, 0xCA);
+            CERTPP_MD5_STEP(d, c, a, b, a,  6,  9, 0xCA);
+            CERTPP_MD5_STEP(c, b, d, a, d, 11, 14, 0xCA);
+            CERTPP_MD5_STEP(b, a, c, d, c,  0, 20, 0xCA);
+            CERTPP_MD5_STEP(a, d, b, c, b,  5,  5, 0xCA);
+            CERTPP_MD5_STEP(d, c, a, b, a, 10,  9, 0xCA);
+            CERTPP_MD5_STEP(c, b, d, a, d, 15, 14, 0xCA);
+            CERTPP_MD5_STEP(b, a, c, d, c,  4, 20, 0xCA);
+            CERTPP_MD5_STEP(a, d, b, c, b,  9,  5, 0xCA);
+            CERTPP_MD5_STEP(d, c, a, b, a, 14,  9, 0xCA);
+            CERTPP_MD5_STEP(c, b, d, a, d,  3, 14, 0xCA);
+            CERTPP_MD5_STEP(b, a, c, d, c,  8, 20, 0xCA);
+            CERTPP_MD5_STEP(a, d, b, c, b, 13,  5, 0xCA);
+            CERTPP_MD5_STEP(d, c, a, b, a,  2,  9, 0xCA);
+            CERTPP_MD5_STEP(c, b, d, a, d,  7, 14, 0xCA);
+            CERTPP_MD5_STEP(b, a, c, d, c, 12, 20, 0xCA);
+
+            CERTPP_MD5_STEP(a, b, c, d, b,  5,  4, 0x96);
+            CERTPP_MD5_STEP(d, a, b, c, a,  8, 11, 0x96);
+            CERTPP_MD5_STEP(c, d, a, b, d, 11, 16, 0x96);
+            CERTPP_MD5_STEP(b, c, d, a, c, 14, 23, 0x96);
+            CERTPP_MD5_STEP(a, b, c, d, b,  1,  4, 0x96);
+            CERTPP_MD5_STEP(d, a, b, c, a,  4, 11, 0x96);
+            CERTPP_MD5_STEP(c, d, a, b, d,  7, 16, 0x96);
+            CERTPP_MD5_STEP(b, c, d, a, c, 10, 23, 0x96);
+            CERTPP_MD5_STEP(a, b, c, d, b, 13,  4, 0x96);
+            CERTPP_MD5_STEP(d, a, b, c, a,  0, 11, 0x96);
+            CERTPP_MD5_STEP(c, d, a, b, d,  3, 16, 0x96);
+            CERTPP_MD5_STEP(b, c, d, a, c,  6, 23, 0x96);
+            CERTPP_MD5_STEP(a, b, c, d, b,  9,  4, 0x96);
+            CERTPP_MD5_STEP(d, a, b, c, a, 12, 11, 0x96);
+            CERTPP_MD5_STEP(c, d, a, b, d, 15, 16, 0x96);
+            CERTPP_MD5_STEP(b, c, d, a, c,  2, 23, 0x96);
+
+            CERTPP_MD5_STEP(a, b, c, d, b,  0,  6, 0x39);
+            CERTPP_MD5_STEP(d, a, b, c, a,  7, 10, 0x39);
+            CERTPP_MD5_STEP(c, d, a, b, d, 14, 15, 0x39);
+            CERTPP_MD5_STEP(b, c, d, a, c,  5, 21, 0x39);
+            CERTPP_MD5_STEP(a, b, c, d, b, 12,  6, 0x39);
+            CERTPP_MD5_STEP(d, a, b, c, a,  3, 10, 0x39);
+            CERTPP_MD5_STEP(c, d, a, b, d, 10, 15, 0x39);
+            CERTPP_MD5_STEP(b, c, d, a, c,  1, 21, 0x39);
+            CERTPP_MD5_STEP(a, b, c, d, b,  8,  6, 0x39);
+            CERTPP_MD5_STEP(d, a, b, c, a, 15, 10, 0x39);
+            CERTPP_MD5_STEP(c, d, a, b, d,  6, 15, 0x39);
+            CERTPP_MD5_STEP(b, c, d, a, c, 13, 21, 0x39);
+            CERTPP_MD5_STEP(a, b, c, d, b,  4,  6, 0x39);
+            CERTPP_MD5_STEP(d, a, b, c, a, 11, 10, 0x39);
+            CERTPP_MD5_STEP(c, d, a, b, d,  2, 15, 0x39);
+            CERTPP_MD5_STEP(b, c, d, a, c,  9, 21, 0x39);
+
+#undef CERTPP_MD5_STEP
+
+            state[0] += static_cast<uint32_t>(_mm_cvtsi128_si32(a));
+            state[1] += static_cast<uint32_t>(_mm_cvtsi128_si32(b));
+            state[2] += static_cast<uint32_t>(_mm_cvtsi128_si32(c));
+            state[3] += static_cast<uint32_t>(_mm_cvtsi128_si32(d));
+        }
+#endif
+
+    } // namespace
+
+    /* Runs the MD5 compression function over one 64-byte block, updating state in place. */
+    void MD5::transform(uint32_t state[4], const uint8_t block[64]) {
+#if defined(CERTPP_MD5_BMI1)
+        if (hasBmi1Md5()) {
+            transformMd5Bmi1Blocks(state, block, 1);
+            return;
+        }
+#endif
+#if defined(CERTPP_MD5_AVX512)
+        if (hasAvx512Md5()) {
+            transformMd5Avx512(state, block);
+            return;
+        }
+#endif
+        /* Per-round left-rotate amounts, 4 groups of 4, repeated across the 4 rounds of 16 steps each. */
+        static constexpr uint32_t SHIFTS[64] = {
+            7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+            5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+            4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+            6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,
+        };
+
         uint32_t m[16];
+#if defined(_WIN32) \
+    || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+        /* MD5's input words match native byte order here. Besides preserving unaligned access,
+         * memcpy prevents GCC from vectorizing the explicit shifts into a much larger unpack
+         * network. */
+        std::memcpy(m, block, sizeof(m));
+#else
         for (size_t i = 0; i < 16; ++i) {
             // --> MD5 packs message words little-endian, unlike the SHA family.
             m[i] = uint32_t(block[i * 4])
@@ -42,6 +270,7 @@ namespace crypto {
                 | (uint32_t(block[i * 4 + 2]) << 16)
                 | (uint32_t(block[i * 4 + 3]) << 24);
         }
+#endif
 
         uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
 
@@ -57,7 +286,7 @@ namespace crypto {
         // '(5 * i + 1) % 16' for i in [16, 32).
         for (uint32_t i = 0; i < 16; ++i) {
             uint32_t f = (b & c) | (~b & d);
-            f = f + a + K[i] + m[i];
+            f = f + a + MD5_K[i] + m[i];
             a = d;
             d = c;
             c = b;
@@ -66,7 +295,7 @@ namespace crypto {
         for (uint32_t i = 16; i < 32; ++i) {
             uint32_t f = (d & b) | (~d & c);
             const uint32_t g = (5 * (i - 16) + 1) & 15;
-            f = f + a + K[i] + m[g];
+            f = f + a + MD5_K[i] + m[g];
             a = d;
             d = c;
             c = b;
@@ -75,7 +304,7 @@ namespace crypto {
         for (uint32_t i = 32; i < 48; ++i) {
             uint32_t f = b ^ c ^ d;
             const uint32_t g = (3 * (i - 32) + 5) & 15;
-            f = f + a + K[i] + m[g];
+            f = f + a + MD5_K[i] + m[g];
             a = d;
             d = c;
             c = b;
@@ -84,7 +313,7 @@ namespace crypto {
         for (uint32_t i = 48; i < 64; ++i) {
             uint32_t f = c ^ (b | ~d);
             const uint32_t g = (7 * (i - 48)) & 15;
-            f = f + a + K[i] + m[g];
+            f = f + a + MD5_K[i] + m[g];
             a = d;
             d = c;
             c = b;
@@ -134,11 +363,32 @@ namespace crypto {
             }
         }
 
-        // --> Consume full blocks directly from the caller's buffer.
-        while (remaining >= 64) {
-            transform(_ctx.state, data);
-            data += 64;
-            remaining -= 64;
+        // --> Consume full blocks directly from the caller's buffer. Check the accelerated
+        // feature once per push rather than once per block; large inputs otherwise repeat the
+        // dispatch branch for every 64 bytes and lose part of the compression gain.
+#if defined(CERTPP_MD5_BMI1)
+        if (hasBmi1Md5()) {
+            const size_t blocks = remaining / 64;
+            transformMd5Bmi1Blocks(_ctx.state, data, blocks);
+            const size_t bytes = blocks * 64;
+            data += bytes;
+            remaining -= bytes;
+        } else
+#elif defined(CERTPP_MD5_AVX512)
+        if (hasAvx512Md5()) {
+            while (remaining >= 64) {
+                transformMd5Avx512(_ctx.state, data);
+                data += 64;
+                remaining -= 64;
+            }
+        } else
+#endif
+        {
+            while (remaining >= 64) {
+                transform(_ctx.state, data);
+                data += 64;
+                remaining -= 64;
+            }
         }
 
         // --> Buffer whatever's left (less than one block).

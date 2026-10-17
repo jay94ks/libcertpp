@@ -62,7 +62,7 @@
 | 공개키/개인키 가져오기 | `crypto/asym.hpp` | `createPublicKey(span)`, `createPrivateKey(span)` |
 | 서명/검증 | `crypto/asym.hpp` | `IAsymmetricContext::sign()`, `verify()`, `signPss()`, `verifyPss()` |
 | ECDH/X25519 키 교환 | `crypto/asym.hpp` | `IAsymmetricContext::deriveSharedSecret(peer, out)` |
-| 곡선 매개변수 | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; 이진 곡선은 `CEc2Curve` |
+| 곡선 매개변수 | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; 이진 곡선은 `CEc2Curve`; `linearCombination()`은 공개 검증 스칼라 전용 |
 | ML-KEM(양자내성 KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, 그다음 `encapsulate()`/`decapsulate()`; 또는 span을 직접 받는 `CMlKem` |
 | ML-DSA(양자내성 서명) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, `IAsymmetric::builtIn(EASYM_MLDSA87)`을 통해 |
 | 새 출력용 알고리즘 정책 분류 | `crypto/policy.hpp` | `CAlgorithmPolicy::classify()`, `allowsGeneration()` |

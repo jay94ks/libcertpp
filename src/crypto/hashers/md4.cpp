@@ -1,31 +1,114 @@
 #include <certpp/crypto/hashers/md4.hpp>
+#include <certpp/arch.hpp>
 #include <cstring>
+
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+#define CERTPP_MD4_AVX512 1
+#include <immintrin.h>
+#endif
 
 namespace certpp {
 namespace crypto {
 
+    namespace {
+
+#if defined(CERTPP_MD4_AVX512)
+        bool hasAvx512Md4() {
+            static const bool supported = __builtin_cpu_supports("avx512f")
+                && __builtin_cpu_supports("avx512vl");
+            return supported;
+        }
+
+        inline uint32_t loadLe32(const uint8_t* src) {
+            uint32_t value;
+            std::memcpy(&value, src, sizeof(value));
+            return value;
+        }
+
+        /* AVX-512VL supplies the two operations scalar MD4 lacks: VPTERNLOGD evaluates F/G/H in
+         * one instruction and VPROLD rotates without a shift/or pair. Only the low 32-bit lane is
+         * live; using the narrow VL form avoids touching wide vector state while still reducing
+         * the serial dependency chain. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx512f,avx512vl")))
+#endif
+        void transformAvx512(uint32_t state[4], const uint8_t block[64]) {
+            __m128i a = _mm_cvtsi32_si128(static_cast<int>(state[0]));
+            __m128i b = _mm_cvtsi32_si128(static_cast<int>(state[1]));
+            __m128i c = _mm_cvtsi32_si128(static_cast<int>(state[2]));
+            __m128i d = _mm_cvtsi32_si128(static_cast<int>(state[3]));
+
+#define CERTPP_MD4_STEP(x, y, z, w, index, shift, truth, constant) do { \
+            const __m128i booleanValue = _mm_ternarylogic_epi32((y), (z), (w), (truth)); \
+            const __m128i messageValue = _mm_cvtsi32_si128(static_cast<int>( \
+                loadLe32(block + (index) * 4) + uint32_t(constant))); \
+            (x) = _mm_rol_epi32( \
+                _mm_add_epi32(_mm_add_epi32((x), booleanValue), messageValue), (shift)); \
+        } while (false)
+#define CERTPP_MD4_F(x, y, z, w, index, shift) \
+        CERTPP_MD4_STEP(x, y, z, w, index, shift, 0xCA, 0u)
+#define CERTPP_MD4_G(x, y, z, w, index, shift) \
+        CERTPP_MD4_STEP(x, y, z, w, index, shift, 0xE8, 0x5a827999u)
+#define CERTPP_MD4_H(x, y, z, w, index, shift) \
+        CERTPP_MD4_STEP(x, y, z, w, index, shift, 0x96, 0x6ed9eba1u)
+
+            CERTPP_MD4_F(a, b, c, d,  0,  3); CERTPP_MD4_F(d, a, b, c,  1,  7);
+            CERTPP_MD4_F(c, d, a, b,  2, 11); CERTPP_MD4_F(b, c, d, a,  3, 19);
+            CERTPP_MD4_F(a, b, c, d,  4,  3); CERTPP_MD4_F(d, a, b, c,  5,  7);
+            CERTPP_MD4_F(c, d, a, b,  6, 11); CERTPP_MD4_F(b, c, d, a,  7, 19);
+            CERTPP_MD4_F(a, b, c, d,  8,  3); CERTPP_MD4_F(d, a, b, c,  9,  7);
+            CERTPP_MD4_F(c, d, a, b, 10, 11); CERTPP_MD4_F(b, c, d, a, 11, 19);
+            CERTPP_MD4_F(a, b, c, d, 12,  3); CERTPP_MD4_F(d, a, b, c, 13,  7);
+            CERTPP_MD4_F(c, d, a, b, 14, 11); CERTPP_MD4_F(b, c, d, a, 15, 19);
+
+            CERTPP_MD4_G(a, b, c, d,  0,  3); CERTPP_MD4_G(d, a, b, c,  4,  5);
+            CERTPP_MD4_G(c, d, a, b,  8,  9); CERTPP_MD4_G(b, c, d, a, 12, 13);
+            CERTPP_MD4_G(a, b, c, d,  1,  3); CERTPP_MD4_G(d, a, b, c,  5,  5);
+            CERTPP_MD4_G(c, d, a, b,  9,  9); CERTPP_MD4_G(b, c, d, a, 13, 13);
+            CERTPP_MD4_G(a, b, c, d,  2,  3); CERTPP_MD4_G(d, a, b, c,  6,  5);
+            CERTPP_MD4_G(c, d, a, b, 10,  9); CERTPP_MD4_G(b, c, d, a, 14, 13);
+            CERTPP_MD4_G(a, b, c, d,  3,  3); CERTPP_MD4_G(d, a, b, c,  7,  5);
+            CERTPP_MD4_G(c, d, a, b, 11,  9); CERTPP_MD4_G(b, c, d, a, 15, 13);
+
+            CERTPP_MD4_H(a, b, c, d,  0,  3); CERTPP_MD4_H(d, a, b, c,  8,  9);
+            CERTPP_MD4_H(c, d, a, b,  4, 11); CERTPP_MD4_H(b, c, d, a, 12, 15);
+            CERTPP_MD4_H(a, b, c, d,  2,  3); CERTPP_MD4_H(d, a, b, c, 10,  9);
+            CERTPP_MD4_H(c, d, a, b,  6, 11); CERTPP_MD4_H(b, c, d, a, 14, 15);
+            CERTPP_MD4_H(a, b, c, d,  1,  3); CERTPP_MD4_H(d, a, b, c,  9,  9);
+            CERTPP_MD4_H(c, d, a, b,  5, 11); CERTPP_MD4_H(b, c, d, a, 13, 15);
+            CERTPP_MD4_H(a, b, c, d,  3,  3); CERTPP_MD4_H(d, a, b, c, 11,  9);
+            CERTPP_MD4_H(c, d, a, b,  7, 11); CERTPP_MD4_H(b, c, d, a, 15, 15);
+
+#undef CERTPP_MD4_H
+#undef CERTPP_MD4_G
+#undef CERTPP_MD4_F
+#undef CERTPP_MD4_STEP
+
+            state[0] += static_cast<uint32_t>(_mm_cvtsi128_si32(a));
+            state[1] += static_cast<uint32_t>(_mm_cvtsi128_si32(b));
+            state[2] += static_cast<uint32_t>(_mm_cvtsi128_si32(c));
+            state[3] += static_cast<uint32_t>(_mm_cvtsi128_si32(d));
+        }
+#endif
+
+    } // namespace
+
     /* Runs the MD4 compression function over one 64-byte block, updating state in place. */
     void MD4::transform(uint32_t state[4], const uint8_t block[64]) {
-        /* Which message word each of the 48 steps uses. MD4 is the odd one out here: MD5 derives
-         * its word index arithmetically ((5i + 1) % 16 and friends), but MD4's rounds 2 and 3 use
-         * fixed permutations that no formula produces -- round 2 reads the message in column order
-         * (0, 4, 8, 12, 1, ...) and round 3 in the order RFC 1320 3.4 spells out step by step,
-         * which is the 4-bit index with its two halves swapped and each half's bits reversed. */
-        static constexpr uint32_t ORDER[48] = {
-            0, 1, 2, 3,  4, 5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
-            0, 4, 8, 12, 1, 5,  9, 13,  2,  6, 10, 14,  3,  7, 11, 15,
-            0, 8, 4, 12, 2, 10, 6, 14,  1,  9,  5, 13,  3, 11,  7, 15,
-        };
-
-        /* Per-round left-rotate amounts: 3/7/11/19, then 3/5/9/13, then 3/9/11/15, each repeated
-         * four times across its round of 16 steps. */
-        static constexpr uint32_t SHIFTS[48] = {
-            3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19,
-            3, 5,  9, 13, 3, 5,  9, 13, 3, 5,  9, 13, 3, 5,  9, 13,
-            3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15,
-        };
-
+#if defined(CERTPP_MD4_AVX512)
+        if (hasAvx512Md4()) {
+            transformAvx512(state, block);
+            return;
+        }
+#endif
         uint32_t m[16];
+#if defined(_WIN32) \
+    || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+        /* MD4 words have native byte order on the maintained Windows/Linux targets. memcpy keeps
+         * the access unaligned and lets the compiler emit four vector loads; spelling out the
+         * shifts made GCC build an expensive byte-unpack network instead. */
+        std::memcpy(m, block, sizeof(m));
+#else
         for (size_t i = 0; i < 16; ++i) {
             // --> MD4 packs message words little-endian, as MD5 does and unlike the SHA family.
             m[i] = uint32_t(block[i * 4])
@@ -33,34 +116,54 @@ namespace crypto {
                 | (uint32_t(block[i * 4 + 2]) << 16)
                 | (uint32_t(block[i * 4 + 3]) << 24);
         }
+#endif
 
         uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
 
-        // --> Three rounds of 16 steps, not MD5's four; the round constant is added from round 2
-        // onwards only, where MD5 has a distinct constant per step.
-        for (uint32_t i = 0; i < 48; ++i) {
-            uint32_t f;
-            uint32_t k;
+        /* All indices and rotations are constants in RFC 1320. Keeping the old 48-step loop made
+         * every step load ORDER/SHIFTS and select one of three Boolean functions at runtime.
+         * These small inline steps let the compiler keep a/b/c/d in registers and emit each
+         * rotate with an immediate count. The Boolean forms are equivalent but shorter:
+         * F(x,y,z) = z ^ (x & (y ^ z)); G is majority. */
+        auto stepF = [](uint32_t& x, uint32_t y, uint32_t z, uint32_t w,
+                        uint32_t word, uint32_t shift) {
+            x = rotl(x + (w ^ (y & (z ^ w))) + word, shift);
+        };
+        auto stepG = [](uint32_t& x, uint32_t y, uint32_t z, uint32_t w,
+                        uint32_t word, uint32_t shift) {
+            x = rotl(x + ((y & z) | (w & (y | z))) + word + 0x5a827999u, shift);
+        };
+        auto stepH = [](uint32_t& x, uint32_t y, uint32_t z, uint32_t w,
+                        uint32_t word, uint32_t shift) {
+            x = rotl(x + (y ^ z ^ w) + word + 0x6ed9eba1u, shift);
+        };
 
-            if (i < 16) {
-                f = (b & c) | (~b & d);                 // F, selection -- same as MD5's round 1
-                k = 0;
-            } else if (i < 32) {
-                f = (b & c) | (b & d) | (c & d);        // G, majority -- MD5 uses a selection here
-                k = 0x5a827999;                         // floor(sqrt(2) * 2^30)
-            } else {
-                f = b ^ c ^ d;                          // H, parity
-                k = 0x6ed9eba1;                         // floor(sqrt(3) * 2^30)
-            }
+        stepF(a, b, c, d, m[ 0],  3); stepF(d, a, b, c, m[ 1],  7);
+        stepF(c, d, a, b, m[ 2], 11); stepF(b, c, d, a, m[ 3], 19);
+        stepF(a, b, c, d, m[ 4],  3); stepF(d, a, b, c, m[ 5],  7);
+        stepF(c, d, a, b, m[ 6], 11); stepF(b, c, d, a, m[ 7], 19);
+        stepF(a, b, c, d, m[ 8],  3); stepF(d, a, b, c, m[ 9],  7);
+        stepF(c, d, a, b, m[10], 11); stepF(b, c, d, a, m[11], 19);
+        stepF(a, b, c, d, m[12],  3); stepF(d, a, b, c, m[13],  7);
+        stepF(c, d, a, b, m[14], 11); stepF(b, c, d, a, m[15], 19);
 
-            // --> MD4 rotates the *result* into place rather than adding it to b as MD5 does:
-            // the new value replaces a, and the registers then shift round by one.
-            const uint32_t t = rotl(a + f + m[ORDER[i]] + k, SHIFTS[i]);
-            a = d;
-            d = c;
-            c = b;
-            b = t;
-        }
+        stepG(a, b, c, d, m[ 0],  3); stepG(d, a, b, c, m[ 4],  5);
+        stepG(c, d, a, b, m[ 8],  9); stepG(b, c, d, a, m[12], 13);
+        stepG(a, b, c, d, m[ 1],  3); stepG(d, a, b, c, m[ 5],  5);
+        stepG(c, d, a, b, m[ 9],  9); stepG(b, c, d, a, m[13], 13);
+        stepG(a, b, c, d, m[ 2],  3); stepG(d, a, b, c, m[ 6],  5);
+        stepG(c, d, a, b, m[10],  9); stepG(b, c, d, a, m[14], 13);
+        stepG(a, b, c, d, m[ 3],  3); stepG(d, a, b, c, m[ 7],  5);
+        stepG(c, d, a, b, m[11],  9); stepG(b, c, d, a, m[15], 13);
+
+        stepH(a, b, c, d, m[ 0],  3); stepH(d, a, b, c, m[ 8],  9);
+        stepH(c, d, a, b, m[ 4], 11); stepH(b, c, d, a, m[12], 15);
+        stepH(a, b, c, d, m[ 2],  3); stepH(d, a, b, c, m[10],  9);
+        stepH(c, d, a, b, m[ 6], 11); stepH(b, c, d, a, m[14], 15);
+        stepH(a, b, c, d, m[ 1],  3); stepH(d, a, b, c, m[ 9],  9);
+        stepH(c, d, a, b, m[ 5], 11); stepH(b, c, d, a, m[13], 15);
+        stepH(a, b, c, d, m[ 3],  3); stepH(d, a, b, c, m[11],  9);
+        stepH(c, d, a, b, m[ 7], 11); stepH(b, c, d, a, m[15], 15);
 
         state[0] += a;
         state[1] += b;

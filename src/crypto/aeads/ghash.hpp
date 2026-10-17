@@ -69,13 +69,22 @@ namespace crypto {
          * product are on data that genuinely changes and stay where they are. */
         uint8_t _hReflected[BLOCK_BYTES];
 
+        /* H^2, H^3 and H^4 in the same ordinary basis, used to fold four recurrence steps into
+         * independent carry-less products and one reduction. */
+        uint8_t _hPowersReflected[3][BLOCK_BYTES];
+
         /* Which multiply absorb() should call, decided once per message rather than twice per
          * block. Both of these are CPUID-guarded statics, and a guarded static costs a load and
          * a test on every read -- harmless once, not once per 16 bytes of payload. */
         bool _accelerated;   // --> whether this CPU and build have PCLMULQDQ at all.
         bool _useGfni;       // --> whether it also has GFNI, to reflect in one instruction.
+        bool _powersReady;   // --> whether the four-block path's H^2..H^4 were prepared.
 
         void absorb(const uint8_t* block);
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        void preparePowers();
+        void absorb4(const uint8_t* blocks);
+#endif
         void reflectSubkey();
 
     public:

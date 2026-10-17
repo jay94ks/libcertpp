@@ -16,7 +16,7 @@ namespace crypto {
 
         class DesContext : public ISymmetricContext, public std::enable_shared_from_this<DesContext> {
         private:
-            uint64_t _roundKeys[16];
+            DesCore::RoundKey _roundKeys[16];
             bool _ready;
 
         protected:
@@ -45,13 +45,16 @@ namespace crypto {
                     return ERET_KEY_PARAM;
                 }
 
-                uint64_t keys[16];
+                DesCore::RoundKey keys[16];
                 std::memcpy(keys, _roundKeys, sizeof(keys));
 
                 out = std::make_shared<CbcTransformer>(
                     shared_from_this(), true, DES_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         DesCore::processBlock(in, o, keys);
+                    },
+                    [keys](const uint8_t* in, uint8_t* o, size_t blocks, uint8_t* chain) {
+                        DesCore::encryptCbcBulk(in, o, blocks, chain, keys);
                     }
                 );
                 return ERET_OK;
@@ -65,7 +68,7 @@ namespace crypto {
                     return ERET_KEY_PARAM;
                 }
 
-                uint64_t keys[16];
+                DesCore::RoundKey keys[16];
                 for (int i = 0; i < 16; ++i) {
                     keys[i] = _roundKeys[15 - i]; // --> decrypt applies the schedule in reverse.
                 }

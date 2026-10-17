@@ -62,7 +62,7 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 | Import a public / private key | `crypto/asym.hpp` | `createPublicKey(span)`, `createPrivateKey(span)` |
 | Sign / verify | `crypto/asym.hpp` | `IAsymmetricContext::sign()`, `verify()`, `signPss()`, `verifyPss()` |
 | ECDH / X25519 key agreement | `crypto/asym.hpp` | `IAsymmetricContext::deriveSharedSecret(peer, out)` |
-| Curve parameters | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; `CEc2Curve` for binary curves |
+| Curve parameters | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; `CEc2Curve` for binary curves; `linearCombination()` is for public verification scalars only |
 | ML-KEM (post-quantum KEM) | `crypto/kem.hpp`, `crypto/kems/mlkem.hpp` | `IKem::builtIn(EKEM_MLKEM768)`, then `encapsulate()`/`decapsulate()`; or raw-span `CMlKem` |
 | ML-DSA (post-quantum signature) | `crypto/asyms/mldsa.hpp` | `CMlDsa`, via `IAsymmetric::builtIn(EASYM_MLDSA87)` |
 | Classify algorithms for new output | `crypto/policy.hpp` | `CAlgorithmPolicy::classify()`, `allowsGeneration()` |

@@ -203,7 +203,7 @@ src/
       symkey.hpp                     # SymRawKey: private, 공유 원시 바이트 ISymmetricKey (길이 외에는 검증하지 않습니다)
       cbctransformer.hpp              # CbcTransformer: private, 공유 CBC 모드 버퍼링+체이닝+padding(ESymPaddings에 따라 PKCS#7 또는 없음). aes.cpp/aria.cpp/des.cpp/des3.cpp가 사용
       cbctransformer.cpp
-      aescore.hpp                      # AesCore: private, 공유 AES 블록 암호(자체 S-box/키 스케줄, CERTPP_DISABLE_HWACCEL_AES 뒤의 AES-NI 가속 경로). aes.cpp/aeads/aesgcm.cpp가 사용
+      aescore.hpp                      # AesCore: private, 공유 AES 블록 암호(자체 S-box/키 스케줄, CERTPP_DISABLE_HWACCEL_AES 뒤의 AES-NI/VAES 경로). aes.cpp/aeads/aesgcm.cpp가 사용
       aescore.cpp
       aes.cpp                          # AES: AesCore + CbcTransformer
       ariacore.hpp                     # AriaCore: private ARIA 블록 암호(S-box, 확산, 키 스케줄)
@@ -224,7 +224,7 @@ src/
     poly1305.cpp                 # CPoly1305 구현 (26비트 limb 위의 130비트 누산기)
     aeads/
       chacha20poly1305.cpp           # CChaCha20Poly1305: ChaCha20Core + CPoly1305, RFC 8439 2.8의 프레이밍
-      ghash.hpp                       # Ghash: private GHASH + GCM의 GF(2^128) 곱셈(비트 반전. CERTPP_DISABLE_HWACCEL_SIMD 뒤의 PCLMULQDQ 경로). aesgcm.cpp만 사용
+      ghash.hpp                       # Ghash: private GHASH + GCM의 GF(2^128) 곱셈(비트 반전. CERTPP_DISABLE_HWACCEL_SIMD 뒤의 PCLMULQDQ와 4블록 집계). aesgcm.cpp만 사용
       ghash.cpp
       xchacha20poly1305.cpp             # CXChaCha20Poly1305: HChaCha20이 nonce의 앞 16바이트에서 부분키를 유도하고, 남은 8바이트로 ChaCha20-Poly1305를 수행합니다 — 192비트 nonce가 부분키 유도 외에 아무 비용도 들지 않는 이유입니다
       aesgcm.cpp                       # CAesGcm: AesCore(카운터 모드) + Ghash, SP 800-38D 7.1의 프레이밍

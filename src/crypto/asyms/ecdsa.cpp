@@ -290,9 +290,7 @@ namespace crypto {
                 CBigNum u2(r);
                 u2.mulMod(w, n);
 
-                SEcPoint p1 = curve.scalarMulBase(u1);
-                SEcPoint p2 = curve.scalarMul(pub->q(), u2);
-                SEcPoint sum = curve.add(p1, p2);
+                SEcPoint sum = curve.linearCombination(u1, curve.g, u2, pub->q());
 
                 if (sum.infinity) {
                     return ERET_BADREQ;

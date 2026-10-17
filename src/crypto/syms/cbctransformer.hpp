@@ -36,17 +36,16 @@ namespace crypto {
 
         /* Encrypts a run of whole blocks, holding the chaining value in a register.
          *
-         * Offered by AES, where the per-block path costs ~84 cycles a block against ~45
-         * here because the chaining value would otherwise be written to `_chain` and read
-         * back for the next block -- pure addition to a serial chain's critical path. See
-         * AesCore::encryptCbcBulk() for the measurement.
+         * Offered by ciphers with a run-level implementation, where writing the chaining value
+         * to `_chain` and reading it back for every block would add work directly to CBC
+         * encryption's serial critical path.
          *
          * Optional, and empty for every cipher that cannot supply one, in which case
-         * processBuffered() uses the per-block path exactly as before. The bulk function
-         * replaces only the whole-block loop's body: the output-space check, the chain
-         * write-back, the remainder handling and the PKCS#7 logic all stay where they are,
-         * so a bulk run is indistinguishable from an equivalent run of single blocks
-         * except in speed.
+         * processBuffered() uses the per-block path exactly as before. When no partial block is
+         * pending, transform() can pass safe whole-block input directly to the bulk function and
+         * buffer only the remainder. The output-space check, chain write-back, remainder handling,
+         * overlap behavior, and PKCS#7 logic remain the same, so a bulk run is indistinguishable
+         * from an equivalent run of single blocks except in speed.
          *
          * --> Keep the two paths byte-identical. Round-trip tests prove the two directions
          * agree with each other but cannot tell you the ciphertext is *right* -- two matching
@@ -87,9 +86,9 @@ namespace crypto {
          * whatever padding `padding` selects around it.
          * @param bulkBlockFn Optional: encrypts a run of whole blocks with the chaining value in
          * a register, reading and writing the transformer's own chain buffer. Empty means the
-         * per-block function is used for everything, which is how every cipher but AES calls
-         * this. Supplying both makes the bulk path handle whole blocks and the per-block path
-         * handle the remainder, so the two must produce identical output.
+         * per-block function is used for everything. Supplying both makes the bulk path handle
+         * whole blocks and the per-block path handle the remainder, so the two must produce
+         * identical output.
          */
         CbcTransformer(
             const ISymmetricContextPtr& ctx, bool encrypting, size_t blockBytes,

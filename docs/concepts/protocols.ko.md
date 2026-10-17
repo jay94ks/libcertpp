@@ -187,6 +187,8 @@
   없으면 SSE2 수열이 같은 변환을 수행합니다. 거기서 축약은 교과서적인
   `x^128 = x^7 + x^2 + x + 1`입니다. 정확성을 눈으로
   확인할 수 없는 1비트 시프트 더하기 거울상 상수 수법을 들고 다니지 않습니다.
+  길고 정렬된 입력은 재귀 4단계를 `H^4`, `H^3`, `H^2`, `H` 곱과 한 번의
+  reduction으로 접습니다. 짧은 입력은 직렬 경로를 유지해 거듭제곱 준비를 피합니다.
 
   발행된 벡터는 두 경로를 구별할 수 없습니다 — 이 CPU가 택하는 쪽이 그
   벡터들이 도달하는 유일한 경로입니다 — 그래서
@@ -196,9 +198,10 @@
   공개 헤더도 `CERTPP_API`도 없으므로, 그 테스트는
   `CERTPP_TEST_PRIVATE_SOURCES`를 통해 `ghash.cpp`를 자기 안으로 컴파일해
   넣습니다.
-- **`src/crypto/syms/aescore.hpp`/`.cpp`**는 `AesCore`를 정의합니다. AES의 키
-  스케줄과 단일 블록 암복호(AES-NI 경로는 `CERTPP_DISABLE_HWACCEL_AES` 뒤에
-  있습니다)이고, GCM이 공유할 수 있도록 `aes.cpp`에서 분리한 것입니다 —
+- **`src/crypto/syms/aescore.hpp`/`.cpp`**는 `AesCore`를 정의합니다. AES 키
+  스케줄, 단일 블록 암복호, CBC 대용량 암호화, 카운터 8개 GCM CTR 처리를
+  담습니다. AES-NI와 256비트 VAES는 `CERTPP_DISABLE_HWACCEL_AES`와 런타임
+  CPU·OS 상태 검사 뒤에 있습니다. GCM이 공유할 수 있도록 `aes.cpp`에서 분리한 것입니다 —
   `DesCore`와 `ChaCha20Core`가 이미 갖는 배치입니다. GCM은
   `ISymmetricContext`가 표현할 수 있는 모드가 아닙니다. 임의의 카운터 블록에서,
   *그리고* (H를 위해) 전부 0인 블록에서 원시 정방향 블록 함수가 필요하고,

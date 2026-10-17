@@ -24,10 +24,10 @@ namespace crypto {
      * block; every caller is expected to build a mode around it (`CbcTransformer` does, and
      * `CAesGcm` does).
      *
-     * Hardware acceleration (AES-NI) is chosen inside encryptBlock()/decryptBlock() per call,
-     * behind a runtime CPUID check and the `CERTPP_DISABLE_HWACCEL_AES` build option, so a
-     * caller never has to know which path ran. The portable round functions are exposed
-     * separately only so a test can compare the two.
+     * Hardware acceleration is chosen behind runtime CPU/OS checks and the
+     * `CERTPP_DISABLE_HWACCEL_AES` build option: AES-NI for single blocks/CBC and 256-bit VAES
+     * for independent CTR blocks. The portable round functions are exposed separately only so
+     * tests can compare the paths.
      */
     class AesCore {
     private:
@@ -129,6 +129,22 @@ namespace crypto {
          */
         static void encryptCbcBulk(
             const uint8_t* in, uint8_t* out, size_t blocks, uint8_t* chain,
+            const uint8_t* roundKeys, uint32_t nr
+        );
+
+        /**
+         * XORs full blocks with AES-CTR keystream, advancing the rightmost big-endian 32-bit
+         * counter once per block. Independent counters are processed together on AES-NI; the
+         * portable fallback uses encryptBlock() one block at a time.
+         * @param in The input blocks; may alias out exactly.
+         * @param out Receives the transformed blocks.
+         * @param blocks Number of complete 16-byte blocks.
+         * @param counter The first counter block on entry and the next unused counter on return.
+         * @param roundKeys The schedule expandKey() produced.
+         * @param nr The round count expandKey() reported.
+         */
+        static void xorCtrBulk(
+            const uint8_t* in, uint8_t* out, size_t blocks, uint8_t counter[16],
             const uint8_t* roundKeys, uint32_t nr
         );
 

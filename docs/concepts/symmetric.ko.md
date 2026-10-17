@@ -86,11 +86,25 @@
   검증했으며(각 알고리즘의 'a' 백만 개 다중 블록 스트레스 벡터 포함. 이것이
   수천 개 블록에 걸쳐 `transform()`을 거칩니다), SHA-NI를 지원하는 CPU에서는
   전용 강제 경로 테스트 없이 가속 경로가 자동으로 거쳐집니다.
-  나머지 계열에는 같은 전용 해시 확장이 없습니다. MD5는 이식 가능
-  경로만 사용하지만, `Sha2_64Core::transform()`은 SHA-384/SHA-512 회전에
-  BMI2 RORX를, `KeccakCore`는 SHA-3/SHAKE의 chi 단계에 BMI1 ANDN을 지원하면
-  사용합니다. 두 BMI 경로는 런타임 CPUID 검사로 선택되며
-  `CERTPP_DISABLE_HWACCEL_SIMD`로 끔 수 있습니다.
+  나머지 계열에는 같은 전용 해시 확장이 없습니다. 대신 MD4는 48단계를 전개하고
+  지원되는 경우 AVX-512VL ternary logic과 vector rotate를 사용합니다. MD5는 64단계를
+  모두 전개하고 scalar ROL과 BMI1 ANDN을 사용합니다. 같은 의존성 사슬에서 측정한
+  BMI2 RORX 변형은 더 느렸습니다. `Sha2_64Core::transform()`은 SHA-384/SHA-512
+  회전에 BMI2 RORX를 사용하고, AVX-512VL 대용량 경로는 메시지 스케줄 네 개를 함께
+  계산하고 ternary 라운드 logic을 사용합니다. `KeccakCore`는 25개 lane을 vector register에
+  유지하고 rho/pi를 제자리 순환으로 적용하며 theta와 chi를 ternary logic으로 접는
+  AVX-512VL permutation을 사용합니다. BMI1 ANDN은 더 좁은 폴백으로 남습니다.
+  런타임 CPU 검사가 이 선택 경로들을 고르며,
+  `CERTPP_DISABLE_HWACCEL_SIMD`로 끌 수 있습니다.
+- **`crypto/hashers/blake2s.hpp` / `src/crypto/hashers/blake2s.cpp`**는 출력 길이가
+  1바이트부터 32바이트인 RFC 7693 BLAKE2s를 `IHasher`로 구현합니다. private
+  `Blake2sCore`가 parameter block 초기화, streaming, finalization, 압축을 맡으며,
+  RFC 7693의 native keyed mode를 위한 `CBlake2sMac`도 이 core를 공유합니다.
+  x86-64에서는 압축 함수가 작업 상태의 네 행을 SSE2 vector에 유지하고 각 column 및
+  diagonal 단계의 독립적인 G 함수 네 개를 함께 계산합니다. SSE2는 x86-64 ABI의
+  일부이므로 런타임 dispatch가 필요하지 않으며, 다른 대상과
+  `CERTPP_DISABLE_HWACCEL_SIMD` 구성은 scalar 구현을 사용합니다. 비 keyed RFC 벡터와
+  참조 keyed KAT가 가속 및 SIMD 비활성 빌드에서 이 공유 core를 검증합니다.
 - **`crypto/hashers/shake256.hpp` / `src/crypto/hashers/shake256.cpp`**는
   `SHAKE256`을 구현합니다. Keccak/SHA-3 계열(FIPS 202)의 256비트 보안 확장
   출력 함수(XOF)이며, 다른 모든 hasher와 마찬가지로 밑바닥부터입니다.
@@ -225,7 +239,7 @@
   `ISymmetricKey`도 `src/crypto/syms/symkey.hpp`를 통해 같은 방식으로
   공유됩니다).
 
-  `AesCore`에는 추가로 하드웨어 가속 경로가 있습니다(x86-64 전용이고
+  `AesCore`에는 추가로 하드웨어 가속 경로들이 있습니다(x86-64 전용이고
   `CERTPP_DISABLE_HWACCEL_AES`가 설정되지 않았을 때만). 위의
   `SHA1`/`Sha2_32Core::transform`의 SHA-NI 디스패치와 같은 모양입니다.
   `encryptBlock()`/`decryptBlock()`은 얇은 디스패처이고, 런타임 CPUID
@@ -240,14 +254,25 @@
   복호는 진짜 역 키 스케줄을 다시 유도하는 대신 "Equivalent Inverse Cipher"
   구성을 씁니다 — 정방향 라운드 키를 역순으로, 첫째와 마지막을 제외한
   각각을 `AESIMC`에 통과시킵니다. `DES`/`TripleDES`에는 대응물이 없습니다.
-  DES/3DES의 Feistel 네트워크를 위한 주류 x86 하드웨어 확장이 없습니다.
+  DES/3DES의 Feistel 네트워크를 위한 주류 x86 하드웨어 확장이 없습니다. portable
+  core는 각 S-box와 P permutation을 결합하고, 회전 조회용 워드 두 개로 각 라운드 키를
+  준비하며, TripleDES 블록을 세 EDE 단계 전체에서 permuted domain에 유지합니다. ARIA도
+  portable 32비트 경로에서 확장 S-box 항목으로 substitution과 pre-diffusion을 결합하고
+  남은 diffusion을 word 연산으로 처리합니다. DES, TripleDES, ARIA, AES-CBC 암호화는
+  겹침이 안전하고 앞선 부분 블록이 없을 때 완전한 입력
+  블록을 bulk loop에 직접 넘기고 나머지만 staging합니다. 앞쪽 겹침은 buffered 경로를
+  유지합니다.
+  AES-GCM은 독립적인 카운터 여덟 개도 함께 처리하며 AVX2, VAES, OS가 활성화한
+  벡터 상태를 검사한 뒤 256비트 VAES를 사용합니다. AES-NI와 portable 경로는
+  폴백으로 남습니다.
   ChaCha20의 ARX 라운드에도 전용 확장이 없지만 블록들에 걸쳐 벡터화됩니다.
   4블록 묶음은 SSE2, 8블록은 AVX2, 16블록은 런타임 CPU 및 OS 벡터 상태 검사 뒤
   AVX-512F를 사용합니다. `CERTPP_DISABLE_HWACCEL_SIMD`가 전체를 제어하며,
   `CERTPP_DISABLE_HWACCEL_AVX512`로 AVX-512 단계만 따로 끌 수 있습니다 —
   위의 `src/crypto/syms/chacha20core.hpp` 항목을 보십시오.
-  이 모듈이 이미 돌리는 같은 SP 800-38A/FIPS-46/RFC 8439 기지 응답 벡터로
-  검증합니다 — AES-NI를 지원하는 CPU에서는 그것들이 가속 경로를 자동으로
+  이 모듈이 이미 돌리는 같은 SP 800-38A/FIPS-46/RFC 8439 기지 응답 벡터와,
+  세 키 크기 및 카운터 carry를 다루는 가속/portable CTR 비교로 검증합니다.
+  지원하는 CPU에서는 가속 경로를 자동으로
   거치며, 명시적 비교를 위해 이식 가능 경로를 강제할 수 있도록
   `CERTPP_DISABLE_HWACCEL_AES`가 있습니다.
 - **`crypto/syms/chacha20.hpp` / `src/crypto/syms/chacha20.cpp`**는

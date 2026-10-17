@@ -1,15 +1,17 @@
 #include "aescore.hpp"
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 
-/* Hardware-accelerated block core (AES-NI: AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) for
- * AesCore::encryptBlock()/decryptBlock() below, gated by both the CERTPP_DISABLE_HWACCEL_AES
- * build option and the target architecture -- same pattern as SHA1's/CBigNum's/CGf2m's SIMD
- * acceleration (crypto/hashers/sha1.cpp, utils/bignum.cpp, utils/gf2m.cpp): x86-64-only,
- * compiled out entirely elsewhere, where encryptBlock()/decryptBlock() fall back to the portable
- * round functions unconditionally. */
+/* Hardware-accelerated AES-NI block core and VAES parallel-CTR core, gated by both the
+ * CERTPP_DISABLE_HWACCEL_AES build option and the target architecture -- same pattern as
+ * SHA1's/CBigNum's/CGf2m's SIMD acceleration (crypto/hashers/sha1.cpp, utils/bignum.cpp,
+ * utils/gf2m.cpp): x86-64-only, compiled out entirely elsewhere, where the block functions and
+ * CTR helper fall back to the portable round functions. */
 #if !defined(CERTPP_DISABLE_HWACCEL_AES) && (defined(_M_X64) || defined(__x86_64__))
 #define CERTPP_AES_HWACCEL_AVAILABLE 1
 #include <wmmintrin.h>
+#define CERTPP_AES_VAES_AVAILABLE 1
+#include <immintrin.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
@@ -48,6 +50,36 @@ namespace crypto {
 
             return supported;
         }
+
+#if defined(CERTPP_AES_VAES_AVAILABLE)
+        /* VAES over 256-bit vectors encrypts two independent AES blocks per instruction. The OS
+         * must have enabled XMM/YMM state and the CPU must advertise both AVX2 and VAES; checking
+         * only the VAES bit can otherwise SIGILL. */
+        bool cpuHasVaes256() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+                __cpuidex(info, 1, 0);
+                if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0
+                    || (_xgetbv(0) & 0x6) != 0x6) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 5)) != 0 && (info[2] & (1 << 9)) != 0;
+#else
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx2") != 0
+                    && __builtin_cpu_supports("vaes") != 0;
+#endif
+            }();
+            return supported;
+        }
+
+#endif
 
         /* AES-NI encrypt: the round-key bytes expandKey() produces are already exactly the
          * standard FIPS-197 forward key schedule (Intel's own recommended AES-NI key expansion
@@ -95,6 +127,111 @@ namespace crypto {
 
             _mm_storeu_si128(reinterpret_cast<__m128i*>(out), state);
         }
+
+        /* Eight independent CTR blocks fill AES-NI's pipeline while each individual AESENC
+         * dependency chain waits for its previous round. CBC cannot do this because its next
+         * input depends on the preceding ciphertext. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("aes,sse2")))
+#endif
+        void xorCtr8Accelerated(
+            const uint8_t* in, uint8_t* out, const uint8_t counters[8][16],
+            const uint8_t* roundKeys, uint32_t nr
+        ) {
+            __m128i states[8];
+            const __m128i first =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(roundKeys));
+            for (size_t lane = 0; lane < 8; ++lane) {
+                states[lane] = _mm_xor_si128(
+                    _mm_loadu_si128(reinterpret_cast<const __m128i*>(counters[lane])), first);
+            }
+
+            for (uint32_t round = 1; round < nr; ++round) {
+                const __m128i key = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(roundKeys + round * 16));
+                for (size_t lane = 0; lane < 8; ++lane) {
+                    states[lane] = _mm_aesenc_si128(states[lane], key);
+                }
+            }
+
+            const __m128i last = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(roundKeys + nr * 16));
+            for (size_t lane = 0; lane < 8; ++lane) {
+                states[lane] = _mm_aesenclast_si128(states[lane], last);
+                states[lane] = _mm_xor_si128(states[lane],
+                    _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + lane * 16)));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(out + lane * 16), states[lane]);
+            }
+        }
+
+#if defined(CERTPP_AES_VAES_AVAILABLE)
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx2,vaes")))
+#endif
+        __m128i ctrBlock(__m128i prefix, uint32_t value) {
+            const uint32_t be = ((value & 0x000000ffu) << 24)
+                | ((value & 0x0000ff00u) << 8)
+                | ((value & 0x00ff0000u) >> 8)
+                | ((value & 0xff000000u) >> 24);
+            return _mm_insert_epi32(prefix, static_cast<int>(be), 3);
+        }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx2,vaes")))
+#endif
+        void xorCtr8Vaes256(
+            const uint8_t* in, uint8_t* out, const uint8_t counter[16],
+            uint32_t counterValue,
+            const uint8_t* roundKeys, uint32_t nr
+        ) {
+            const __m128i prefix =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(counter));
+            const __m128i first128 =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(roundKeys));
+            const __m256i first = _mm256_broadcastsi128_si256(first128);
+            __m256i s0 = _mm256_xor_si256(
+                _mm256_set_m128i(
+                    ctrBlock(prefix, counterValue + 1),
+                    ctrBlock(prefix, counterValue + 0)), first);
+            __m256i s1 = _mm256_xor_si256(
+                _mm256_set_m128i(
+                    ctrBlock(prefix, counterValue + 3),
+                    ctrBlock(prefix, counterValue + 2)), first);
+            __m256i s2 = _mm256_xor_si256(
+                _mm256_set_m128i(
+                    ctrBlock(prefix, counterValue + 5),
+                    ctrBlock(prefix, counterValue + 4)), first);
+            __m256i s3 = _mm256_xor_si256(
+                _mm256_set_m128i(
+                    ctrBlock(prefix, counterValue + 7),
+                    ctrBlock(prefix, counterValue + 6)), first);
+
+            for (uint32_t round = 1; round < nr; ++round) {
+                const __m256i key = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(roundKeys + round * 16)));
+                s0 = _mm256_aesenc_epi128(s0, key);
+                s1 = _mm256_aesenc_epi128(s1, key);
+                s2 = _mm256_aesenc_epi128(s2, key);
+                s3 = _mm256_aesenc_epi128(s3, key);
+            }
+
+            const __m256i last = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(roundKeys + nr * 16)));
+            s0 = _mm256_xor_si256(_mm256_aesenclast_epi128(s0, last),
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 0)));
+            s1 = _mm256_xor_si256(_mm256_aesenclast_epi128(s1, last),
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 32)));
+            s2 = _mm256_xor_si256(_mm256_aesenclast_epi128(s2, last),
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 64)));
+            s3 = _mm256_xor_si256(_mm256_aesenclast_epi128(s3, last),
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 96)));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 0), s0);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 32), s1);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 64), s2);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 96), s3);
+        }
+
+#endif
 #endif // CERTPP_AES_HWACCEL_AVAILABLE
 
     } // namespace
@@ -362,7 +499,7 @@ namespace crypto {
     }
 
     /* The bulk loop. Structure is the same as encryptBlockAccelerated() called per block,
-     * with one difference that accounts for all of the speed: the chaining value stays in a
+     * with one important difference: the chaining value stays in a
      * register from block to block instead of being written to the caller's chain buffer and
      * read back for the next block. That is one load and one store per block rather than two
      * of each, and on a serial chain -- where block N+1 cannot begin until block N's output
@@ -372,9 +509,9 @@ namespace crypto {
      * exceed the register file, so the last few are read per block. Round keys are public
      * data (a key schedule, not secret), so reading them repeatedly leaks nothing.
      *
-     * Measured at 64 KiB: ~84 cycles per block through CbcTransformer against ~45 here,
-     * which is also OpenSSL's own EVP figure for the same instruction sequence. The output
-     * of the two paths is held identical by tests/crypto/syms/aes.cpp, which compares this
+     * CbcTransformer passes safe whole-block input directly to this function rather than first
+     * copying it into its staging buffer. The output of the direct and buffered paths is held
+     * identical by tests/crypto/syms/aes.cpp, which compares this
      * against AesCore::encryptBlockPortable() -- see the note on encryptCbcBulk() in
      * aescore.hpp for why a round-trip is not sufficient for that.
      *
@@ -418,7 +555,7 @@ namespace crypto {
                 state = _mm_aesenclast_si128(state, lastRk);
 
                 _mm_storeu_si128(reinterpret_cast<__m128i*>(out + b * 16), state);
-                chainVec = state;   // --> never leaves a register
+                chainVec = state;
             }
 
             _mm_storeu_si128(reinterpret_cast<__m128i*>(chain), chainVec);
@@ -443,6 +580,67 @@ namespace crypto {
         }
 
         std::memcpy(chain, running, BLOCK_BYTES);
+    }
+
+    /* Applies AES-CTR to complete blocks. */
+    void AesCore::xorCtrBulk(
+        const uint8_t* in, uint8_t* out, size_t blocks, uint8_t counter[16],
+        const uint8_t* roundKeys, uint32_t nr
+    ) {
+        auto storeCounter = [](uint8_t* outCounter, uint32_t value) {
+            outCounter[0] = uint8_t(value >> 24);
+            outCounter[1] = uint8_t(value >> 16);
+            outCounter[2] = uint8_t(value >> 8);
+            outCounter[3] = uint8_t(value);
+        };
+        uint32_t counterValue = (uint32_t(counter[12]) << 24)
+            | (uint32_t(counter[13]) << 16) | (uint32_t(counter[14]) << 8)
+            | uint32_t(counter[15]);
+
+        size_t offset = 0;
+#if defined(CERTPP_AES_HWACCEL_AVAILABLE)
+        if (cpuHasAesNi()) {
+#if defined(CERTPP_AES_VAES_AVAILABLE)
+            const bool useVaes256 = cpuHasVaes256();
+#endif
+            while (blocks - offset >= 8) {
+#if defined(CERTPP_AES_VAES_AVAILABLE)
+                if (useVaes256) {
+                    xorCtr8Vaes256(
+                        in + offset * BLOCK_BYTES, out + offset * BLOCK_BYTES,
+                        counter, counterValue, roundKeys, nr);
+                } else
+#endif
+                {
+                    uint8_t counters[8][16];
+                    for (size_t lane = 0; lane < 8; ++lane) {
+                        std::memcpy(counters[lane], counter, BLOCK_BYTES);
+                        storeCounter(
+                            counters[lane] + 12, counterValue + uint32_t(lane));
+                    }
+                    xorCtr8Accelerated(
+                    in + offset * BLOCK_BYTES, out + offset * BLOCK_BYTES,
+                    counters, roundKeys, nr);
+                }
+                counterValue += 8;
+                offset += 8;
+            }
+        }
+#endif
+
+        uint8_t stream[BLOCK_BYTES];
+        while (offset < blocks) {
+            storeCounter(counter + 12, counterValue);
+            encryptBlock(counter, stream, roundKeys, nr);
+            for (size_t i = 0; i < BLOCK_BYTES; ++i) {
+                out[offset * BLOCK_BYTES + i] =
+                    uint8_t(in[offset * BLOCK_BYTES + i] ^ stream[i]);
+            }
+            ++counterValue;
+            ++offset;
+        }
+        storeCounter(counter + 12, counterValue);
+        CSecure::zero(SByteSpan(stream, sizeof(stream)));
     }
 
 } // namespace crypto

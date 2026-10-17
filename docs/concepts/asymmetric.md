@@ -68,12 +68,14 @@
   every other check. `X25519` (a Montgomery curve, u-coordinate only, cofactor
   8, twist-secure by design) uses RFC 7748-appropriate analogues instead:
   field range, reject an all-zero derived public key (RFC 7748 6.1's own
-  rule, applied to key generation rather than the ECDH output), and reject
-  a low-order/twist-torsion public key -- detected by computing `8*u`
-  directly (reduces to the identity iff `u` has order dividing the
-  cofactor) rather than checking against a hardcoded constant list; there is
-  deliberately no curve-equation check, since X25519 accepts u-coordinates
-  from either the curve or its quadratic twist by design. `Ed25519`/`Ed448`
+  rule, applied to key generation rather than the ECDH output), and recompute
+  the public value from the private scalar. The scalar clamp makes it a
+  multiple of 8, so multiplication by the standard base point already lands
+  in the prime-order subgroup; once the derived value is nonzero, a second
+  `8*u` ladder cannot reject another case. Peer public keys deliberately have
+  no curve-equation check, since X25519 accepts u-coordinates from either the
+  curve or its quadratic twist by design; `deriveSharedSecret()` rejects the
+  all-zero result from a low-order peer. `Ed25519`/`Ed448`
   skip the scalar-range check `CEcdsa`/`CEcdsa2` have: RFC 8032 5.1.5/5.2.5's
   clamped scalar is deliberately *not* meant to be less than the group
   order (clamping fixes it into a fixed high bit range instead), unlike
@@ -257,7 +259,11 @@
 
   `scalarMul()`/`scalarMulBase()` use extended projective coordinates with
   their own branch-free ladder and fixed-base table; they do not share
-  Ed25519's newer signed-radix-16 table or dedicated doubling formula.
+  Ed25519's newer signed-radix-16 table. A dedicated `a = 1` doubling formula
+  replaces unified addition for every doubling. Verification uses a 4-bit
+  window for the public subgroup-order check and a public-scalar Straus loop
+  to compute `S*B - k*A` with one shared doubling chain. Secret scalar paths
+  continue to use the ladder.
   Edwards448 is *untwisted* (`a = 1`,
   vs. edwards25519's `a = -1`), so `pointAddProj()` here uses the general
   `a`-parametrized addition law rather than `Ed25519`'s `a = -1`-specialized

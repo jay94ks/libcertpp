@@ -106,8 +106,8 @@ tests/
       xchacha20poly1305.cpp          # CXChaCha20Poly1305 test cases (draft-irtf-cfrg-xchacha A.3's vector, the HChaCha20 subkey against A.1, and that a 192-bit nonce whose last 8 bytes repeat does not repeat the keystream)
       aesgcm.cpp                     # CAesGcm test cases (the GCM spec's Appendix B 96-bit-IV cases 1-4/7-10/13-16, aliasing, tag truncation, tamper, error paths)
       ghash.cpp                       # Ghash test cases (field identities in GCM's bit order, multiply-by-x against the shift, chunking, portable-vs-PCLMULQDQ differential)
-    eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, SEC1 encoding, group-order check)
-    ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, SEC1 encoding, group-order check)
+    eccurve.cpp                   # CEcCurve/SEcPoint test cases (group law, joint multiplication, SEC1 encoding, group-order check)
+    ec2curve.cpp                  # CEc2Curve/SEc2Point test cases, for all 10 known curves (on-curve, negation, group law, joint multiplication, SEC1 encoding, group-order check)
     policy.cpp                    # CAlgorithmPolicy defaults and legacy-algorithm opt-in behavior
     safe_api.cpp                  # owning-output overloads and failure-state checks across public crypto APIs
   x509/
@@ -175,11 +175,11 @@ affects the others:
   unaffected. SHA-384/SHA-512 and SHA-3/SHAKE have BMI-based accelerated
   paths governed by `CERTPP_DISABLE_HWACCEL_SIMD`, not this SHA-extension
   switch.
-- `CERTPP_DISABLE_HWACCEL_AES` (`OFF` by default) forces `AesCore`'s block
-  functions (`src/crypto/syms/aescore.cpp`) to always use the portable round
-  loop instead of the AES-NI instructions (AESENC/AESENCLAST/AESDEC/
-  AESDECLAST/AESIMC), gated on its own runtime CPUID check (`hasAesNi()`,
-  leaf 1, ECX bit 25). `DES`/`TripleDES` have no accelerated path and are
+- `CERTPP_DISABLE_HWACCEL_AES` (`OFF` by default) forces `AesCore`
+  (`src/crypto/syms/aescore.cpp`) to use portable rounds instead of AES-NI for
+  single blocks/CBC and VAES for parallel GCM counters. AES-NI uses its own
+  runtime CPUID check (`hasAesNi()`, leaf 1, ECX bit 25); VAES also checks AVX2
+  and the OS-enabled XMM/YMM state. `DES`/`TripleDES` have no accelerated path and are
   unaffected; `ChaCha20` uses SSE2/AVX2/AVX-512F rather than an AES extension
   and so answers to `CERTPP_DISABLE_HWACCEL_SIMD` instead -- see the
   `crypto/syms/aes.hpp` bullet above for the Equivalent Inverse Cipher

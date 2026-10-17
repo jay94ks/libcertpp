@@ -88,18 +88,14 @@
   doesn't model yet). Signatures serialize as the standard
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279).
 
-  `sign()`'s `g^k mod p` term is computed via `DsaPrivateKey::
-  fixedBaseModExpG()`, a left-to-right windowed exponentiation over a
-  lazily-built, per-instance-cached table of `g^0..g^15 mod p` -- the same
-  "16-entry window" shape `CEcCurve::scalarMulBase()` already uses for
-  fixed-base EC signing (see that module's own doc comment), adapted from
-  point addition/doubling to modular multiplication/squaring. This turns
-  the exponentiation into `bitLength/4` squarings plus exactly one window
-  multiplication per 4 bits, instead of a plain `modExp()`'s
-  square-and-multiply averaging `bitLength/2` multiplications; since the
-  table is keyed only on this key's fixed `(g, p)`, not on the per-signature
-  nonce `k`, it's built once and amortizes across every `sign()` call (and
-  retry attempt) this key ever makes.
+  `sign()`'s `g^k mod p` term uses a Montgomery context cached with the private
+  key and `CMontgomery::modExp()`'s four-bit sliding window. Verification keeps
+  cached Montgomery forms of `g`, `y`, and `g*y`, then computes
+  `g^u1*y^u2 mod p` with one shared squaring chain. The verification exponents
+  are public; the exponent-bit branches are therefore acceptable there. The
+  signing path is also variable-time because `CBigNum` has variable-length
+  storage and is not a constant-time primitive, as documented in the public
+  header and caller pitfalls.
 - **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`** define `CEcCurve`/
   `SEcPoint`, a short-Weierstrass elliptic curve (`y^2 = x^3 + a*x + b mod
   p`) in affine coordinates. Public rather than a `src/`-only implementation
@@ -144,6 +140,11 @@
   but `CBigNum` still allocates and trims variable-width values and its general
   arithmetic is not constant-time. The prime-curve stack therefore makes no
   complete side-channel-resistance claim.
+  Verification uses `linearCombination(k1, p1, k2, p2)` to share one Jacobian
+  accumulator and one final inversion between the two public scalar products.
+  That method branches on scalar bits and is expressly limited to public
+  verification values; private scalars continue through `scalarMul()` or
+  `scalarMulBase()`.
   `EEcKnownCurves` (`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, plus 14 `ECURVE_BPOOLxxxR1`/
   `ECURVE_BPOOLxxxT1` values for the Brainpool curves) names this library's
@@ -198,7 +199,9 @@
   trials plus edge cases, and an end-to-end ladder run) via a standalone
   Python GF(2^163) implementation before being hardcoded here, per this
   module's established constant-verification discipline (see `_knownCurves`
-  below). `field` is a
+  below). `linearCombination()` provides the same public-verification
+  optimization in Lopez-Dahab coordinates and has the same public-scalar-only
+  restriction. `field` is a
   non-owning `const SGf2mField*` rather than an owned value, mirroring
   `CGf2m`'s own field pointer, since it's always one of `CGf2m`'s 5 shared
   static singletons (a "B" and "K" curve of the same size use the same

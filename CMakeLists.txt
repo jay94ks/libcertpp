@@ -25,7 +25,7 @@ option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255
 option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU acceleration (ADX/BMI2, PCLMULQDQ/GFNI, SSE2/AVX2/AVX-512F, BMI1 ANDN, BMI2 RORX, and AVX512-IFMA), always using portable implementations instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512F ChaCha20 and AVX512-IFMA Poly1305 acceleration while retaining narrower SIMD paths" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
-option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
+option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI and VAES for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
 
 file(GLOB_RECURSE CERTPP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
@@ -300,9 +300,9 @@ if(CERTPP_BUILD_TESTS)
             )
         endif()
 
-        # crypto/syms/aes compiles AesCore in so the register-chain CBC bulk path can be held
+        # crypto/syms/aes compiles AesCore in so the CBC and CTR bulk paths can be held
         # against AesCore::encryptBlockPortable(): the transformer uses the bulk path on a CPU
-        # with AES-NI, and the two share no code at all -- one is AES-NI intrinsics, the other
+        # with AES-NI/VAES, and the two share no code at all -- one uses intrinsics, the other
         # the FIPS-197 round functions -- so agreement between them is a real check rather than
         # a tautology. Round-trip tests cannot do this job: a broken chain still round-trips on
         # its own output. aescore.cpp is safe to compile in here because AesCore is internal,

@@ -126,18 +126,18 @@ namespace crypto {
             }
         };
 
-        /* RFC 7748-appropriate validity checks on a derived u-coordinate. Shared by
-         * checkPrivateKey() and generateKeyPair(): the latter has already derived the value and
-         * would otherwise pay for a second ladder to have it recomputed.
+        /* RFC 7748-appropriate validity checks on a u-coordinate derived from the standard base
+         * point with a clamped scalar. Shared by checkPrivateKey() and generateKeyPair(): the
+         * latter has already derived the value and would otherwise pay for a second ladder to
+         * have it recomputed.
          *
          * X25519 is a Montgomery curve, u-coordinate only (no y, no point-at-infinity
          * representation) and cofactor 8 -- unlike CEcdsa/CEcdsa2/Ed25519/Ed448 cofactor-1
-         * curves -- so ECDSA/EdDSA four checks do not translate literally. These are their RFC
-         * 7748 analogues. There is deliberately no "curve equation" check: X25519 accepts
-         * u-coordinates from either the Montgomery form of edwards25519 OR its quadratic twist
-         * (RFC 7748 4.1 twist security -- neither has small subgroups beyond the explicit
-         * cofactor), so restricting to the main curve would reject spec-valid inputs. */
-        ERetCode validatePublicValue(const uint8_t encoded[32]) {
+         * curves -- so ECDSA/EdDSA four checks do not translate literally. Clamping makes the
+         * scalar a multiple of 8, which maps the base point into its prime-order subgroup. The
+         * derived point therefore has order L unless it is the identity; an additional `8*u`
+         * ladder cannot distinguish another bad case and only repeats a full 255-step ladder. */
+        ERetCode validateDerivedPublicValue(const uint8_t encoded[32]) {
             // 1. Field range. Fe25519::toBytes() emits the canonical representative in [0, p),
             // so a value derived here cannot be out of range -- what used to be a u >= p test is
             // now a structural property of the encoding. Bit 255 is checked instead, being the
@@ -151,26 +151,6 @@ namespace crypto {
             uint8_t accumulator = 0;
             for (size_t i = 0; i < 32; ++i) {
                 accumulator = uint8_t(accumulator | encoded[i]);
-            }
-            if (accumulator == 0) {
-                return ERET_KEY_PARAM;
-            }
-
-            // 3. "Correct subgroup" analogue: reject a public key of order dividing the cofactor
-            // (8) -- a low-order or twist-torsion point -- computed directly rather than against
-            // a hardcoded list: 8*u reduces to the identity exactly when u itself has order
-            // dividing 8. This calls ladder() rather than scalarMult() deliberately, since the
-            // scalar is the public constant 8 and must NOT be clamped; clamping would turn it
-            // into a different scalar entirely.
-            uint8_t eight[32] = { 0 };
-            eight[0] = 8;
-
-            uint8_t eightU[32];
-            Curve25519::ladder(eight, encoded, eightU);
-
-            accumulator = 0;
-            for (size_t i = 0; i < 32; ++i) {
-                accumulator = uint8_t(accumulator | eightU[i]);
             }
             if (accumulator == 0) {
                 return ERET_KEY_PARAM;
@@ -361,12 +341,12 @@ namespace crypto {
         // --> One derivation, not two. This used to derive the public key and then call
         // checkPrivateKey(), which derived it a second time purely to compare against the value
         // just computed. Validating the derived value directly runs exactly the same three
-        // checks -- validatePublicValue() is the code checkPrivateKey() delegates to -- while
+        // checks -- validateDerivedPublicValue() is the code checkPrivateKey() delegates to -- while
         // dropping a derivation whose only purpose was to compare a value against itself.
         uint8_t encoded[32];
         Curve25519::scalarMult(raw, base, encoded);
 
-        if (validatePublicValue(encoded) != ERET_OK) {
+        if (validateDerivedPublicValue(encoded) != ERET_OK) {
             return ERET_AGAIN;
         }
 
@@ -380,12 +360,10 @@ namespace crypto {
     }
 
     /* X25519 is a Montgomery curve, u-coordinate only (no y, no point-at-infinity
-     * representation) and cofactor 8 (unlike CEcdsa/CEcdsa2/Ed25519/Ed448's cofactor-1 curves),
-     * so ECDSA/EdDSA's four checks don't translate literally -- these are their RFC 7748-
-     * appropriate analogues instead. There's also no "curve equation" check: by design, X25519
-     * accepts u-coordinates from either edwards25519's Montgomery form OR its quadratic twist
-     * (RFC 7748 4.1's "twist security" -- both have no small subgroups beyond the explicit
-     * cofactor), so restricting to only the main curve would reject spec-valid inputs. */
+     * representation), so ECDSA/EdDSA's four affine-point checks do not translate literally.
+     * Re-deriving from the standard base point checks that the linked public value belongs to
+     * this private scalar; clamping has already cleared the base point's cofactor, and the
+     * remaining all-zero check rejects the identity. */
     ERetCode X25519::checkPrivateKey(const IPrivateKeyPtr& key) const {
         auto priv = std::dynamic_pointer_cast<X25519PrivateKey>(key);
         if (!priv) {
@@ -408,7 +386,7 @@ namespace crypto {
             return ERET_KEY_ERROR;
         }
 
-        return validatePublicValue(derivedEncoded);
+        return validateDerivedPublicValue(derivedEncoded);
     }
 
     IPublicKeyPtr X25519::createPublicKey(const SReadOnlyByteSpan& keyData) const {

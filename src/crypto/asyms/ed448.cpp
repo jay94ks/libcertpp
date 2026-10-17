@@ -46,8 +46,11 @@ namespace crypto {
          * (ed25519.cpp) and AesCore/DesCore/ChaCha20Core (crypto/syms/). */
         class Edwards448 {
         private:
+            static constexpr size_t PUBLIC_WINDOW = 4;
+            static constexpr size_t PUBLIC_TABLE_SIZE = size_t(1) << PUBLIC_WINDOW; // 16
             static constexpr size_t BASE_TABLE_WINDOW = 4;
             static constexpr size_t BASE_TABLE_SIZE = size_t(1) << BASE_TABLE_WINDOW; // 16
+            static constexpr size_t SCALAR_BITS = 448;
 
             /* The edwards448 curve equation's d = -39081 mod p (RFC 8032 5.2), derived from the
              * small integer rather than hardcoded as a 448-bit constant. */
@@ -177,6 +180,55 @@ namespace crypto {
                 return EdPointProj{ std::move(x3), std::move(y3), std::move(z3), std::move(t3) };
             }
 
+            /* Extended-coordinate doubling for a = 1. The unified addition formula above is
+             * complete and can double a point, but it spends ten Montgomery multiplications.
+             * This general Edwards doubling formula needs four squares and four multiplies.
+             * CMontgomery currently uses the same primitive for a square and a multiply, so this
+             * removes two field products from every scalar bit without changing coordinates or
+             * introducing an exceptional case. */
+            static EdPointProj pointDoubleProj(const EdPointProj& pt) {
+                const CMontgomery& f = field();
+
+                CBigNum A(pt.x);
+                f.mul(A, pt.x);
+
+                CBigNum B(pt.y);
+                f.mul(B, pt.y);
+
+                CBigNum C(pt.z);
+                f.mul(C, pt.z);
+                f.add(C, C);
+
+                CBigNum E(pt.x);
+                f.add(E, pt.y);
+                f.mul(E, E);
+                f.sub(E, A);
+                f.sub(E, B);
+
+                CBigNum G(A);
+                f.add(G, B); // D + B, with D = a*A = A for a = 1
+
+                CBigNum F(G);
+                f.sub(F, C);
+
+                CBigNum H(A);
+                f.sub(H, B);
+
+                CBigNum x3(E);
+                f.mul(x3, F);
+
+                CBigNum y3(G);
+                f.mul(y3, H);
+
+                CBigNum t3(E);
+                f.mul(t3, H);
+
+                CBigNum z3(F);
+                f.mul(z3, G);
+
+                return EdPointProj{ std::move(x3), std::move(y3), std::move(z3), std::move(t3) };
+            }
+
             static void condSwapPointProj(bool doSwap, EdPointProj& a, EdPointProj& b) {
                 CBigNum::condSwap(doSwap, a.x, b.x);
                 CBigNum::condSwap(doSwap, a.y, b.y);
@@ -198,7 +250,7 @@ namespace crypto {
 
                     condSwapPointProj(bit, r0, r1);
                     EdPointProj sum = pointAddProj(r0, r1);
-                    EdPointProj doubled = pointAddProj(r0, r0);
+                    EdPointProj doubled = pointDoubleProj(r0);
                     r1 = std::move(sum);
                     r0 = std::move(doubled);
                     condSwapPointProj(bit, r0, r1);
@@ -434,6 +486,74 @@ namespace crypto {
                 return toAffine(scalarMulProj(toProjective(pt), k));
             }
 
+            /* Windowed multiplication for verification-time public scalars. Its table access and
+             * zero-window branch depend on the scalar, so private scalars must continue to use
+             * scalarMul(). The current callers pass the fixed public order L or the public
+             * challenge hash k, reducing the arbitrary-point work from one addition per bit to
+             * at most one addition per four bits. */
+            static EdPoint scalarMulPublic(const EdPoint& pt, const CBigNum& k) {
+                EdPointProj table[PUBLIC_TABLE_SIZE];
+                table[0] = identityPointProj();
+                table[1] = toProjective(pt);
+                for (size_t i = 2; i < PUBLIC_TABLE_SIZE; ++i) {
+                    table[i] = pointAddProj(table[i - 1], table[1]);
+                }
+
+                EdPointProj result = identityPointProj();
+                for (size_t w = SCALAR_BITS / PUBLIC_WINDOW; w-- > 0; ) {
+                    for (size_t i = 0; i < PUBLIC_WINDOW; ++i) {
+                        result = pointDoubleProj(result);
+                    }
+
+                    const size_t base = w * PUBLIC_WINDOW;
+                    size_t windowValue = 0;
+                    for (size_t b = 0; b < PUBLIC_WINDOW; ++b) {
+                        if (k.testBit(base + b)) {
+                            windowValue |= size_t(1) << b;
+                        }
+                    }
+
+                    if (windowValue != 0) {
+                        result = pointAddProj(result, table[windowValue]);
+                    }
+                }
+
+                return toAffine(result);
+            }
+
+            /* Computes baseScalar*B - pointScalar*pt with one public-scalar Straus loop. Ed448
+             * verification exposes both S and k, so the four-entry table and its branches do not
+             * handle secrets. Sharing the doubling chain avoids a second 448-bit scalar
+             * multiplication and returns the signature equation's expected R directly. */
+            static EdPoint doubleScalarMulPublic(
+                const CBigNum& baseScalar, const EdPoint& pt,
+                const CBigNum& pointScalar
+            ) {
+                const CMontgomery& f = field();
+
+                EdPointProj table[4];
+                table[0] = identityPointProj();
+                table[1] = toProjective(pt);
+                f.neg(table[1].x);
+                f.neg(table[1].t); // -(x, y) is the Edwards inverse of (x, y)
+                table[2] = toProjective(basePoint());
+                table[3] = pointAddProj(table[2], table[1]);
+
+                EdPointProj result = identityPointProj();
+                for (size_t i = SCALAR_BITS; i-- > 0; ) {
+                    result = pointDoubleProj(result);
+
+                    const size_t tableIndex =
+                        (baseScalar.testBit(i) ? size_t(2) : size_t(0))
+                        | (pointScalar.testBit(i) ? size_t(1) : size_t(0));
+                    if (tableIndex != 0) {
+                        result = pointAddProj(result, table[tableIndex]);
+                    }
+                }
+
+                return toAffine(result);
+            }
+
             /* Fixed-base scalar multiplication of the base point B by k -- see ed25519.cpp's
              * identical scalarMulBase() for the full rationale (left-to-right windowed method
              * over baseTable() above, every window's addition run unconditionally). Uses the fast
@@ -448,7 +568,7 @@ namespace crypto {
 
                 for (size_t w = numWindows; w-- > 0; ) {
                     for (size_t i = 0; i < BASE_TABLE_WINDOW; ++i) {
-                        result = pointAddProj(result, result);
+                        result = pointDoubleProj(result);
                     }
 
                     size_t base = w * BASE_TABLE_WINDOW;
@@ -516,7 +636,7 @@ namespace crypto {
                 if (isIdentity(candidate)) {
                     return false;
                 }
-                if (!isIdentity(scalarMul(candidate, groupOrder()))) {
+                if (!isIdentity(scalarMulPublic(candidate, groupOrder()))) {
                     return false;
                 }
 
@@ -777,10 +897,11 @@ namespace crypto {
                 Edwards448::hashWithDom4({ rEncoded, SReadOnlyByteSpan(pub->encoded(), 57), message }, kHash);
                 CBigNum k = CBigNum::fromLittleEndian(SReadOnlyByteSpan(kHash, 114)).mod(L);
 
-                EdPoint lhs = Edwards448::scalarMulBase(sBig);
-                EdPoint rhs = Edwards448::pointAdd(rPoint, Edwards448::scalarMul(pub->point(), k));
+                EdPoint expectedR = Edwards448::doubleScalarMulPublic(
+                    sBig, pub->point(), k);
 
-                return (lhs.x == rhs.x && lhs.y == rhs.y) ? ERET_OK : ERET_BADREQ;
+                return (expectedR.x == rPoint.x && expectedR.y == rPoint.y)
+                    ? ERET_OK : ERET_BADREQ;
             }
 
             ERetCode createEncrypter(IAsymmetricTransformerPtr&) override {

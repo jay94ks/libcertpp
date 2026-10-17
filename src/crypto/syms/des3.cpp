@@ -21,14 +21,15 @@ namespace crypto {
          * TripleDesContext::createEncrypter()/createDecrypter(), which build them accordingly. */
         class TripleDesCore {
         public:
-            static void process(const uint8_t in[8], uint8_t out[8], const uint64_t (&keys)[3][16]) {
-                uint8_t stage[8];
-                DesCore::processBlock(in, stage, keys[0]);
-                DesCore::processBlock(stage, stage, keys[1]);
-                DesCore::processBlock(stage, out, keys[2]);
+            static void process(
+                const uint8_t in[8], uint8_t out[8], const DesCore::RoundKey (&keys)[3][16]
+            ) {
+                DesCore::processTripleBlock(in, out, keys);
             }
 
-            static void reverseSchedule(const uint64_t in[16], uint64_t out[16]) {
+            static void reverseSchedule(
+                const DesCore::RoundKey in[16], DesCore::RoundKey out[16]
+            ) {
                 for (int i = 0; i < 16; ++i) {
                     out[i] = in[15 - i];
                 }
@@ -37,9 +38,9 @@ namespace crypto {
 
         class TripleDesContext : public ISymmetricContext, public std::enable_shared_from_this<TripleDesContext> {
         private:
-            uint64_t _k1[16];
-            uint64_t _k2[16];
-            uint64_t _k3[16];
+            DesCore::RoundKey _k1[16];
+            DesCore::RoundKey _k2[16];
+            DesCore::RoundKey _k3[16];
             bool _ready;
 
         protected:
@@ -77,7 +78,7 @@ namespace crypto {
                     return ERET_KEY_PARAM;
                 }
 
-                uint64_t keys[3][16];
+                DesCore::RoundKey keys[3][16];
                 std::memcpy(keys[0], _k1, sizeof(keys[0]));
                 TripleDesCore::reverseSchedule(_k2, keys[1]);
                 std::memcpy(keys[2], _k3, sizeof(keys[2]));
@@ -86,6 +87,9 @@ namespace crypto {
                     shared_from_this(), true, DES3_BLOCK_BYTES, iv().toSpan(), padding(),
                     [keys](const uint8_t* in, uint8_t* o) {
                         TripleDesCore::process(in, o, keys);
+                    },
+                    [keys](const uint8_t* in, uint8_t* o, size_t blocks, uint8_t* chain) {
+                        DesCore::encryptTripleCbcBulk(in, o, blocks, chain, keys);
                     }
                 );
                 return ERET_OK;
@@ -99,7 +103,7 @@ namespace crypto {
                     return ERET_KEY_PARAM;
                 }
 
-                uint64_t keys[3][16];
+                DesCore::RoundKey keys[3][16];
                 TripleDesCore::reverseSchedule(_k3, keys[0]);
                 std::memcpy(keys[1], _k2, sizeof(keys[1]));
                 TripleDesCore::reverseSchedule(_k1, keys[2]);

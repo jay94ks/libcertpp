@@ -192,7 +192,9 @@
   performs the same conversion. Reduction is then the textbook
   `x^128 = x^7 + x^2 + x + 1`,
   rather than carrying the shift-by-one-plus-mirrored-constants trick whose
-  correctness cannot be eyeballed.
+  correctness cannot be eyeballed. Long aligned input folds four recurrence
+  steps into products by `H^4`, `H^3`, `H^2`, and `H`, followed by one
+  reduction; short input keeps the serial path and avoids preparing the powers.
 
   Published vectors cannot tell the two paths apart -- whichever one this CPU
   takes is the only one they ever reach -- so `tests/crypto/aeads/ghash.cpp`
@@ -201,9 +203,10 @@
   identity is the block `80 00 ... 00`, not `00 ... 00 01`). `Ghash` has no
   public header and no `CERTPP_API`, so that test compiles `ghash.cpp` into
   itself via `CERTPP_TEST_PRIVATE_SOURCES`.
-- **`src/crypto/syms/aescore.hpp`/`.cpp`** define `AesCore`, AES's key schedule
-  and single-block encrypt/decrypt (with the AES-NI path behind
-  `CERTPP_DISABLE_HWACCEL_AES`), extracted from `aes.cpp` so GCM can share it --
+- **`src/crypto/syms/aescore.hpp`/`.cpp`** define `AesCore`, AES's key schedule,
+  single-block encrypt/decrypt, CBC bulk encryption, and eight-counter GCM CTR
+  processing. AES-NI and 256-bit VAES sit behind `CERTPP_DISABLE_HWACCEL_AES`
+  and runtime CPU/OS-state checks. The core was extracted from `aes.cpp` so GCM can share it --
   the arrangement `DesCore` and `ChaCha20Core` already have. GCM is not a mode
   `ISymmetricContext` can express: it needs the raw forward block function at
   arbitrary counter blocks *and* at the all-zero block (for `H`), and never uses

@@ -440,7 +440,7 @@ namespace certpp {
         return acc;
     }
 
-    /* Modular exponentiation via square-and-multiply in the Montgomery domain. */
+    /* Modular exponentiation via a four-bit sliding window in the Montgomery domain. */
     CBigNum CMontgomery::modExp(const CBigNum& base, const CBigNum& exponent) const {
         if (!_valid) {
             return CBigNum();
@@ -454,15 +454,59 @@ namespace certpp {
             return result;
         }
 
+        const size_t exponentBits = exponent.bitLength();
         const CBigNum baseMont = toMont(base);
+        if (exponentBits <= 64) {
+            // Tiny public exponents such as RSA's 65537 have only two set bits. Building a window
+            // table costs more multiplications than it can save, so keep the direct binary path.
+            CBigNum result(_one);
+            for (size_t i = exponentBits; i-- > 0; ) {
+                mul(result, result);
+                if (exponent.testBit(i)) {
+                    mul(result, baseMont);
+                }
+            }
+            return fromMont(result);
+        }
+
+        constexpr size_t WINDOW = 4;
+        constexpr size_t ODD_POWERS = size_t(1) << (WINDOW - 1);
+
+        // table[i] = base^(2*i+1). Sliding windows only end at a set bit, so even powers are
+        // never selected. Eight cached odd powers replace about half of a long exponent's
+        // multiply steps while keeping setup small enough for DSA's 160/256-bit exponents.
+        CBigNum table[ODD_POWERS];
+        table[0] = baseMont;
+        CBigNum baseSquared(table[0]);
+        mul(baseSquared, baseSquared);
+        for (size_t i = 1; i < ODD_POWERS; ++i) {
+            table[i] = table[i - 1];
+            mul(table[i], baseSquared);
+        }
+
         CBigNum result(_one);
 
-        for (size_t i = exponent.bitLength(); i-- > 0; ) {
-            mul(result, result);
-
-            if (exponent.testBit(i)) {
-                mul(result, baseMont);
+        size_t cursor = exponentBits;
+        while (cursor > 0) {
+            const size_t top = cursor - 1;
+            if (!exponent.testBit(top)) {
+                mul(result, result);
+                --cursor;
+                continue;
             }
+
+            size_t bottom = cursor > WINDOW ? cursor - WINDOW : 0;
+            while (!exponent.testBit(bottom)) {
+                ++bottom;
+            }
+
+            size_t value = 0;
+            for (size_t bit = cursor; bit-- > bottom; ) {
+                value = (value << 1) | size_t(exponent.testBit(bit));
+                mul(result, result);
+            }
+            mul(result, table[value >> 1]);
+            cursor = bottom;
         }
 
         return fromMont(result);

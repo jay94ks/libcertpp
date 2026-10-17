@@ -64,6 +64,25 @@ TEST_CASE("CEcCurve: scalarMul(G, 2) matches doubling G") {
     CHECK(viaScalar.equals(viaDouble));
 }
 
+TEST_CASE("CEcCurve: linearCombination matches separate public-scalar multiplications") {
+    const CEcCurve& curve = testCurve();
+    const CBigNum k1(uint64_t(17));
+    const CBigNum k2(uint64_t(29));
+    const SEcPoint p2 = curve.scalarMulBase(CBigNum(uint64_t(11)));
+
+    const SEcPoint expected = curve.add(
+        curve.scalarMul(curve.g, k1), curve.scalarMul(p2, k2));
+    const SEcPoint combined = curve.linearCombination(k1, curve.g, k2, p2);
+    CHECK(combined.equals(expected));
+
+    const CBigNum zero;
+    CHECK(curve.linearCombination(zero, curve.g, k2, p2)
+        .equals(curve.scalarMul(p2, k2)));
+    CHECK(curve.linearCombination(k1, curve.g, zero, p2)
+        .equals(curve.scalarMul(curve.g, k1)));
+    CHECK(curve.linearCombination(zero, curve.g, zero, p2).infinity);
+}
+
 TEST_CASE("CEcCurve: a point plus its negation is the point at infinity") {
     const CEcCurve& curve = testCurve();
 

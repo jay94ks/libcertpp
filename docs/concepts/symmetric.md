@@ -96,11 +96,27 @@
   vector, which exercises `transform()` across thousands of blocks), which
   on a SHA-NI-capable CPU exercise the accelerated path automatically rather
   than needing a dedicated forced-path test. The remaining families do not
-  have equivalent dedicated hash extensions. MD5 stays portable-only;
-  `Sha2_64Core::transform()` uses BMI2 RORX for SHA-384/SHA-512 rotations when
-  available, and `KeccakCore` uses BMI1 ANDN for SHA-3/SHAKE's chi step. Both
-  BMI paths are selected by runtime CPUID checks and are disabled by
-  `CERTPP_DISABLE_HWACCEL_SIMD`.
+  have equivalent dedicated hash extensions. MD4 instead expands its 48 steps
+  and uses AVX-512VL ternary logic and vector rotates when available. MD5
+  expands all 64 steps and uses BMI1 ANDN with scalar ROL; a measured BMI2 RORX
+  variant was slower for its dependency chain. `Sha2_64Core::transform()` uses
+  BMI2 RORX for SHA-384/SHA-512 rotations; its AVX-512VL bulk path also
+  computes four message schedules together and uses ternary round logic. `KeccakCore` uses an AVX-512VL
+  permutation that keeps all 25 lanes in vector registers, applies rho/pi as an
+  in-place cycle, and folds theta and chi with ternary logic; BMI1 ANDN remains
+  its narrower fallback. Runtime CPU checks select these optional paths, and
+  `CERTPP_DISABLE_HWACCEL_SIMD` disables them.
+- **`crypto/hashers/blake2s.hpp` / `src/crypto/hashers/blake2s.cpp`** implements
+  RFC 7693 BLAKE2s as an `IHasher`, with output lengths from 1 through 32 bytes.
+  Its private `Blake2sCore` owns parameter-block initialization, streaming,
+  finalization, and compression and is also used by `CBlake2sMac` for RFC 7693's
+  native keyed mode. On x86-64 the compression function holds the four rows of
+  its working state in SSE2 vectors and evaluates the four independent G
+  functions in each column and diagonal step together. SSE2 is part of the
+  x86-64 ABI, so this path needs no runtime dispatch; other targets and
+  `CERTPP_DISABLE_HWACCEL_SIMD` use the scalar implementation. The unkeyed RFC
+  vectors and the reference keyed KAT exercise the shared core in accelerated
+  and SIMD-disabled builds.
 - **`crypto/hashers/shake256.hpp` / `src/crypto/hashers/shake256.cpp`**
   implement `SHAKE256`, the 256-bit-security extendable-output function
   from the Keccak/SHA-3 family (FIPS 202) -- from scratch, like every other
@@ -240,7 +256,7 @@
   no validation beyond length, is shared the same way via
   `src/crypto/syms/symkey.hpp`).
 
-  `AesCore` additionally has a hardware-accelerated path (x86-64 only, and
+  `AesCore` additionally has hardware-accelerated paths (x86-64 only, and
   only when `CERTPP_DISABLE_HWACCEL_AES` isn't set), the same shape as
   `SHA1`/`Sha2_32Core::transform`'s SHA-NI dispatch above: `encryptBlock()`/
   `decryptBlock()` are thin dispatchers that call
@@ -255,9 +271,19 @@
   separate hardware key expansion is needed); decryption uses the
   "Equivalent Inverse Cipher" construction -- the forward round keys in
   reverse order, each put through `AESIMC` except the first and last --
-  rather than re-deriving a true inverse key schedule. `DES`/`TripleDES`/
+  rather than re-deriving a true inverse key schedule. `DES`/`TripleDES`
   have no equivalent: there is no mainstream x86 hardware extension for
-  DES/3DES's Feistel network. ChaCha20's ARX rounds have no dedicated
+  DES/3DES's Feistel network. Their portable core combines each S-box with the P permutation,
+  prepares each round key as two words for rotated lookups, and keeps a TripleDES block in the
+  permuted domain across all three EDE stages. ARIA likewise uses a portable 32-bit path:
+  expanded S-box entries combine substitution with pre-diffusion, followed by word operations
+  for the remaining diffusion. DES, TripleDES, ARIA, and AES-CBC encryption pass
+  complete input blocks directly to their bulk loops when overlap is safe and no partial block
+  is pending; only a remainder is staged, while forward overlap keeps the buffered path.
+  AES-GCM additionally processes eight independent
+  counters together and uses 256-bit VAES after checking AVX2, VAES, and the
+  OS-enabled vector state; the AES-NI and portable paths remain its fallbacks.
+  ChaCha20's ARX rounds have no dedicated
   extension either, but they vectorize across blocks: groups of four use
   SSE2, groups of eight use AVX2, and groups of sixteen use AVX-512F after
   runtime CPU and OS vector-state checks. The paths are governed by
@@ -265,8 +291,9 @@
   through `CERTPP_DISABLE_HWACCEL_AVX512` -- see the
   `src/crypto/syms/chacha20core.hpp` bullet above.
   Verified by the same SP 800-38A/FIPS-46/RFC 8439 known-answer vectors
-  this module already runs -- on an AES-NI-capable CPU they exercise the
-  accelerated path automatically, with `CERTPP_DISABLE_HWACCEL_AES`
+  this module already runs, plus an accelerated-versus-portable CTR comparison
+  over all three key sizes and a counter carry. On a capable CPU they exercise
+  the accelerated paths automatically, with `CERTPP_DISABLE_HWACCEL_AES`
   available to force the portable path for an explicit comparison.
 - **`crypto/syms/chacha20.hpp` / `src/crypto/syms/chacha20.cpp`** defines
   `ChaCha20` (RFC 8439): a 256-bit key, a 96-bit nonce (`iv()`), and an

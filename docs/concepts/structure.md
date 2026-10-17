@@ -203,7 +203,7 @@ src/
       symkey.hpp                     # SymRawKey: private, shared raw-byte ISymmetricKey (no validation beyond length)
       cbctransformer.hpp              # CbcTransformer: private, shared CBC-mode buffering+chaining+padding (PKCS#7 or none, per ESymPaddings), used by aes.cpp/aria.cpp/des.cpp/des3.cpp
       cbctransformer.cpp
-      aescore.hpp                      # AesCore: private, shared AES block cipher (own S-box/key schedule, AES-NI accelerated path behind CERTPP_DISABLE_HWACCEL_AES), used by aes.cpp/aeads/aesgcm.cpp
+      aescore.hpp                      # AesCore: private, shared AES block cipher (own S-box/key schedule, AES-NI/VAES paths behind CERTPP_DISABLE_HWACCEL_AES), used by aes.cpp/aeads/aesgcm.cpp
       aescore.cpp
       aes.cpp                          # AES: AesCore + CbcTransformer
       ariacore.hpp                     # AriaCore: private ARIA block cipher (S-boxes, diffusion, and key schedule)
@@ -224,7 +224,7 @@ src/
     poly1305.cpp                 # CPoly1305 implementation (130-bit accumulator over 26-bit limbs)
     aeads/
       chacha20poly1305.cpp           # CChaCha20Poly1305: ChaCha20Core + CPoly1305, RFC 8439 2.8's framing
-      ghash.hpp                       # Ghash: private GHASH + GCM's GF(2^128) multiply (bit-reflected; PCLMULQDQ path behind CERTPP_DISABLE_HWACCEL_SIMD), used only by aesgcm.cpp
+      ghash.hpp                       # Ghash: private GHASH + GCM's GF(2^128) multiply (bit-reflected; PCLMULQDQ and four-block aggregation behind CERTPP_DISABLE_HWACCEL_SIMD), used only by aesgcm.cpp
       ghash.cpp
       xchacha20poly1305.cpp             # CXChaCha20Poly1305: HChaCha20 derives a subkey from the first 16 nonce bytes, then ChaCha20-Poly1305 over the remaining 8 -- which is why the 192-bit nonce costs nothing but a subkey derivation
       aesgcm.cpp                       # CAesGcm: AesCore (counter mode) + Ghash, SP 800-38D 7.1's framing

@@ -41,7 +41,14 @@ namespace crypto {
 
             std::memcpy(counter, icb, sizeof(counter));
 
+            const size_t fullBlocks = length / 16;
             size_t offset = 0;
+            if (fullBlocks >= 8) {
+                AesCore::xorCtrBulk(
+                    in, out, fullBlocks, counter, roundKeys, rounds);
+                offset = fullBlocks * 16;
+            }
+
             while (offset < length) {
                 AesCore::encryptBlock(counter, keystream, roundKeys, rounds);
 

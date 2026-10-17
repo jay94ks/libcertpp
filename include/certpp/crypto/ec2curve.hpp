@@ -221,6 +221,21 @@ namespace crypto {
         SEc2Point scalarMulBase(const CBigNum& k) const;
 
         /**
+         * Computes k1*p1 + k2*p2 with one joint multiplication. This routine branches on scalar
+         * bits and is intended only for public verification values, such as ECDSA u1/u2; use
+         * scalarMul()/scalarMulBase() for private scalars.
+         * @param k1 The public scalar multiplying p1.
+         * @param p1 The first point.
+         * @param k2 The public scalar multiplying p2.
+         * @param p2 The second point.
+         * @return k1*p1 + k2*p2.
+         */
+        SEc2Point linearCombination(
+            const CBigNum& k1, const SEc2Point& p1,
+            const CBigNum& k2, const SEc2Point& p2
+        ) const;
+
+        /**
          * Encodes pt in SEC1 form: a single 0x00 byte for the point at infinity, otherwise
          * 0x04 || X || Y with X/Y padded to fieldByteLen() bytes each (uncompressed form).
          * @param pt The point to encode.

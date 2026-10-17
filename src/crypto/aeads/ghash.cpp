@@ -135,10 +135,9 @@ namespace crypto {
          * not reasoned out, it was measured -- see the note on reverseBitsInBytesGfni below.
          * The imm8 is 0, so nothing is XORed in afterwards.
          *
-         * This is what the roadmap's "GFNI" is good for. Not aggregation -- GCM's per-block
-         * multiplies are one serial chain and have nothing to aggregate -- but this reflection,
-         * which is twenty instructions by hand and one here. Checked against the SSE2 version
-         * above by tests/crypto/aeads/ghash.cpp rather than taken on the constant's word. */
+         * GFNI makes this reflection, which is twenty instructions by hand, one instruction.
+         * Checked against the SSE2 version above by tests/crypto/aeads/ghash.cpp rather than
+         * taken on the constant's word. */
 #if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("gfni,sse2")))
 #endif
@@ -280,10 +279,12 @@ namespace crypto {
     }
 
     /* Constructs an unkeyed accumulator. */
-    Ghash::Ghash() : _accelerated(false), _useGfni(false), _buffered(0) {
+    Ghash::Ghash()
+        : _buffered(0), _accelerated(false), _useGfni(false), _powersReady(false) {
         std::memset(_h, 0, sizeof(_h));
         std::memset(_y, 0, sizeof(_y));
         std::memset(_block, 0, sizeof(_block));
+        std::memset(_hPowersReflected, 0, sizeof(_hPowersReflected));
         reflectSubkey();
     }
 
@@ -291,6 +292,8 @@ namespace crypto {
     Ghash::~Ghash() {
         CSecure::zero(SByteSpan(_h, sizeof(_h)));
         CSecure::zero(SByteSpan(_hReflected, sizeof(_hReflected)));
+        CSecure::zero(SByteSpan(
+            reinterpret_cast<uint8_t*>(_hPowersReflected), sizeof(_hPowersReflected)));
         CSecure::zero(SByteSpan(_y, sizeof(_y)));
         CSecure::zero(SByteSpan(_block, sizeof(_block)));
     }
@@ -318,9 +321,86 @@ namespace crypto {
         multiply(_y, _h);
     }
 
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+    /* Precomputes only when a push is large enough to use the four-block path. Small records avoid
+     * paying three field multiplications merely to authenticate one or two blocks. */
+    void Ghash::preparePowers() {
+        if (_powersReady) {
+            return;
+        }
+
+        uint8_t power[BLOCK_BYTES];
+        std::memcpy(power, _h, BLOCK_BYTES);
+        for (size_t i = 0; i < 3; ++i) {
+            multiplyAccelerated(power, _h);
+            const __m128i reflected = reverseBitsInBytes(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(power)));
+            _mm_storeu_si128(
+                reinterpret_cast<__m128i*>(_hPowersReflected[i]), reflected);
+        }
+        CSecure::zero(SByteSpan(power, sizeof(power)));
+        _powersReady = true;
+    }
+
+    /* Four recurrence steps at once:
+     * Y4 = (Y0 xor X1)H^4 xor X2 H^3 xor X3 H^2 xor X4 H.
+     * Carry-less multiplication and reduction are linear, so the four 256-bit products can be
+     * XORed before one reduction. This removes three serial reductions and exposes enough
+     * independent PCLMULQDQ work to fill the instruction pipeline. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+    __attribute__((target("gfni,pclmul,sse2")))
+#endif
+    void Ghash::absorb4(const uint8_t* blocks) {
+        __m128i values[4];
+        values[0] = _mm_xor_si128(
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(_y)),
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(blocks)));
+        for (size_t i = 1; i < 4; ++i) {
+            values[i] = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(blocks + i * BLOCK_BYTES));
+        }
+        for (size_t i = 0; i < 4; ++i) {
+            values[i] = _useGfni
+                ? reverseBitsInBytesGfni(values[i]) : reverseBitsInBytes(values[i]);
+        }
+
+        const uint8_t* powers[4] = {
+            _hPowersReflected[2], _hPowersReflected[1],
+            _hPowersReflected[0], _hReflected
+        };
+        __m128i p00 = _mm_setzero_si128();
+        __m128i p11 = _mm_setzero_si128();
+        __m128i p01 = _mm_setzero_si128();
+        __m128i p10 = _mm_setzero_si128();
+        for (size_t i = 0; i < 4; ++i) {
+            const __m128i power =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(powers[i]));
+            p00 = _mm_xor_si128(p00, _mm_clmulepi64_si128(values[i], power, 0x00));
+            p11 = _mm_xor_si128(p11, _mm_clmulepi64_si128(values[i], power, 0x11));
+            p01 = _mm_xor_si128(p01, _mm_clmulepi64_si128(values[i], power, 0x01));
+            p10 = _mm_xor_si128(p10, _mm_clmulepi64_si128(values[i], power, 0x10));
+        }
+
+        const __m128i mid = _mm_xor_si128(p01, p10);
+        __m128i lo = _mm_xor_si128(p00, _mm_slli_si128(mid, 8));
+        const __m128i hi = _mm_xor_si128(p11, _mm_srli_si128(mid, 8));
+        const __m128i poly = _mm_cvtsi64_si128(0x87);
+        const __m128i f0 = _mm_clmulepi64_si128(hi, poly, 0x00);
+        const __m128i f1 = _mm_clmulepi64_si128(hi, poly, 0x01);
+        lo = _mm_xor_si128(lo, f0);
+        lo = _mm_xor_si128(lo, _mm_slli_si128(f1, 8));
+        lo = _mm_xor_si128(lo, _mm_clmulepi64_si128(
+            _mm_srli_si128(f1, 8), poly, 0x00));
+
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(_y),
+            _useGfni ? reverseBitsInBytesGfni(lo) : reverseBitsInBytes(lo));
+    }
+#endif
+
     /* Converts the subkey into the basis the accelerated multiply wants, once per message. */
     void Ghash::reflectSubkey() {
         std::memset(_hReflected, 0, sizeof(_hReflected));
+        std::memset(_hPowersReflected, 0, sizeof(_hPowersReflected));
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
         _mm_storeu_si128(reinterpret_cast<__m128i*>(_hReflected),
                          reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(_h))));
@@ -328,9 +408,11 @@ namespace crypto {
         // --> Read once here so absorb() does not read a guarded static per block.
         _accelerated = hasPclmul();
         _useGfni = _accelerated && hasGfni();
+        _powersReady = false;
 #else
         _accelerated = false;
         _useGfni = false;
+        _powersReady = false;
 #endif
     }
 
@@ -366,6 +448,16 @@ namespace crypto {
             absorb(_block);
             _buffered = 0;
         }
+
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        if (_accelerated && length - offset >= 8 * BLOCK_BYTES) {
+            preparePowers();
+            while (length - offset >= 4 * BLOCK_BYTES) {
+                absorb4(data + offset);
+                offset += 4 * BLOCK_BYTES;
+            }
+        }
+#endif
 
         while (length - offset >= BLOCK_BYTES) {
             absorb(data + offset);

@@ -321,9 +321,7 @@ namespace crypto {
                 z2.modNeg(q);
 
                 // --> Step 6/7: C = z1*P + z2*Q, accept if x_C mod q == r.
-                SEcPoint p1 = curve.scalarMulBase(z1);
-                SEcPoint p2 = curve.scalarMul(pub->q(), z2);
-                SEcPoint c = curve.add(p1, p2);
+                SEcPoint c = curve.linearCombination(z1, curve.g, z2, pub->q());
 
                 if (c.infinity) {
                     return ERET_BADREQ;

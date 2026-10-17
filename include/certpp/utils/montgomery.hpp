@@ -208,9 +208,10 @@ namespace certpp {
 
     public:
         /**
-         * Modular exponentiation via square-and-multiply in the Montgomery domain -- the
+         * Modular exponentiation via a sliding window in the Montgomery domain -- the
          * division-free equivalent of CBigNum::modExp(base, exponent, modulus()), which pays for
-         * a long division per squaring.
+         * a long division per squaring. Exponent-bit-dependent control flow makes this unsuitable
+         * as a constant-time primitive; CBigNum itself has the same documented limitation.
          * @param base The base, in ordinary form.
          * @param exponent The exponent.
          * @return (base ^ exponent) mod m, in ordinary form (1 for a zero exponent, including

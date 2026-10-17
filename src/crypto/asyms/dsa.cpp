@@ -1,5 +1,6 @@
 #include <certpp/crypto/asyms/dsa.hpp>
 #include <certpp/utils/bignum.hpp>
+#include <certpp/utils/montgomery.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/io/buffer.hpp>
 #include <cstring>
@@ -96,12 +97,21 @@ namespace crypto {
         class DsaPublicKey : public IPublicKey {
         private:
             CBigNum _p, _q, _g, _y;
+            CMontgomery _montgomery;
+            CBigNum _gMont, _yMont, _gyMont;
 
         public:
             DsaPublicKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y)
-                : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y))
+                : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y)),
+                  _montgomery(_p)
             {
                 algorithm(EASYM_DSA);
+                if (_montgomery.isValid()) {
+                    _gMont = _montgomery.toMont(_g);
+                    _yMont = _montgomery.toMont(_y);
+                    _gyMont = _gMont;
+                    _montgomery.mul(_gyMont, _yMont);
+                }
             }
 
             SKeySize keySize() const override {
@@ -147,37 +157,49 @@ namespace crypto {
             const CBigNum& q() const { return _q; }
             const CBigNum& g() const { return _g; }
             const CBigNum& y() const { return _y; }
+
+            /* Computes g^u1 * y^u2 mod p with one shared squaring chain. Both exponents are
+             * public verification values, so selecting one of g/y/g*y from their bits does not
+             * expose private key material. Keeping the accumulator and table in Montgomery form
+             * avoids every division in the loop and converts only the final result back. */
+            CBigNum jointModExp(const CBigNum& u1, const CBigNum& u2) const {
+                if (!_montgomery.isValid()) {
+                    CBigNum result = CBigNum::modExp(_g, u1, _p);
+                    result.mulMod(CBigNum::modExp(_y, u2, _p), _p);
+                    return result;
+                }
+
+                const size_t bits = u1.bitLength() > u2.bitLength()
+                    ? u1.bitLength() : u2.bitLength();
+                CBigNum result(_montgomery.one());
+                for (size_t i = bits; i-- > 0; ) {
+                    _montgomery.mul(result, result);
+                    const bool bit1 = u1.testBit(i);
+                    const bool bit2 = u2.testBit(i);
+                    if (bit1 && bit2) {
+                        _montgomery.mul(result, _gyMont);
+                    } else if (bit1) {
+                        _montgomery.mul(result, _gMont);
+                    } else if (bit2) {
+                        _montgomery.mul(result, _yMont);
+                    }
+                }
+                return _montgomery.fromMont(result);
+            }
         };
 
         class DsaPrivateKey : public IPrivateKey {
         private:
-            static constexpr size_t G_TABLE_WINDOW = 4;
-            static constexpr size_t G_TABLE_SIZE = size_t(1) << G_TABLE_WINDOW; // 16
-
             CBigNum _p, _q, _g, _y, _x;
             IPublicKeyPtr _publicKey;
-            TArray<CBigNum> _gTable; // --> g^0..g^15 mod p window table, see fixedBaseModExpG().
+            CMontgomery _montgomery;
 
         public:
             DsaPrivateKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y, CBigNum x, IPublicKeyPtr publicKey)
                 : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y)),
-                  _x(std::move(x)), _publicKey(std::move(publicKey))
+                  _x(std::move(x)), _publicKey(std::move(publicKey)), _montgomery(_p)
             {
                 algorithm(EASYM_DSA);
-
-                // --> Built here rather than lazily on first sign(): a `mutable` cache filled from
-                // a const method is a data race the moment two threads sign with the same key
-                // object, and the whole table is 15 modular multiplications -- far less than the
-                // DER parse that produced this key, let alone one signature.
-                if (!_p.isZero()) {
-                    _gTable.resize(G_TABLE_SIZE);
-                    _gTable[0] = CBigNum(uint64_t(1));
-
-                    for (size_t i = 1; i < G_TABLE_SIZE; ++i) {
-                        _gTable[i] = _gTable[i - 1];
-                        _gTable[i].mulMod(_g, _p);
-                    }
-                }
             }
 
             SKeySize keySize() const override {
@@ -231,44 +253,13 @@ namespace crypto {
             const CBigNum& y() const { return _y; }
             const CBigNum& x() const { return _x; }
 
-            /* Left-to-right windowed exponentiation over _gTable (g^0..g^15 mod p, built once in
-             * the constructor) -- the same "16-entry window" shape CEcCurve::scalarMulBase()
-             * already uses for fixed-base EC signing (see its own doc comment), adapted from
-             * point addition/doubling to modular multiplication/squaring. Every sign() call's
-             * g^k mod p costs one window multiplication per 4 exponent bits instead of a plain
-             * square-and-multiply's ~bitLength/2 average multiplications. The squarings are
-             * untouched and dominate at these modulus sizes, so this is a modest constant-factor
-             * win on the multiplications, not on the whole exponentiation. */
+            /* Uses the key's cached Montgomery context so each signing exponentiation avoids a
+             * long division per square/multiply. CBigNum storage and exponent-bit branches mean
+             * this remains variable-time, matching the library's documented big-number limit. */
             CBigNum fixedBaseModExpG(const CBigNum& k) const {
-                if (_gTable.size() != G_TABLE_SIZE) {
-                    return CBigNum::modExp(_g, k, _p); // --> degenerate key (p == 0); let modExp decide.
-                }
-
-                if (k.isZero()) {
-                    return CBigNum(uint64_t(1));
-                }
-
-                size_t bits = k.bitLength();
-                size_t numWindows = (bits + G_TABLE_WINDOW - 1) / G_TABLE_WINDOW;
-
-                CBigNum result(uint64_t(1));
-                for (size_t w = numWindows; w-- > 0; ) {
-                    for (size_t i = 0; i < G_TABLE_WINDOW; ++i) {
-                        result.mulMod(result, _p);
-                    }
-
-                    size_t base = w * G_TABLE_WINDOW;
-                    size_t windowValue = 0;
-                    for (size_t b = 0; b < G_TABLE_WINDOW; ++b) {
-                        if (k.testBit(base + b)) {
-                            windowValue |= (size_t(1) << b);
-                        }
-                    }
-
-                    result.mulMod(_gTable[windowValue], _p);
-                }
-
-                return result;
+                return _montgomery.isValid()
+                    ? _montgomery.modExp(_g, k)
+                    : CBigNum::modExp(_g, k, _p);
             }
         };
 
@@ -390,8 +381,6 @@ namespace crypto {
 
                 const CBigNum& p = pub->p();
                 const CBigNum& q = pub->q();
-                const CBigNum& g = pub->g();
-                const CBigNum& y = pub->y();
 
                 TReadOnlySpan<uint8_t> content;
                 if (!CDer::readOuterSequence(signature, content)) {
@@ -420,8 +409,7 @@ namespace crypto {
                 CBigNum u2(r);
                 u2.mulMod(w, q);
 
-                CBigNum v = CBigNum::modExp(g, u1, p);
-                v.mulMod(CBigNum::modExp(y, u2, p), p);
+                CBigNum v = pub->jointModExp(u1, u2);
                 v.mod(q);
 
                 return v == r ? ERET_OK : ERET_BADREQ;
@@ -526,7 +514,9 @@ namespace crypto {
             return ERET_KEY_PARAM;
         }
 
-        CBigNum gq = CBigNum::modExp(g, q, p);
+        const CMontgomery montgomery(p);
+        CBigNum gq = montgomery.isValid()
+            ? montgomery.modExp(g, q) : CBigNum::modExp(g, q, p);
         if (gq != one) {
             return ERET_KEY_PARAM;
         }
@@ -537,7 +527,8 @@ namespace crypto {
         }
 
         // y must equal g^x mod p.
-        CBigNum expectedY = CBigNum::modExp(g, x, p);
+        CBigNum expectedY = montgomery.isValid()
+            ? montgomery.modExp(g, x) : CBigNum::modExp(g, x, p);
         if (expectedY != y) {
             return ERET_KEY_PARAM;
         }

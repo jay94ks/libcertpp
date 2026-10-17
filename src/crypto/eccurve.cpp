@@ -779,6 +779,48 @@ namespace crypto {
         return scalarMul(g, k);
     }
 
+    /* Joint multiplication for public verification scalars. Unlike scalarMul(), this routine is
+     * deliberately variable-time: the bits of ECDSA/GOST verification scalars are already public,
+     * and selecting among P1/P2/P1+P2 avoids duplicating a full fixed-shape ladder. */
+    SEcPoint CEcCurve::linearCombination(
+        const CBigNum& k1, const SEcPoint& p1,
+        const CBigNum& k2, const SEcPoint& p2
+    ) const {
+        SEcPoint result;
+        const size_t bits1 = k1.bitLength();
+        const size_t bits2 = k2.bitLength();
+        const size_t iterations = bits1 > bits2 ? bits1 : bits2;
+        if (iterations == 0) {
+            return result;
+        }
+
+        const CMontgomery field(p);
+        if (!field.isValid()) {
+            return result;
+        }
+
+        const CBigNum aMont = field.toMont(a);
+        const ECPointJac j1 = toJacobian(p1, field);
+        const ECPointJac j2 = toJacobian(p2, field);
+        const ECPointJac j12 = addJac(j1, j2, field, aMont);
+        ECPointJac accumulator = infinityJac(field);
+
+        for (size_t i = iterations; i-- > 0; ) {
+            accumulator = doublePointJac(accumulator, field, aMont);
+            const bool bit1 = k1.testBit(i);
+            const bool bit2 = k2.testBit(i);
+            if (bit1 && bit2) {
+                accumulator = addJac(accumulator, j12, field, aMont);
+            } else if (bit1) {
+                accumulator = addJac(accumulator, j1, field, aMont);
+            } else if (bit2) {
+                accumulator = addJac(accumulator, j2, field, aMont);
+            }
+        }
+
+        return toAffineFromJac(accumulator, field);
+    }
+
     bool CEcCurve::encodePoint(const SEcPoint& pt, TArray<uint8_t>& out) const {
         if (pt.infinity) {
             out.resize(1);

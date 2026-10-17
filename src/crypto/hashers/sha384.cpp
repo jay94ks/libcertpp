@@ -45,11 +45,11 @@ namespace crypto {
             }
         }
 
-        while (remaining >= 128) {
-            Sha2_64Core::transform(_ctx.state, data);
-            data += 128;
-            remaining -= 128;
-        }
+        const size_t blocks = remaining / 128;
+        Sha2_64Core::transformBlocks(_ctx.state, data, blocks);
+        const size_t bytes = blocks * 128;
+        data += bytes;
+        remaining -= bytes;
 
         if (remaining > 0) {
             std::memcpy(_ctx.buffer, data, remaining);

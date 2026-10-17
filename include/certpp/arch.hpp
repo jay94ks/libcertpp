@@ -83,10 +83,10 @@
 /*
  * BMI1 ANDN under x86-64: dest = (~src1) & src2, one instruction.
  *
- * Its only use here is SHA-3's chi step, whose `a ^ (~b1 & b2)` needs a NOT that the hardware
- * has no use for on its own -- so the compiler emits `notq` then `andq`, two instructions where
- * ANDN is one. Measured on f1600: 408 instructions as the pair, 354 with ANDN, and permute()
- * 460.2 ns against 394.6 ns, -14.3%.
+ * SHA-3's chi step uses it for `a ^ (~b1 & b2)`, where the compiler otherwise emits `notq` then
+ * `andq`. Measured on f1600: 408 instructions as the pair, 354 with ANDN, and permute() 460.2 ns
+ * against 394.6 ns, -14.3%. MD5 also uses ANDN in its explicitly expanded scalar rounds; keeping
+ * destructive ROL there measured faster than using BMI2 RORX for the same dependency chain.
  *
  * That the clock moves is the interesting part, and the reason this is written rather than assumed
  * without. The permutation is 25 lanes of live state against fifteen GPRs, so it spills -- 136
@@ -138,8 +138,9 @@
 
 /*
  * AVX-512F under x86-64: the foundation of the AVX-512 instruction set.
- * Required for ChaCha20's 16-block vector path (xorStream16).
- * The implementation uses AVX2 for its final transpose, so runtime dispatch requires both.
+ * Used by ChaCha20's 16-block vector path, MD4/SHA-512 fixed rotates, and Keccak's expanded
+ * register-file permutation. Individual implementations test any additional AVX2 or AVX-512VL
+ * requirements in their runtime dispatch.
  * Gate mirrors the others: x86-64 only, not disabled, GCC/Clang only.
  */
 #if defined(CERTPP_ARCH_X86_64) && !defined(CERTPP_DISABLE_HWACCEL_SIMD) && \

@@ -174,7 +174,7 @@ TEST_CASE("Ghash: the accumulator is independent of how its input is chunked") {
     const SBlock h = pattern.block();
 
     for (size_t length : { size_t(0), size_t(1), size_t(15), size_t(16), size_t(17),
-                           size_t(48), size_t(100) }) {
+                           size_t(48), size_t(100), size_t(128), size_t(129), size_t(256) }) {
         const std::vector<uint8_t> data = pattern.bytes(length);
 
         Ghash whole;

@@ -87,16 +87,13 @@
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }`(RFC 3279)로
   직렬화됩니다.
 
-  `sign()`의 `g^k mod p` 항은 `DsaPrivateKey::fixedBaseModExpG()`로
-  계산합니다. 지연 생성되어 인스턴스별로 캐시되는 `g^0..g^15 mod p` 테이블에
-  대한 좌에서 우로의 windowed 거듭제곱이며 — `CEcCurve::scalarMulBase()`가
-  고정 기저 EC 서명에 이미 쓰는 것과 같은 "16항목 window" 모양(그 모듈의
-  doc 주석 참고)을 점 덧셈/배가에서 모듈러 곱셈/제곱으로 옮긴 것입니다.
-  이로써 거듭제곱이 평범한 `modExp()`의 평균 `bitLength/2`회 곱셈을 쓰는
-  square-and-multiply 대신 `bitLength/4`회 제곱에 4비트당 정확히 한 번의
-  window 곱셈이 됩니다. 테이블은 서명별 nonce `k`가 아니라 이 키의 고정된
-  `(g, p)`만으로 결정되므로, 한 번 만들어져 이 키가 하는 모든
-  `sign()` 호출(그리고 재시도)에 걸쳐 분산됩니다.
+  `sign()`의 `g^k mod p` 항은 개인키와 함께 캐시한 Montgomery context와
+  `CMontgomery::modExp()`의 4비트 sliding window를 사용합니다. 검증은 `g`, `y`,
+  `g*y`의 Montgomery 형태를 캐시한 뒤 하나의 공유 제곱 체인으로
+  `g^u1*y^u2 mod p`를 계산합니다. 검증 지수는 공개값이므로 그 경로의 지수 비트
+  분기는 허용됩니다. 서명 경로도 `CBigNum`이 가변 길이 저장소를 사용하며
+  constant-time primitive가 아니므로 variable-time입니다. 이 제한은 공개 헤더와
+  호출자 주의사항에 문서화되어 있습니다.
 - **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`**는
   `CEcCurve`/`SEcPoint`를 정의합니다. 아핀 좌표의 short-Weierstrass 타원
   곡선(`y^2 = x^3 + a*x + b mod p`)입니다. `CBigNum`과 같은 이유로 `src/`
@@ -138,6 +135,10 @@
   레지스터 교환에는 mask 기반 limb swap을 사용하지만, `CBigNum`은 여전히 가변 폭
   값을 할당하고 잘라내며 일반 산술도 constant-time이 아닙니다. 따라서 소수 곡선
   스택 전체에 대한 부채널 저항을 주장하지 않습니다.
+  검증은 `linearCombination(k1, p1, k2, p2)`으로 두 공개 스칼라 곱이 Jacobian
+  누산기 하나와 마지막 역원 하나를 공유하게 합니다. 이 메서드는 스칼라 비트에 따라
+  분기하며 공개 검증값에만 쓰도록 명시되어 있습니다. private 스칼라는 계속
+  `scalarMul()` 또는 `scalarMulBase()`를 거칩니다.
   `EEcKnownCurves`(`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, 더해서 Brainpool 곡선들을 위한 14개
   `ECURVE_BPOOLxxxR1`/`ECURVE_BPOOLxxxT1` 값)가 이 라이브러리의 내장 곡선들을
@@ -189,7 +190,8 @@
   이 모듈의 정착된 상수 검증 규율(아래 `_knownCurves` 참고)에 따라 여기
   하드코딩하기 전에 독립 Python GF(2^163) 구현으로 그것들에 대해 독립적으로
   교차 확인했습니다(무작위 시행 2,000회 이상에 경계 케이스들, 그리고 종단 간
-  ladder 실행 한 번). `field`는
+  ladder 실행 한 번). `linearCombination()`은 Lopez-Dahab 좌표에서 같은 공개 검증
+  최적화를 제공하며 공개 스칼라 전용이라는 같은 제한을 갖습니다. `field`는
   소유하는 값이 아니라 소유하지 않는 `const SGf2mField*`이고, `CGf2m` 자신의
   체 포인터를 반영합니다. 항상 `CGf2m`의 다섯 공유 정적 싱글턴 중
   하나이기 때문입니다(같은 크기의 "B" 곡선과 "K" 곡선이 같은 체를 씁니다) —

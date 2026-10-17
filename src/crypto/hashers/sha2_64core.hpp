@@ -23,6 +23,8 @@ namespace crypto {
      */
     class Sha2_64Core {
     private:
+        static const uint64_t K[80];
+
         /* Rotates right by `count`, a literal at every call site in this file.
          *
          * --> The BMI2 form is the same rotate by a different instruction, and the difference is
@@ -83,6 +85,11 @@ namespace crypto {
 #endif
         }
 
+#if defined(CERTPP_ARCH_HAS_AVX512F)
+        static void transformRoundsAvx512(uint64_t* __restrict state,
+                                          const uint8_t* __restrict block, size_t blocks);
+#endif
+
     public:
         /**
          * Reads one 64-bit big-endian word, assuming no compiler has a byte-swap intrinsic. This
@@ -118,14 +125,23 @@ namespace crypto {
          * Keccak's chi. The BMI2 instantiation is compiled with BMI2 enabled so the
          * target-attributed rotate inlines into it; see the note in the .cpp. */
         template <bool UseBmi2Rotr>
-        static void transformRounds(uint64_t state[8], const uint8_t block[128]);
+        static void transformRounds(uint64_t state[8], const uint8_t* block, size_t blocks);
 
 #if defined(CERTPP_ARCH_HAS_BMI2_ROTR)
         /* The BMI2-enabled instantiation, compiled with BMI2 so the RORX rotate inlines into it. */
-        static void transformRoundsBmi2(uint64_t state[8], const uint8_t block[128]);
+        static void transformRoundsBmi2(uint64_t state[8], const uint8_t* block, size_t blocks);
 #endif
 
         static void transform(uint64_t state[8], const uint8_t block[128]);
+
+        /**
+         * Compresses contiguous complete SHA-384/SHA-512 blocks with one hardware dispatch.
+         *
+         * @param state The 8-word running hash state, updated in place.
+         * @param blocks Pointer to `blockCount * 128` readable bytes.
+         * @param blockCount Number of complete 128-byte blocks.
+         */
+        static void transformBlocks(uint64_t state[8], const uint8_t* blocks, size_t blockCount);
     };
 
 } // namespace crypto

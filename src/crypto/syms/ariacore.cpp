@@ -155,6 +155,131 @@ namespace crypto {
         std::memcpy(s, t, sizeof(t));
     }
 
+    const AriaCore::ExpandedBoxes& AriaCore::expandedBoxes() {
+        static const ExpandedBoxes boxes = [] {
+            ExpandedBoxes result{};
+            for (size_t i = 0; i < 256; ++i) {
+                const uint32_t s1 = SB1[i];
+                const uint32_t s2 = SB2[i];
+                const uint32_t s3 = SB3[i];
+                const uint32_t s4 = SB4[i];
+                result.values[0][i] = (s1 << 16) | (s1 << 8) | s1;
+                result.values[1][i] = (s2 << 24) | (s2 << 8) | s2;
+                result.values[2][i] = (s3 << 24) | (s3 << 16) | s3;
+                result.values[3][i] = (s4 << 24) | (s4 << 16) | (s4 << 8);
+            }
+            return result;
+        }();
+        return boxes;
+    }
+
+    namespace {
+
+        uint32_t ByteSwap32(uint32_t value) {
+            return ((value & 0x000000ffu) << 24)
+                | ((value & 0x0000ff00u) << 8)
+                | ((value & 0x00ff0000u) >> 8)
+                | ((value & 0xff000000u) >> 24);
+        }
+
+        uint32_t LoadBe32(const uint8_t* value) {
+            return (uint32_t(value[0]) << 24) | (uint32_t(value[1]) << 16)
+                | (uint32_t(value[2]) << 8) | uint32_t(value[3]);
+        }
+
+        void StoreBe32(uint32_t value, uint8_t* out) {
+            out[0] = static_cast<uint8_t>(value >> 24);
+            out[1] = static_cast<uint8_t>(value >> 16);
+            out[2] = static_cast<uint8_t>(value >> 8);
+            out[3] = static_cast<uint8_t>(value);
+        }
+
+        void DiffuseWords(uint32_t d[4]) {
+            d[1] ^= d[2];
+            d[2] ^= d[3];
+            d[0] ^= d[1];
+            d[3] ^= d[1];
+            d[2] ^= d[0];
+            d[1] ^= d[2];
+        }
+
+        uint32_t SwapAdjacentBytes(uint32_t value) {
+            return ((value << 8) & 0xff00ff00u) ^ ((value >> 8) & 0x00ff00ffu);
+        }
+
+    } // namespace
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+#define CERTPP_ARIA_INLINE __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+#define CERTPP_ARIA_INLINE __forceinline
+#else
+#define CERTPP_ARIA_INLINE inline
+#endif
+
+    CERTPP_ARIA_INLINE void AriaCore::substitutionDiffOdd(
+        uint32_t d[4], const ExpandedBoxes& boxes
+    ) {
+        for (size_t i = 0; i < 4; ++i) {
+            const uint32_t value = d[i];
+            d[i] = boxes.values[0][value >> 24]
+                ^ boxes.values[1][(value >> 16) & 0xffu]
+                ^ boxes.values[2][(value >> 8) & 0xffu]
+                ^ boxes.values[3][value & 0xffu];
+        }
+        DiffuseWords(d);
+        d[1] = SwapAdjacentBytes(d[1]);
+        d[2] = (d[2] << 16) | (d[2] >> 16);
+        d[3] = ByteSwap32(d[3]);
+        DiffuseWords(d);
+    }
+
+    CERTPP_ARIA_INLINE void AriaCore::substitutionDiffEven(
+        uint32_t d[4], const ExpandedBoxes& boxes
+    ) {
+        for (size_t i = 0; i < 4; ++i) {
+            const uint32_t value = d[i];
+            d[i] = boxes.values[2][value >> 24]
+                ^ boxes.values[3][(value >> 16) & 0xffu]
+                ^ boxes.values[0][(value >> 8) & 0xffu]
+                ^ boxes.values[1][value & 0xffu];
+        }
+        DiffuseWords(d);
+        d[3] = SwapAdjacentBytes(d[3]);
+        d[0] = (d[0] << 16) | (d[0] >> 16);
+        d[1] = ByteSwap32(d[1]);
+        DiffuseWords(d);
+    }
+
+    CERTPP_ARIA_INLINE void AriaCore::cryptBlockWords(
+        uint32_t d[4], const uint32_t* roundKeys, uint32_t nr,
+        const ExpandedBoxes& boxes
+    ) {
+        for (uint32_t round = 0; round + 1 < nr; ++round) {
+            for (size_t i = 0; i < 4; ++i) {
+                d[i] ^= roundKeys[round * 4 + i];
+            }
+            if ((round & 1u) == 0) {
+                substitutionDiffOdd(d, boxes);
+            } else {
+                substitutionDiffEven(d, boxes);
+            }
+        }
+
+        const uint32_t* penultimateKey = roundKeys + (nr - 1) * 4;
+        const uint32_t* finalKey = roundKeys + nr * 4;
+        for (size_t i = 0; i < 4; ++i) {
+            const uint32_t value = d[i] ^ penultimateKey[i];
+            d[i] = (uint32_t(SB3[value >> 24]) << 24)
+                | (uint32_t(SB4[(value >> 16) & 0xffu]) << 16)
+                | (uint32_t(SB1[(value >> 8) & 0xffu]) << 8)
+                | uint32_t(SB2[value & 0xffu]);
+            d[i] ^= finalKey[i];
+        }
+    }
+
+#undef CERTPP_ARIA_INLINE
+
     /* FO(D, RK) = A(SL1(D ^ RK)) -- the odd round function. */
     void AriaCore::roundOdd(uint8_t d[16], const uint8_t rk[16]) {
         for (size_t i = 0; i < 16; ++i) {
@@ -386,33 +511,51 @@ namespace crypto {
     }
 
     void AriaCore::encryptBlock(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
-        uint8_t d[16];
-        std::memcpy(d, in, 16);
+        uint32_t keys[4 * 17];
+        for (size_t i = 0; i < 4 * (nr + 1); ++i) {
+            keys[i] = LoadBe32(roundKeys + i * 4);
+        }
 
-        // Rounds 1..n-1 alternate FO (SL1) and FE (SL2). Round 1 is FO, so the loop index
-        // being even means FO. The RFC's round numbering is 1-based, the array is 0-based.
-        for (uint32_t r = 0; r + 1 < nr; ++r) {
-            if ((r % 2) == 0) {
-                roundOdd(d, roundKeys + r * 16);
-            } else {
-                roundEven(d, roundKeys + r * 16);
+        uint32_t d[4];
+        for (size_t i = 0; i < 4; ++i) {
+            d[i] = LoadBe32(in + i * 4);
+        }
+        cryptBlockWords(d, keys, nr, expandedBoxes());
+        for (size_t i = 0; i < 4; ++i) {
+            StoreBe32(d[i], out + i * 4);
+        }
+    }
+
+    void AriaCore::encryptCbcBulk(
+        const uint8_t* in, uint8_t* out, size_t blocks, uint8_t chain[16],
+        const uint8_t* roundKeys, uint32_t nr
+    ) {
+        uint32_t keys[4 * 17];
+        for (size_t i = 0; i < 4 * (nr + 1); ++i) {
+            keys[i] = LoadBe32(roundKeys + i * 4);
+        }
+
+        uint32_t chaining[4];
+        for (size_t i = 0; i < 4; ++i) {
+            chaining[i] = LoadBe32(chain + i * 4);
+        }
+
+        const ExpandedBoxes& boxes = expandedBoxes();
+        for (size_t block = 0; block < blocks; ++block) {
+            uint32_t d[4];
+            for (size_t i = 0; i < 4; ++i) {
+                d[i] = LoadBe32(in + block * 16 + i * 4) ^ chaining[i];
+            }
+            cryptBlockWords(d, keys, nr, boxes);
+            for (size_t i = 0; i < 4; ++i) {
+                chaining[i] = d[i];
+                StoreBe32(d[i], out + block * 16 + i * 4);
             }
         }
 
-        // The final round is different from the others -- it has an extra key addition
-        // layer and no diffusion:
-        //     C = SL2(P{n-1} ^ ek{n}) ^ ek{n+1}
-        // where P{n-1} is the output of round n-1. So the last FO/FE pair is replaced by
-        // just the substitution layer with key material on both sides of it.
-        for (size_t i = 0; i < 16; ++i) {
-            d[i] ^= roundKeys[(nr - 1) * 16 + i];
+        for (size_t i = 0; i < 4; ++i) {
+            StoreBe32(chaining[i], chain + i * 4);
         }
-        substitutionLayer2(d);
-        for (size_t i = 0; i < 16; ++i) {
-            d[i] ^= roundKeys[nr * 16 + i];
-        }
-
-        std::memcpy(out, d, 16);
     }
 
     bool AriaCore::decryptRoundKeys(const uint8_t* roundKeys, uint32_t nr, uint8_t* decryptKeys) {

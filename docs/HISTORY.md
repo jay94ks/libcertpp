@@ -25,10 +25,47 @@ sixteen-block AVX-512F ChaCha20 path, made the existing accelerated paths
 compile under Clang's Windows ABI, corrected GFNI feature detection, and
 removed an AVX-512 vector-argument ABI boundary from Poly1305. On the review
 machine the complete AVX-512 ChaCha20-Poly1305 path measured 1979.7 MiB/s for
-64 KiB records versus 494.8 MiB/s with both AVX-512 tiers disabled. Test
-processes now route assertions and crashes to console diagnostics without
-Windows error dialogs. Automated CI and the platform
-matrix intentionally remain in [the roadmap](PLANS.md).
+64 KiB records versus 494.8 MiB/s with both AVX-512 tiers disabled. The
+OpenSSL 3.6 comparison program then expanded to the complete hash/CBC
+inventory plus AEAD, X25519, ML-KEM, EdDSA, and ML-DSA. A circular SHA-512
+schedule with rotated round arguments improved its median throughput by 36%,
+and parallel AES-CTR, VAES, and four-block GHASH raised 64 KiB AES-256-GCM from
+517 to 2953 MiB/s while preserving the short-record path. The OpenSSL inventory
+then covered all 20 prime-field ECDSA/ECDH and 10 binary ECDSA curves. Joint public-scalar
+multiplication reduced representative prime-curve ECDSA verification by about
+2.3x and binary-curve verification by about 1.9--2.0x, and the same prime-field
+path accelerates GOST verification. The comparison then added RSA and DSA interoperability;
+Montgomery-backed primality tests, sliding-window exponentiation, and joint DSA verification
+reduced the first direct RSA key-generation/signing measurements by about 5.7x/1.3x and DSA
+key-generation/signing/verification by about 3.7x/3.4x/5.5x. The tested OpenSSL providers do not
+offer GOST signatures. Dedicated edwards448 doubling, a public subgroup-check window, and a
+joint `S*B - k*A` verifier then reduced median Ed448 verification latency from 11.454 to
+6.055 ms while retaining the secret-scalar ladder. Removing X25519 key generation's redundant
+derived-point cofactor ladder reduced its median from 0.270 to 0.139 ms. Test processes now
+route assertions and crashes to console diagnostics without Windows error dialogs. Automated CI
+and the platform matrix intentionally remain in [the roadmap](PLANS.md). A four-lane SSE2
+BLAKE2s compression path then raised its 64 KiB median from 406 to 512 MiB/s and its matched
+OpenSSL ratio from 0.74 to 0.96, while the SIMD-disabled scalar path retained the same RFC and
+keyed-reference answers. Fully expanded compression kernels and one dispatch per input then
+raised MD4 from 0.61 to 0.90 of OpenSSL and MD5 from 0.81 to 0.90. MD4 uses AVX-512VL ternary
+logic and rotates; MD5 uses BMI1 ANDN with scalar ROL after its BMI2 RORX alternative measured
+slower. Accelerated and SIMD-disabled known-answer tests retained the same results.
+An AVX-512VL SHA-384/SHA-512 path then generated four message schedules together and removed a
+round-chain addition from prepared blocks, raising their OpenSSL ratios to 0.90 and 0.91.
+An AVX-512VL Keccak permutation then kept all 25 lanes in registers and folded theta and chi with
+ternary logic. Five-run median OpenSSL ratios rose to 1.40 for SHA3-256, 1.35 for SHA3-512, and
+1.38 for both SHAKE variants while the portable permutation retained the same FIPS and independent
+reference answers.
+Passing safe complete CBC input directly to the AES-NI bulk loop then removed an input-sized
+staging copy and empty-buffer allocation from `CbcTransformer`. Seven-run median OpenSSL ratios
+rose to 0.97 for AES-128/192-CBC and 0.98 for AES-256-CBC, with buffered overlap and partial-output
+semantics retained. DES then replaced bit-by-bit round permutations with generated S/P tables and
+two rotated lookup-key words, while DES/TripleDES bulk CBC kept chaining local and retained the
+permuted value between EDE stages. Seven-run median OpenSSL ratios rose from 0.07/0.06 to
+1.04/1.01 for DES/2-key TripleDES, with the published two-key and three-key vectors unchanged.
+ARIA then replaced byte-at-a-time substitution and diffusion with expanded 32-bit S-boxes, word
+diffusion, and an inlined CBC bulk loop. Its 128/192/256-bit seven-run median OpenSSL ratios rose
+from about 0.31 to 1.04/1.03/1.03 while the RFC 5794 vectors remained unchanged.
 
 ## Chapters
 

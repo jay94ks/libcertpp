@@ -86,6 +86,26 @@ TEST_CASE("CEc2Curve: scalarMul(G, 2) matches doubling G, for every known curve"
     }
 }
 
+TEST_CASE("CEc2Curve: linearCombination matches separate public-scalar multiplications") {
+    CEc2Curve curve;
+    REQUIRE(CEc2Curve::knownCurves(ECURVE2_B163, curve));
+    const CBigNum k1(uint64_t(17));
+    const CBigNum k2(uint64_t(29));
+    const SEc2Point p2 = curve.scalarMulBase(CBigNum(uint64_t(11)));
+
+    const SEc2Point expected = curve.add(
+        curve.scalarMul(curve.g, k1), curve.scalarMul(p2, k2));
+    const SEc2Point combined = curve.linearCombination(k1, curve.g, k2, p2);
+    CHECK(combined.equals(expected));
+
+    const CBigNum zero;
+    CHECK(curve.linearCombination(zero, curve.g, k2, p2)
+        .equals(curve.scalarMul(p2, k2)));
+    CHECK(curve.linearCombination(k1, curve.g, zero, p2)
+        .equals(curve.scalarMul(curve.g, k1)));
+    CHECK(curve.linearCombination(zero, curve.g, zero, p2).infinity);
+}
+
 TEST_CASE("CEc2Curve: a point plus its negation is the point at infinity, for every known curve") {
     // A binary curve's negation is (x, x+y), not (x, p-y) like a prime-field curve.
     for (auto id : ALL_CURVES) {

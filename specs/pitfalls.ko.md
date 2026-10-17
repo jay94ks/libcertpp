@@ -159,6 +159,11 @@ constant-time으로 만들지는 않으므로 소수체 곡선 ECDSA와 ECDH에�
 위험이 있습니다. 프로토콜이 허용한다면 고정 폭 `Fe25519`를 쓰는 X25519를
 권합니다.
 
+**`CEcCurve::linearCombination()`과 `CEc2Curve::linearCombination()`에는 공개
+스칼라만 전달해야 합니다.** 이 메서드들은 서명 검증을 가속하려고 스칼라 비트에 따라
+분기합니다. private 스칼라를 전달하면 직접적인 timing 및 제어 흐름 누출이 생깁니다.
+private 값에는 `scalarMul()` 또는 `scalarMulBase()`를 사용하십시오.
+
 **이 곡선들에는 두 개의 modulus가 있고, 둘은 서로 바꿔 쓸 수 없습니다.** 체
 소수(field prime, 좌표에 쓰임)와 군의 위수(group order, 스칼라에 쓰임)는 서로
 다른 수입니다. `Fe25519`는 체 소수 2^255−19만 구현하며, 바로 그 둘을 섞는

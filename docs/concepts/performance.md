@@ -74,6 +74,329 @@ Each figure is the best of three runs of the harness on a quiet machine. Run-to-
 recorded for the refreshed comparison below where they materially affect the ratio; one run's
 absolute value should not be treated as the algorithm's universal speed.
 
+### Current SHA-384 and SHA-512 comparison
+
+The SHA-384/SHA-512 rows were refreshed on 2026-10-16 after first replacing the 80-word message
+schedule and per-round state shifts with a 16-word circular schedule and rotated round arguments,
+then adding an AVX-512VL round kernel. For bulk input it computes four independent message
+schedules together in YMM lanes. The first block is compressed while those schedules are formed;
+the remaining three store `W[t] + K[t]`, removing one addition from their serial round chains.
+One runtime dispatch covers the complete input. BMI2 RORX and portable paths remain available.
+
+| Five-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| SHA-384, previous inventory | 550 MiB/s | 703 MiB/s | 0.79x |
+| SHA-384, current | **632 MiB/s** | 700 MiB/s | **0.90x** |
+| SHA-512, initial | 404 MiB/s | 704 MiB/s | 0.57x |
+| SHA-512, circular scalar schedule | 551 MiB/s | 708 MiB/s | 0.78x |
+| SHA-512, current | **632 MiB/s** | 695 MiB/s | **0.91x** |
+
+The final five paired runs produced rounded ratios of 0.90x, 0.90x, 0.96x, 0.86x, and 0.92x
+for SHA-384, and 0.91x, 0.89x, 0.91x, 0.93x, and 0.95x for SHA-512. Their medians meet the
+active threshold, though SHA-384 remains close enough to require remeasurement after related
+compiler or dispatch changes. FIPS 180-4, million-`a`, chunking, reset, boundary, and portable
+load tests pass. An eight-block ZMM schedule and a packed variable-rotate round both measured
+slower and are not part of the implementation.
+
+### Current BLAKE2s comparison
+
+The BLAKE2s row was refreshed on 2026-10-16 after vectorizing the four independent G functions
+in each column and diagonal step with SSE2. SSE2 is guaranteed by the x86-64 ABI, so that path
+needs no runtime feature branch; `CERTPP_DISABLE_HWACCEL_SIMD=ON` retains and exercises the
+portable scalar implementation.
+
+| Three-run median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| Before | 406 MiB/s | 539 MiB/s | 0.74x |
+| Current | **512 MiB/s** | 533 MiB/s | **0.96x** |
+
+The three current runs measured 512, 531, and 502 MiB/s for certpp against 533, 544, and
+533 MiB/s for OpenSSL, giving per-run ratios of 0.96x, 0.98x, and 0.94x. The comparison's
+digest equality check passed before every timing run. The RFC 7693 unkeyed vectors and the
+reference keyed BLAKE2s KAT pass in both accelerated and SIMD-disabled builds. BLAKE2s therefore
+meets the active 0.90 threshold on this comparison host; other algorithms remain open.
+
+### Current MD4 and MD5 comparison
+
+The MD4 and MD5 rows were refreshed on 2026-10-16 after expanding every compression step at
+compile time and moving the feature decision outside the multi-block loop. MD4 uses AVX-512VL
+ternary logic and vector rotates when available. MD5 uses BMI1 ANDN but deliberately keeps the
+destructive scalar ROL instruction: the otherwise identical BMI2 RORX variant measured slower
+for this dependency chain. Runtime CPU checks select both paths, and
+`CERTPP_DISABLE_HWACCEL_SIMD=ON` retains the portable implementations.
+
+| Ten-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| MD4, before | 840 MiB/s | 1377 MiB/s | 0.61x |
+| MD4, current | about 1237 MiB/s | about 1383 MiB/s | **0.90x** |
+| MD5, before | 674 MiB/s | 837 MiB/s | 0.81x |
+| MD5, current | about 758 MiB/s | about 843 MiB/s | **0.90x** |
+
+The ten paired-run ratios had medians of 0.900x for MD4 and 0.901x for MD5. Individual rounded
+ratios ranged from 0.87x to 0.94x for MD4 and 0.87x to 0.92x for MD5, so these rows meet the
+threshold narrowly on this host and should be remeasured after related compiler or dispatch
+changes. Digest equality passed before every timing run. The accelerated known-answer tests and
+the SIMD-disabled portable tests both pass.
+
+### Current SHA-3 and SHAKE comparison
+
+The Keccak rows were refreshed on 2026-10-16 after adding an AVX-512VL permutation. It keeps all
+25 lanes in the expanded vector register file, performs rho/pi as one in-place 24-lane cycle, and
+uses ternary logic for theta parity and chi. Runtime feature checks retain the BMI1 and portable
+fallbacks.
+
+| Five-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| SHA3-256 | about 580 MiB/s | about 418 MiB/s | **1.40x** |
+| SHA3-512 | about 311 MiB/s | about 228 MiB/s | **1.35x** |
+| SHAKE-128, 64-byte output | about 724 MiB/s | about 526 MiB/s | **1.38x** |
+| SHAKE-256, 64-byte output | about 544 MiB/s | about 399 MiB/s | **1.38x** |
+
+The FIPS SHA-3 vectors, independently generated SHAKE vectors, streaming boundaries, repeated
+finish, and multi-block squeeze tests pass through the accelerated path. The SIMD-disabled build
+continues to exercise the portable permutation. All four direct rows exceed the 0.90 threshold.
+
+### Current AES-CBC comparison
+
+The AES-CBC rows were refreshed on 2026-10-16 after changing `CbcTransformer` to pass a safe run
+of complete input blocks directly to the AES-NI bulk function when no earlier fragment is pending.
+Previously every `transform()` call copied its complete input into an internal staging buffer and
+allocated another empty buffer after consuming it. The direct path buffers only an unprocessed
+remainder. Exact in-place input and output behind the input are safe; forward-overlapping output
+retains the buffered path so ciphertext cannot overwrite plaintext that has not been read.
+
+| Seven-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| AES-128-CBC, before direct streaming | 1745 MiB/s | 1881 MiB/s | 0.93x |
+| AES-128-CBC, current | **1818 MiB/s** | 1882 MiB/s | **0.97x** |
+| AES-192-CBC, before direct streaming | 1495 MiB/s | 1576 MiB/s | 0.95x |
+| AES-192-CBC, current | **1542 MiB/s** | 1586 MiB/s | **0.97x** |
+| AES-256-CBC, before direct streaming | 1050 MiB/s | 1373 MiB/s | 0.76x |
+| AES-256-CBC, current | **1346 MiB/s** | 1377 MiB/s | **0.98x** |
+
+The seven current paired runs produced rounded ratios of 0.94--0.98 for AES-128, 0.96--1.08 for
+AES-192, and 0.88--1.02 for AES-256; each median exceeds the 0.90 threshold. The AES-256 low run
+was isolated rather than repeatable. NIST SP 800-38A vectors and accelerated-versus-portable bulk
+comparisons pass, including chunked input, exact in-place input, forward overlap, and limited
+output that leaves complete blocks buffered. The same tests pass with AES hardware acceleration
+disabled.
+
+### Current DES and TripleDES comparison
+
+The DES rows were refreshed on 2026-10-16 after replacing bit-by-bit Feistel expansion and
+P-permutation work with generated S/P tables and two rotated round-key words. Complete CBC input
+also uses the direct streaming path: the chaining value stays local, and TripleDES retains the
+permuted block between EDE stages instead of applying three canceling final/initial permutation
+pairs.
+
+| Seven-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| DES-CBC, before | about 6 MiB/s | about 80 MiB/s | 0.07x |
+| DES-CBC, current | **81 MiB/s** | 78 MiB/s | **1.04x** |
+| 2-key 3DES-CBC, before | about 2 MiB/s | about 30 MiB/s | 0.06x |
+| 2-key 3DES-CBC, current | **30 MiB/s** | about 30 MiB/s | **1.01x** |
+
+All seven current paired runs produced rounded ratios of 0.99 or higher for both ciphers.
+Published DES and TripleDES
+known-answer tests pass, including both two-key and three-key EDE. These are compatibility-only
+ciphers; meeting the performance target does not change their security status.
+
+### Current ARIA-CBC comparison
+
+The ARIA rows were refreshed on 2026-10-16 after replacing byte-at-a-time diffusion with the
+RFC-equivalent 32-bit formulation. Expanded S-box entries perform the substitution and first
+diffusion step together; two word-diffusion stages surround fixed byte permutations. The CBC bulk
+loop converts the schedule to words once, retains the chaining state in words, and inlines the
+round path for every block.
+
+| Seven-run paired median, 64 KiB | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| ARIA-128-CBC, before | 48 MiB/s | 157 MiB/s | 0.31x |
+| ARIA-128-CBC, current | **154 MiB/s** | 149 MiB/s | **1.04x** |
+| ARIA-192-CBC, before | 42 MiB/s | 133 MiB/s | 0.31x |
+| ARIA-192-CBC, current | **136 MiB/s** | 130 MiB/s | **1.03x** |
+| ARIA-256-CBC, before | 36 MiB/s | 119 MiB/s | 0.31x |
+| ARIA-256-CBC, current | **117 MiB/s** | 115 MiB/s | **1.03x** |
+
+The current rounded per-run ratios ranged from 0.98 to 1.09, and every median exceeds the 0.90
+threshold. RFC 5794 key-schedule, block, and CBC known-answer tests pass in the normal and
+portable builds.
+
+### Current AES-GCM comparison
+
+The 64 KiB AES-256-GCM row was refreshed after adding eight-counter AES-CTR processing, a
+256-bit VAES tier, and four-block GHASH aggregation. Counter blocks are constructed in registers;
+building eight byte arrays and incrementing each one had been a larger cost than the AES rounds.
+GHASH folds four recurrence steps into independent carry-less products and one reduction, while
+short records retain the single-block path and avoid power-table setup.
+
+| Three-run median | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| Before, 64 KiB | 517 MiB/s | 11608 MiB/s | 0.04x |
+| Current, 64 KiB | **2953 MiB/s** | 10569 MiB/s | **0.28x** |
+| Current, 64-byte record | 176 ns | **78 ns** | **0.43x** |
+
+Bulk certpp throughput improved 5.71x. The three current per-run ratios are 0.28x, 0.24x, and
+0.29x; the median remains below the 0.90 goal. The accelerated path is checked against portable
+AES across all key sizes and a 32-bit counter carry, and long GHASH input is compared with the
+serial path under different chunk boundaries. Both accelerated and fully portable test builds
+pass.
+
+### Current algorithm inventory comparison
+
+The comparison harness was expanded on 2026-10-16 from six hashes and two CBC configurations to
+all 14 implemented hashes, all eight implemented CBC configurations, all three AEADs, X25519,
+all three ML-KEM parameter sets, RSA-2048, DSA-2048, the EdDSA and ML-DSA signatures, all 20
+prime-field ECDSA/ECDH curve choices, and all 10 binary-field ECDSA choices. It verifies digest,
+ciphertext, tag, signature, or shared-secret equality before timing the directly interoperable
+rows. EC signatures are cross-verified in both directions and reject an altered digest;
+prime-curve ECDH compares the exact shared secret. The
+ML-KEM checks also cross the implementation boundary in both directions. CBC now advances both
+implementations as one continuous stream; the earlier harness reset only OpenSSL on every call,
+charging it context setup and overstating certpp's relative result. The table reports the median
+per-run ratio from three complete runs. Latency ratios use `OpenSSL latency / certpp latency`, so
+every ratio has the same direction and 1.00x means parity.
+The RSA/DSA rows come from three targeted `--classic-signatures` runs after the same setup and
+warm-up rules; both directions verify across the implementation boundary and reject an altered
+digest before timing.
+
+| Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| MD4 | about 1237 MiB/s | about 1383 MiB/s | 0.90x |
+| MD5 | about 758 MiB/s | about 843 MiB/s | 0.90x |
+| SHA-1 | 1709 MiB/s | 1839 MiB/s | 0.93x |
+| SHA-224 | 1532 MiB/s | 1601 MiB/s | 0.96x |
+| SHA-256 | 1536 MiB/s | 1598 MiB/s | 0.96x |
+| SHA-384 | 632 MiB/s | 700 MiB/s | 0.90x |
+| SHA-512 | 632 MiB/s | 695 MiB/s | 0.91x |
+| SHA3-256 | about 580 MiB/s | about 418 MiB/s | 1.40x |
+| SHA3-512 | about 311 MiB/s | about 228 MiB/s | 1.35x |
+| SHAKE-128, 64-byte output | about 724 MiB/s | about 526 MiB/s | 1.38x |
+| SHAKE-256, 64-byte output | about 544 MiB/s | about 399 MiB/s | 1.38x |
+| BLAKE2s | 512 MiB/s | 533 MiB/s | 0.96x |
+| Streebog-256 |  | unavailable |  |
+| Streebog-512 |  | unavailable |  |
+| AES-128-CBC | 1818 MiB/s | 1882 MiB/s | 0.97x |
+| AES-192-CBC | 1542 MiB/s | 1586 MiB/s | 0.97x |
+| AES-256-CBC | 1346 MiB/s | 1377 MiB/s | 0.98x |
+| DES-CBC | 81 MiB/s | 78 MiB/s | 1.04x |
+| 2-key 3DES-CBC | 30 MiB/s | about 30 MiB/s | 1.01x |
+| ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
+| ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
+| ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
+| RSA-2048 keygen | 266.524 ms | 15.088 ms | 0.05x |
+| RSA-2048 sign | 4.340 ms | 0.260 ms | 0.06x |
+| RSA-2048 verify | 0.148 ms | 0.016 ms | 0.11x |
+| DSA-2048 keygen, including fresh parameters | 1392.749 ms | 142.425 ms | 0.10x |
+| DSA-2048 sign | 2.382 ms | 0.337 ms | 0.14x |
+| DSA-2048 verify | 3.417 ms | 0.297 ms | 0.09x |
+| GOST R 34.10-2012 |  | unavailable |  |
+| Ed25519 sign, 32-byte message | 0.052 ms | 0.035 ms | 0.65x |
+| Ed25519 verify, 32-byte message | 0.369 ms | 0.097 ms | 0.26x |
+| ChaCha20-Poly1305 seal, 64 KiB | 923 MiB/s | 4117 MiB/s | 0.22x |
+| XChaCha20-Poly1305 seal, 64 KiB |  | unavailable |  |
+| AES-256-GCM seal, 64 KiB | 2953 MiB/s | 10569 MiB/s | 0.28x |
+| ChaCha20-Poly1305 seal, 64-byte record | 363 ns | 255 ns | 0.70x |
+| XChaCha20-Poly1305 seal, 64-byte record |  | unavailable |  |
+| AES-256-GCM seal, 64-byte record | 176 ns | 78 ns | 0.43x |
+| X25519 keygen | 0.139 ms | 0.034 ms | 0.24x |
+| X25519 derive | 0.136 ms | 0.029 ms | 0.21x |
+| ML-KEM-512 keygen | 0.079 ms | 0.032 ms | 0.40x |
+| ML-KEM-512 encapsulate | 0.063 ms | 0.028 ms | 0.44x |
+| ML-KEM-512 decapsulate | 0.067 ms | 0.035 ms | 0.52x |
+| ML-KEM-768 keygen | 0.125 ms | 0.047 ms | 0.37x |
+| ML-KEM-768 encapsulate | 0.094 ms | 0.030 ms | 0.32x |
+| ML-KEM-768 decapsulate | 0.100 ms | 0.047 ms | 0.47x |
+| ML-KEM-1024 keygen | 0.186 ms | 0.069 ms | 0.37x |
+| ML-KEM-1024 encapsulate | 0.140 ms | 0.042 ms | 0.30x |
+| ML-KEM-1024 decapsulate | 0.143 ms | 0.063 ms | 0.44x |
+| Ed448 sign, 32-byte message | 2.855 ms | 0.191 ms | 0.08x |
+| Ed448 verify, 32-byte message | 6.055 ms | 0.183 ms | 0.03x |
+| ML-DSA-44 sign, 32-byte message | 0.733 ms | 0.523 ms | 0.78x |
+| ML-DSA-44 verify, 32-byte message | 0.159 ms | 0.118 ms | 0.74x |
+| ML-DSA-65 sign, 32-byte message | 1.217 ms | 0.883 ms | 0.71x |
+| ML-DSA-65 verify, 32-byte message | 0.251 ms | 0.181 ms | 0.72x |
+| ML-DSA-87 sign, 32-byte message | 1.410 ms | 1.024 ms | 0.73x |
+| ML-DSA-87 verify, 32-byte message | 0.461 ms | 0.287 ms | 0.64x |
+
+The EC rows use the same three-run median methodology. This compact table reports the
+`certpp / OpenSSL` performance ratio; `examples/06_openssl_compare.cpp` prints both absolute
+latencies. Binary-curve ECDH is marked unavailable because `CEcdsa2` implements signatures only.
+
+| Curve | Keygen | ECDSA sign | ECDSA verify | ECDH derive |
+|---|---:|---:|---:|---:|
+| P-192 | 0.08x | 0.22x | 0.24x | 0.23x |
+| P-224 | 0.09x | 0.24x | 0.25x | 0.24x |
+| P-256 | <0.01x | 0.01x | 0.04x | 0.03x |
+| P-384 | 0.07x | 0.22x | 0.21x | 0.23x |
+| P-521 | 0.08x | 0.25x | 0.22x | 0.23x |
+| secp256k1 | 0.08x | 0.23x | 0.25x | 0.23x |
+| brainpoolP160r1 | 0.10x | 0.24x | 0.27x | 0.25x |
+| brainpoolP192r1 | 0.08x | 0.21x | 0.24x | 0.21x |
+| brainpoolP224r1 | 0.08x | 0.23x | 0.26x | 0.24x |
+| brainpoolP256r1 | 0.07x | 0.21x | 0.25x | 0.21x |
+| brainpoolP320r1 | 0.08x | 0.22x | 0.23x | 0.22x |
+| brainpoolP384r1 | 0.07x | 0.22x | 0.22x | 0.21x |
+| brainpoolP512r1 | 0.05x | 0.15x | 0.16x | 0.15x |
+| brainpoolP160t1 | 0.09x | 0.24x | 0.27x | 0.24x |
+| brainpoolP192t1 | 0.08x | 0.21x | 0.24x | 0.21x |
+| brainpoolP224t1 | 0.09x | 0.23x | 0.25x | 0.24x |
+| brainpoolP256t1 | 0.07x | 0.21x | 0.22x | 0.22x |
+| brainpoolP320t1 | 0.08x | 0.22x | 0.22x | 0.22x |
+| brainpoolP384t1 | 0.07x | 0.22x | 0.21x | 0.21x |
+| brainpoolP512t1 | 0.05x | 0.15x | 0.15x | 0.15x |
+| B-163 | 0.09x | 0.34x | 0.39x | unavailable |
+| K-163 | 0.08x | 0.35x | 0.35x | unavailable |
+| B-233 | 0.09x | 0.38x | 0.41x | unavailable |
+| K-233 | 0.10x | 0.39x | 0.41x | unavailable |
+| B-283 | 0.11x | 0.43x | 0.47x | unavailable |
+| K-283 | 0.10x | 0.45x | 0.47x | unavailable |
+| B-409 | 0.14x | 0.61x | 0.66x | unavailable |
+| K-409 | 0.14x | 0.62x | 0.63x | unavailable |
+| B-571 | 0.16x | 0.74x | 0.77x | unavailable |
+| K-571 | 0.16x | 0.72x | 0.76x | unavailable |
+
+ECDSA and GOST verification now use one public-scalar `linearCombination()` instead of two
+private-scalar ladders followed by an affine addition. Representative certpp verification latency
+fell from 3.171 to 1.315 ms for P-256, 15.847 to 6.776 ms for P-521, 7.648 to 4.048 ms for B-571,
+and 7.270 to 3.745 ms for K-571. The new operation is deliberately variable-time because both
+verification scalars are public; signing, key generation, and ECDH continue to use the existing
+private-scalar paths.
+
+Ed448 verification now uses a dedicated untwisted-Edwards doubling formula, a public 4-bit
+window for subgroup checks, and one public-scalar Straus loop for `S*B - k*A`. Across three
+complete runs, certpp verification measured 7.433, 6.055, and 5.994 ms; the 6.055 ms median is
+about 47% lower than the previous 11.454 ms row. The median per-run OpenSSL ratio rose from 0.02x
+to 0.03x. RFC 8032 TEST 1 and the malformed-point, identity-point, altered-message, altered-
+signature, and wrong-key negative controls continue to pass. The window and Straus branches see
+only the public order, signature scalar, and challenge hash; private scalar multiplication keeps
+the existing ladder.
+
+X25519 key generation no longer runs a second 255-step ladder to multiply its freshly derived
+public value by the cofactor. The private scalar is clamped to a multiple of 8 before it is
+multiplied by the standard base point, so the result is already in the prime-order subgroup;
+the retained all-zero check covers the only invalid derived result. Three targeted comparison
+runs measured certpp key generation at 0.136, 0.141, and 0.139 ms with per-run OpenSSL ratios
+0.24x, 0.24x, and 0.25x. The median 0.139 ms is about 49% below the previous 0.270 ms row.
+The RFC 7748 vectors and the low-order-peer rejection test continue to pass.
+
+The harness explicitly loads OpenSSL 3.6.4's default and legacy providers, which makes MD4 and
+DES measurable. Streebog needs a provider this installation does not include, and OpenSSL does
+not expose XChaCha20-Poly1305 through EVP; those unavailable rows remain in the executable
+inventory instead of being silently omitted. The ML-KEM setup imports each implementation's raw
+public key into the other and checks both `certpp encapsulate -> OpenSSL decapsulate` and the
+reverse before timing. RSA and DSA import certpp's traditional private-key DER into OpenSSL, then
+cross-verify both signatures and altered-digest rejection. OpenSSL 3.6.4 exposes no GOST signature
+implementation through the tested default/legacy providers, so that row has no invented ratio.
+
+The first direct classic-signature run measured RSA keygen/sign at 1522.626/5.831 ms and DSA
+keygen/sign/verify at 5162.961/8.089/18.882 ms. Reusing Montgomery reduction in Miller--Rabin,
+using a sliding window for long modular exponents, and combining DSA verification's two public
+exponents reduced the current three-run medians to the values above. Key generation varies with
+how quickly random prime candidates are found, but the repeated signing and verification gains
+are stable. The remaining gap is tracked in
+[the performance roadmap](../roadmap/performance.md#openssl-90-program).
+
 ### Current Ed25519 comparison
 
 The Ed25519 row was refreshed on 2026-10-16 after the point-arithmetic optimization above. This
@@ -81,13 +404,14 @@ was a native Windows Release build with GCC 16.2.0 and OpenSSL 3.6.4 from MSYS2 
 complete harness runs were made; each run measured each side independently after warm-up and took
 the fastest of five 200-operation batches.
 
-| Operation | certpp | OpenSSL EVP | certpp latency |
+| Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
 |---|---:|---:|---:|
-| Ed25519 sign, 32-byte message | 0.059 ms | **0.040 ms** | **1.49x** |
-| Ed25519 verify, 32-byte message | 0.430 ms | **0.107 ms** | **4.03x** |
+| Ed25519 sign, 32-byte message | 0.059 ms | **0.040 ms** | **0.67x** |
+| Ed25519 verify, 32-byte message | 0.430 ms | **0.107 ms** | **0.25x** |
 
-The three sign ratios were 1.46x, 1.49x, and 1.42x; verify was 3.97x, 3.99x, and 4.03x. OpenSSL
-still has lower latency, but the current matched signing comparison is much closer than the
+The three certpp/OpenSSL latency ratios were 1.46x, 1.49x, and 1.42x for signing; verification
+was 3.97x, 3.99x, and 4.03x. OpenSSL still has lower latency, but the current matched signing
+comparison is much closer than the
 earlier 4.5x row. That old result used a different compiler and OpenSSL session, so the change in
 ratio is evidence of the present gap, not a compiler-isolated attribution of the whole gain.
 The verification row is end-to-end API behavior rather than an isolated group-equation benchmark:
@@ -96,8 +420,8 @@ the signature equation.
 
 ### Earlier full comparison
 
-The broader table below is the earlier OpenSSL 3.0.13 session. It remains the matched reference
-for the other primitives; Ed25519 is reported only in the current table above.
+The broader table below is the earlier OpenSSL 3.0.13 session. It is retained as historical
+context for the optimization sequence; the current inventory above owns the active comparison.
 
 | | certpp | OpenSSL | certpp is |
 |---|---|---|---|
@@ -110,8 +434,9 @@ for the other primitives; Ed25519 is reported only in the current table above.
 | AES-256-CBC, 64 KiB | 1280 MiB/s | 1350 MiB/s | 0.95x |
 | ARIA-256-CBC, 64 KiB | 27 MiB/s | 103 MiB/s | 0.26x |
 
-SHA-256 is at parity because both sides call SHA-NI for it; SHA-512 at 0.58x is the clearest row
-where neither does. The gap narrowed from 0.51x after BMI2 RORX optimization (+7.5% SHA-512).
+SHA-256 is at parity because both sides call SHA-NI for it. The historical SHA-512 row has been
+superseded by the current comparison above; BMI2 RORX and the circular schedule narrowed that gap,
+but the result remains below the active target.
 
 **What each remaining gap actually is, which ones have been closed and why, and the decompositions
 behind the ones that have not are in

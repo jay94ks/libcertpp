@@ -577,6 +577,140 @@ TEST_CASE("AES-CBC: the bulk path matches CBC computed one block at a time") {
     }
 }
 
+TEST_CASE("AES-CBC: direct bulk input preserves overlap and partial-output behavior") {
+    const uint8_t IV[16] = {
+        0xc0, 0x1f, 0xe0, 0xd0, 0x05, 0x50, 0x51, 0x52,
+        0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
+    };
+
+    TArray<uint8_t> expected;
+    REQUIRE(cbcEncryptPortable(BULK_KEY_256, sizeof(BULK_KEY_256), IV,
+                               CBC_PLAINTEXT, sizeof(CBC_PLAINTEXT), expected));
+
+    ISymmetricPtr aes = ISymmetric::builtIn(ESYM_AES);
+    ISymmetricKeyPtr key = aes->createKey(
+        SReadOnlyByteSpan(BULK_KEY_256, sizeof(BULK_KEY_256)));
+    REQUIRE(key);
+
+    auto makeEncrypter = [&]() {
+        ISymmetricContextPtr ctx = aes->createContext(key);
+        ctx->padding(ESYMPAD_NONE);
+        ctx->key(key, CBuffer(IV, sizeof(IV)));
+        ISymmetricTransformerPtr encrypter;
+        if (ctx->createEncrypter(encrypter) != ERET_OK) {
+            return ISymmetricTransformerPtr();
+        }
+        return encrypter;
+    };
+
+    SUBCASE("exact in-place input remains supported") {
+        ISymmetricTransformerPtr encrypter = makeEncrypter();
+        REQUIRE(encrypter);
+        TArray<uint8_t> storage;
+        storage.resize(sizeof(CBC_PLAINTEXT));
+        std::memcpy(storage.begin(), CBC_PLAINTEXT, sizeof(CBC_PLAINTEXT));
+
+        SByteSpan output(storage.begin(), storage.size());
+        REQUIRE(encrypter->transform(
+            SReadOnlyByteSpan(storage.begin(), storage.size()), output) == ERET_OK);
+        REQUIRE(output.size == expected.size());
+        CHECK(std::memcmp(storage.begin(), expected.begin(), expected.size()) == 0);
+    }
+
+    SUBCASE("forward-overlapping output uses the buffered path") {
+        ISymmetricTransformerPtr encrypter = makeEncrypter();
+        REQUIRE(encrypter);
+        TArray<uint8_t> storage;
+        storage.resize(sizeof(CBC_PLAINTEXT) + 8);
+        std::memcpy(storage.begin(), CBC_PLAINTEXT, sizeof(CBC_PLAINTEXT));
+
+        SByteSpan output(storage.begin() + 8, sizeof(CBC_PLAINTEXT));
+        REQUIRE(encrypter->transform(
+            SReadOnlyByteSpan(storage.begin(), sizeof(CBC_PLAINTEXT)), output) == ERET_OK);
+        REQUIRE(output.size == expected.size());
+        CHECK(std::memcmp(storage.begin() + 8, expected.begin(), expected.size()) == 0);
+    }
+
+    SUBCASE("limited output buffers the unconsumed complete blocks") {
+        ISymmetricTransformerPtr encrypter = makeEncrypter();
+        REQUIRE(encrypter);
+        TArray<uint8_t> outputBytes;
+        outputBytes.resize(sizeof(CBC_PLAINTEXT));
+
+        SByteSpan first(outputBytes.begin(), 32);
+        REQUIRE(encrypter->transform(
+            SReadOnlyByteSpan(CBC_PLAINTEXT, sizeof(CBC_PLAINTEXT)), first) == ERET_OK);
+        REQUIRE(first.size == 32);
+
+        SByteSpan second(outputBytes.begin() + 32, 32);
+        REQUIRE(encrypter->transform(SReadOnlyByteSpan(CBC_PLAINTEXT, 0), second)
+                == ERET_OK);
+        REQUIRE(second.size == 32);
+        CHECK(std::memcmp(outputBytes.begin(), expected.begin(), expected.size()) == 0);
+    }
+}
+
+TEST_CASE("AES-CTR: the bulk path matches portable AES across counter carry") {
+    struct KeySpec { size_t bytes; const uint8_t* key; };
+    const KeySpec keys[] = {
+        { sizeof(BULK_KEY_128), BULK_KEY_128 },
+        { sizeof(BULK_KEY_192), BULK_KEY_192 },
+        { sizeof(BULK_KEY_256), BULK_KEY_256 },
+    };
+
+    constexpr size_t BLOCKS = 64;
+    constexpr size_t BYTES = BLOCKS * AesCore::BLOCK_BYTES;
+    uint8_t input[BYTES];
+    for (size_t i = 0; i < BYTES; ++i) {
+        input[i] = uint8_t(i * 29 + (i >> 3));
+    }
+
+    const uint8_t initialCounter[16] = {
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe,
+        0x01, 0x23, 0x45, 0x67, 0xff, 0xff, 0xff, 0xf0,
+    };
+
+    for (const KeySpec& spec : keys) {
+        CAPTURE(spec.bytes);
+        TArray<uint8_t> roundKeys;
+        uint32_t rounds = 0;
+        REQUIRE(AesCore::expandKey(spec.key, spec.bytes, roundKeys, rounds));
+
+        uint8_t expected[BYTES];
+        uint8_t expectedCounter[16];
+        std::memcpy(expectedCounter, initialCounter, sizeof(expectedCounter));
+        for (size_t block = 0; block < BLOCKS; ++block) {
+            uint8_t stream[16];
+            AesCore::encryptBlockPortable(
+                expectedCounter, stream, roundKeys.begin(), rounds);
+            for (size_t i = 0; i < 16; ++i) {
+                expected[block * 16 + i] = uint8_t(input[block * 16 + i] ^ stream[i]);
+            }
+            for (size_t i = 16; i-- > 12; ) {
+                if (++expectedCounter[i] != 0) {
+                    break;
+                }
+            }
+        }
+
+        uint8_t got[BYTES];
+        uint8_t gotCounter[16];
+        std::memcpy(gotCounter, initialCounter, sizeof(gotCounter));
+        AesCore::xorCtrBulk(
+            input, got, BLOCKS, gotCounter, roundKeys.begin(), rounds);
+        CHECK(std::memcmp(got, expected, sizeof(got)) == 0);
+        CHECK(std::memcmp(gotCounter, expectedCounter, sizeof(gotCounter)) == 0);
+
+        uint8_t inPlace[BYTES];
+        std::memcpy(inPlace, input, sizeof(inPlace));
+        std::memcpy(gotCounter, initialCounter, sizeof(gotCounter));
+        AesCore::xorCtrBulk(
+            inPlace, inPlace, BLOCKS, gotCounter, roundKeys.begin(), rounds);
+        CHECK(std::memcmp(inPlace, expected, sizeof(inPlace)) == 0);
+        CHECK(std::memcmp(gotCounter, expectedCounter, sizeof(gotCounter)) == 0);
+    }
+}
+
 TEST_CASE("AES-CBC unpadded: a length that isn't a whole number of blocks is refused") {
     ISymmetricPtr aes = ISymmetric::builtIn(ESYM_AES);
     ISymmetricKeyPtr key = aes->createKey(SReadOnlyByteSpan(CBC_KEY, sizeof(CBC_KEY)));

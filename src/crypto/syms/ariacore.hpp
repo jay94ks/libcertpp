@@ -30,12 +30,18 @@ namespace crypto {
      *
      * There is no hardware acceleration path. Unlike AES-NI, which Intel and AMD both
      * implement, ARIA has no equivalent instruction set on any mainstream x86, so the
-     * portable round functions *are* the implementation and `CERTPP_DISABLE_HWACCEL_SIMD`
-     * does not apply to it. `CERTPP_DISABLE_HWACCEL_ARIA` is accepted and deliberately does
-     * nothing, so a build script that disables every cipher uniformly still configures.
+     * portable round functions *are* the implementation. They use expanded 32-bit S-boxes,
+     * word diffusion, and a CBC bulk loop, without ISA-specific code.
+     * `CERTPP_DISABLE_HWACCEL_SIMD` does not apply to it. `CERTPP_DISABLE_HWACCEL_ARIA` is
+     * accepted and deliberately does nothing, so a build script that disables every cipher
+     * uniformly still configures.
      */
     class AriaCore {
     private:
+        struct ExpandedBoxes {
+            uint32_t values[4][256];
+        };
+
         static const uint8_t SB1[256];
         static const uint8_t SB2[256];
         static const uint8_t SB3[256];
@@ -52,6 +58,14 @@ namespace crypto {
         static void substitutionLayer1(uint8_t s[16]);
         static void substitutionLayer2(uint8_t s[16]);
         static void diffusionLayer(uint8_t s[16]);
+
+        static const ExpandedBoxes& expandedBoxes();
+        static void substitutionDiffOdd(uint32_t d[4], const ExpandedBoxes& boxes);
+        static void substitutionDiffEven(uint32_t d[4], const ExpandedBoxes& boxes);
+        static void cryptBlockWords(
+            uint32_t d[4], const uint32_t* roundKeys, uint32_t nr,
+            const ExpandedBoxes& boxes
+        );
 
         /** FO(D, RK) = A(SL1(D ^ RK)) -- the odd round function. */
         static void roundOdd(uint8_t d[16], const uint8_t rk[16]);
@@ -116,6 +130,12 @@ namespace crypto {
          * @param nr The round count expandKey() reported.
          */
         static void encryptBlock(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr);
+
+        /** Encrypts complete ARIA-CBC blocks while retaining word-form keys and chaining state. */
+        static void encryptCbcBulk(
+            const uint8_t* in, uint8_t* out, size_t blocks, uint8_t chain[16],
+            const uint8_t* roundKeys, uint32_t nr
+        );
 
         /**
          * Derives the decryption round keys from the encryption schedule (RFC 5794 2.2):
