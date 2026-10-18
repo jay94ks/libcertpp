@@ -110,6 +110,15 @@ namespace certpp {
                 a, b, modulus, count, n0inv, out, scratch);
         }
 
+        template<size_t Count>
+        void squareWideChainPortableFixed(
+            const uint64_t* a, const uint64_t*, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<false, Count>(
+                a, a, modulus, count, n0inv, out, scratch);
+        }
+
 #if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
         bool hasAdxBmi2Montgomery() {
             static const bool supported = [] {
@@ -152,6 +161,16 @@ namespace certpp {
                 a, b, modulus, count, n0inv, out, scratch);
         }
 
+        template<size_t Count>
+        __attribute__((target("bmi2,adx")))
+        void squareWideChainAcceleratedFixed(
+            const uint64_t* a, const uint64_t*, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true, Count>(
+                a, a, modulus, count, n0inv, out, scratch);
+        }
+
 #if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
         bool hasTigerLakeMontgomery() {
             static const bool supported = [] {
@@ -177,6 +196,16 @@ namespace certpp {
         ) {
             mulWideChainBody<true, Count>(
                 a, b, modulus, count, n0inv, out, scratch);
+        }
+
+        template<size_t Count>
+        __attribute__((target("arch=tigerlake")))
+        void squareWideChainTigerLakeFixed(
+            const uint64_t* a, const uint64_t*, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true, Count>(
+                a, a, modulus, count, n0inv, out, scratch);
         }
 
 #endif
@@ -210,6 +239,31 @@ namespace certpp {
 #endif
 #endif
             return multiply;
+        }
+
+        MulWideChain selectSquareWideChain(size_t count) {
+            if (count != 16 && count != 32) {
+                return selectMulWideChain(count);
+            }
+
+            MulWideChain square = count == 16
+                ? squareWideChainPortableFixed<16>
+                : squareWideChainPortableFixed<32>;
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
+            if (hasAdxBmi2Montgomery()) {
+                square = count == 16
+                    ? squareWideChainAcceleratedFixed<16>
+                    : squareWideChainAcceleratedFixed<32>;
+            }
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+            if (hasTigerLakeMontgomery()) {
+                square = count == 16
+                    ? squareWideChainTigerLakeFixed<16>
+                    : squareWideChainTigerLakeFixed<32>;
+            }
+#endif
+#endif
+            return square;
         }
 
     } // namespace
@@ -848,11 +902,12 @@ namespace certpp {
             ordinaryOne[0] = 1;
 
             const MulWideChain multiply = selectMulWideChain(_wideCount);
+            const MulWideChain square = selectSquareWideChain(_wideCount);
 
             // bitLength() guarantees the top exponent bit is one. Seeding with base consumes that
             // bit directly instead of squaring Montgomery one and multiplying by base first.
             for (size_t i = exponentBits - 1; i-- > 0; ) {
-                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                square(resultWide, resultWide, _modulus64.begin(), _wideCount,
                     _n0inv64, resultWide, scratch);
                 if (exponent.testBit(i)) {
                     multiply(resultWide, baseWide, _modulus64.begin(), _wideCount,
@@ -931,9 +986,10 @@ namespace certpp {
         };
 
         const MulWideChain multiply = selectMulWideChain(_wideCount);
+        const MulWideChain square = selectSquareWideChain(_wideCount);
 
         pack(baseMont, table);
-        multiply(table, table, _modulus64.begin(), _wideCount,
+        square(table, table, _modulus64.begin(), _wideCount,
             _n0inv64, baseSquared, scratch);
         for (size_t i = 1; i < oddPowers; ++i) {
             multiply(table + (i - 1) * _wideCount, baseSquared,
@@ -946,7 +1002,7 @@ namespace certpp {
         while (cursor > 0) {
             const size_t top = cursor - 1;
             if (!exponent.testBit(top)) {
-                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                square(resultWide, resultWide, _modulus64.begin(), _wideCount,
                     _n0inv64, resultWide, scratch);
                 --cursor;
                 continue;
@@ -960,7 +1016,7 @@ namespace certpp {
             size_t value = 0;
             for (size_t bit = cursor; bit-- > bottom; ) {
                 value = (value << 1) | size_t(exponent.testBit(bit));
-                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                square(resultWide, resultWide, _modulus64.begin(), _wideCount,
                     _n0inv64, resultWide, scratch);
             }
             multiply(resultWide, table + (value >> 1) * _wideCount,
@@ -1078,6 +1134,7 @@ namespace certpp {
         };
 
         const MulWideChain multiply = selectMulWideChain(_wideCount);
+        const MulWideChain square = selectSquareWideChain(_wideCount);
 
         pack(_one, firstPowers);
         std::memcpy(secondPowers, firstPowers, _wideCount * sizeof(uint64_t));
@@ -1120,7 +1177,7 @@ namespace certpp {
             size_t firstValue = 0;
             size_t secondValue = 0;
             for (size_t bit = cursor; bit-- > bottom; ) {
-                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                square(resultWide, resultWide, _modulus64.begin(), _wideCount,
                     _n0inv64, resultWide, scratch);
                 firstValue = (firstValue << 1) | size_t(firstExponent.testBit(bit));
                 secondValue = (secondValue << 1) | size_t(secondExponent.testBit(bit));

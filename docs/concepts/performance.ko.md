@@ -266,7 +266,15 @@ RSA와 DSA 행은 정적 Clang 22.1.8 Release 빌드에서 OpenSSL 3.6.4를 상�
 측정 전에 양방향 교차 검증과 변경된 digest 거부를 확인합니다.
 packed Montgomery engine은 이제 16-limb 체인과 32-limb 체인을 별도 컴파일한 kernel로
 dispatch합니다. 이에 따라 Clang은 일반 fallback에 특정 modulus 폭을 강제하지 않으면서
-곱·reduction loop를 최대 32 단위로 전개할 수 있습니다.
+곱·reduction loop를 최대 32 단위로 전개할 수 있습니다. 이어 고정 count 제곱 dispatch는
+같은 CIOS body의 두 피연산자에 입력 포인터 하나를 재사용합니다. WSL Clang 18에서 기준과
+변경 바이너리를 번갈아 7회 실행한 내부 중앙 지연시간은 RSA 서명 0.829에서 0.797 ms,
+RSA 검증 0.025에서 0.024 ms, DSA 서명 0.447에서 0.436 ms, DSA 검증 0.543에서
+0.529 ms로 바뀌어 2.5--4.2% 개선됐습니다. 그 WSL 빌드에서 현재 소스를 별도로 7회 비교한
+OpenSSL 대비 서명/검증 비율은 RSA 0.310/0.628배, DSA 0.758/0.562배였습니다. 무작위 키
+생성 행은 편차가 너무 커 아래의 단일 코어 고정 Windows 키 생성 결과를 대체하지 않습니다.
+따라서 표는 내부적으로 같은 조건인 최신 Windows 측정치를 유지하고, WSL 수치는 그 이후
+최적화만 분리해 보여 줍니다.
 
 | 연산(별도 표기가 없으면 64 KiB) | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

@@ -63,7 +63,11 @@ X25519와 packed Montgomery의 BMI2/ADX gate는 compiler별 기능 문자열 대
 cached dispatch와 portable fallback을 보존하면서 Clang 18에서도 최적화 경로를 빌드할 수
 있습니다. 프로파일은 RSA 전체 비교 self cycle의 35.85%를 16-limb kernel에 귀속했습니다.
 명시적인 `_mulx_u64`/`_addcarryx_u64` 재작성은 Montgomery 단언 914,917개를 통과했지만
-안정적인 RSA/DSA 연산을 5--8% 늦춰 기각했습니다. 이어 edwards448 전용 배가,
+안정적인 RSA/DSA 연산을 5--8% 늦춰 기각했습니다. 이어 고정 count 제곱 wrapper가 기존 통합
+CIOS 산술은 그대로 두고 공유 피연산자를 compiler에 노출했습니다. WSL에서 기준과 변경
+바이너리를 번갈아 7회 실행한 RSA 서명/검증과 DSA 서명/검증 중앙값은 2.5--4.2%
+개선됐고, 가속 전체 suite와 SIMD 비활성 Montgomery/RSA/DSA 테스트는 같은 응답을
+유지했습니다. 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로
 동일 조건 WSL 비교의 서명/검증을 0.139/0.191 ms까지 줄여 OpenSSL의

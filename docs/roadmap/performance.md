@@ -133,10 +133,12 @@ keeps an internal before/after baseline and an explicit unavailable result.
   rejected. Replacing the wide-integer expression with `_mulx_u64` plus `_addcarryx_u64`
   remained correct but made seven-run RSA signing and DSA signing/verification medians 5--8% slower,
   because it serialized carries that Clang had interleaved across the product and reduction chains.
-  The earlier full-square REDC experiment made RSA signing more than twice as slow. Further work
-  therefore needs a generated ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or
-  a generic full-product buffer. Keep the existing CRT fault check and documented variable-time
-  boundary intact.
+  The earlier full-square REDC experiment made RSA signing more than twice as slow. Reusing one
+  operand pointer in fixed-count square wrappers preserved the CIOS body and produced a smaller but
+  repeatable 2.5--4.2% improvement across RSA and DSA sign/verify. The current WSL sign/verify ratios
+  remain 0.310/0.628 for RSA and 0.758/0.562 for DSA, so further work still needs a generated
+  ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or a generic full-product
+  buffer. Keep the existing CRT fault check and documented variable-time boundary intact.
 - **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
   unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
   masked private-table selection, and width-eight prepared verification tables raised the four

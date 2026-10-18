@@ -265,7 +265,15 @@ search makes the key-generation ratio differ from the quotient of the two displa
 directions verify across the implementation boundary and reject an altered digest before timing.
 The packed Montgomery engine now dispatches 16- and 32-limb chains to separately compiled kernels,
 letting Clang unroll the product/reduction loop by up to 32 without imposing either modulus
-width on the generic fallback.
+width on the generic fallback. A later fixed-count square dispatch reuses one input pointer for
+both operands of the same CIOS body. Seven alternating WSL Clang 18 runs measured internal median
+latencies changing from 0.829 to 0.797 ms for RSA signing, 0.025 to 0.024 ms for RSA verification,
+0.447 to 0.436 ms for DSA signing, and 0.543 to 0.529 ms for DSA verification, improvements of
+2.5--4.2%. A separate seven-run current-source comparison on that WSL build measured sign/verify
+ratios of 0.310/0.628 for RSA and 0.758/0.562 for DSA. Its randomized key-generation rows varied
+too widely to replace the pinned Windows key-generation results below. The table therefore retains
+the latest internally consistent pinned Windows snapshot while the WSL figures isolate this newer
+optimization.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

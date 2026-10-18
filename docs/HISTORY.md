@@ -70,7 +70,10 @@ to direct CPUID checks; X25519 additionally verifies OSXSAVE/XCR0 before enterin
 This keeps the optimized paths buildable with Clang 18 while preserving cached dispatch and the
 portable fallback. A profile attributed 35.85% of a combined RSA comparison's self cycles to the
 16-limb kernel. An explicit `_mulx_u64`/`_addcarryx_u64` rewrite passed 914,917 Montgomery assertions
-but was rejected after making stable RSA/DSA operations 5--8% slower.
+but was rejected after making stable RSA/DSA operations 5--8% slower. Fixed-count square wrappers
+then kept the existing integrated CIOS arithmetic but exposed the shared operand to the compiler.
+Seven alternating WSL runs improved RSA sign/verify and DSA sign/verify medians by 2.5--4.2%, while
+the accelerated full suite and the SIMD-disabled Montgomery/RSA/DSA tests retained their answers.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

@@ -118,9 +118,12 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   `_addcarryx_u64`로 바꾼 실험은 정확했지만
   compiler가 곱·reduction chain 사이에서 교차 배치하던 carry를 직렬화해 7회 RSA 서명과
   DSA 서명/검증 중앙값을 5--8% 늦췄습니다. 이전 full-square REDC 실험도 RSA 서명을 두 배
-  넘게 느리게 했습니다. 따라서 다음 시도에는 intrinsic chain이나 일반 full-product buffer가
-  아니라 생성한 ADCX/ADOX dual-carry schedule이 필요합니다. 기존 CRT fault 검사와
-  문서화된 variable-time 경계를 보존합니다.
+  넘게 느리게 했습니다. 고정 count 제곱 wrapper에서 입력 포인터 하나를 재사용한 변경은 CIOS
+  body를 유지하면서 RSA·DSA 서명/검증을 작지만 반복 가능한 2.5--4.2%만큼 개선했습니다.
+  현재 WSL 서명/검증 비율은 RSA 0.310/0.628배, DSA 0.758/0.562배로 여전히 문턱 아래이므로,
+  다음 시도에는 intrinsic chain이나 일반 full-product buffer가 아니라 생성한 ADCX/ADOX
+  dual-carry schedule이 필요합니다. 기존 CRT fault 검사와 문서화된 variable-time 경계를
+  보존합니다.
 - **남은 P-256 행을 문턱까지 높입니다.** OpenSSL은 고도로 특화한 구현을 사용합니다.
   희소·완전 전개 4-limb Montgomery kernel, 압축한 batch-normalized 7비트 기저 표,
   한쪽 방향 private 표 mask 선택, 폭 8 준비 검증 표가 네 비율을 0.318--0.614배로
