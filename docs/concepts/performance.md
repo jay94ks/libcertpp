@@ -345,7 +345,7 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 |---|---:|---:|---:|---:|
 | P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
 | P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.614x | 0.434x | 0.361x | 0.318x |
+| P-256 | 0.797x | 0.477x | 0.406x | 0.322x |
 | P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
 | P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
 | secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
@@ -385,12 +385,13 @@ Public verification remains deliberately variable-time because both verification
 public; private scalar paths retain their existing control-flow policy.
 
 The prime-field refresh puts 76 of 80 directly comparable operations at or above the 0.90 gate;
-only the four P-256 operations remain. In the five complete inventory runs, P-256 measured
-0.031/0.055/0.183/0.144 ms for certpp key generation/signing/verification/ECDH and
-0.023/0.022/0.064/0.046 ms for OpenSSL. An additional eleven-run P-256-only check produced paired
-median ratios of 0.680/0.508/0.358/0.331 and lower certpp medians of
-0.028/0.042/0.167/0.137 ms, illustrating the host's short-run frequency variation without changing
-which rows remain open. P-256 now uses a compact 37-row, seven-bit affine base table. One-way
+only the four P-256 operations remain. A later 15-run, single-CPU, alternating comparison forced
+the fixed-width field selector and sparse P-256 multiplication body into each point formula. The
+certpp key-generation/signing/verification/ECDH medians fell from 0.037/0.047/0.149/0.141 ms to
+0.032/0.043/0.141/0.134 ms, improvements of 15.6/9.3/5.7/5.2%. The paired OpenSSL ratios are now
+0.797/0.477/0.406/0.322; all four rows therefore remain open. The benchmark executable's text grew
+by 81,060 bytes, or 7.6%, which is the measured code-size cost of exposing the field body to the
+optimizer. P-256 also uses a compact 37-row, seven-bit affine base table. One-way
 masked assignment halves the selection writes relative to swapping both operands, and the wider
 table reduces private fixed-base additions while still scanning every entry. Verification contexts
 cache width-eight affine odd multiples directly as Montgomery limbs, so repeated verification does

@@ -43,6 +43,9 @@ namespace crypto {
                 return borrow;
             }
 
+#if defined(__GNUC__) || defined(__clang__)
+            __attribute__((always_inline))
+#endif
             Value mulP256(const Value& left, const Value& right) const {
                 using Wide = unsigned __int128;
                 uint64_t t[6] = {};
@@ -249,7 +252,13 @@ namespace crypto {
                 return add(value, value);
             }
 
+#if defined(__GNUC__) || defined(__clang__)
+            __attribute__((always_inline))
+#endif
             Value mul(const Value& left, const Value& right) const {
+                // Point formulas call this thousands of times. Keeping the field selector and
+                // P-256's sparse four-limb body in the caller removes that boundary and lets the
+                // optimizer retain adjacent coordinates and carries in registers.
                 if (_p256) {
                     return mulP256(left, right);
                 }

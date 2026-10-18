@@ -41,7 +41,9 @@ OpenSSL. Fixed-count field kernels and key-bound width-six affine verification t
 every non-P-256 row above the gate. A compact seven-bit P-256 base table, one-way masked selection,
 and width-eight verification tables stored directly as Montgomery limbs raised its five-run
 keygen/sign/verify/ECDH ratios from 0.403/0.345/0.315/0.302 to
-0.614/0.434/0.361/0.318; 76 of 80 prime-field rows now pass.
+0.614/0.434/0.361/0.318. Forcing the fixed-width field selector and sparse P-256 product into the
+point formulas then reduced their single-CPU 15-run latencies by 5.2--15.6%, producing ratios of
+0.797/0.477/0.406/0.322; 76 of 80 prime-field rows still pass.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,

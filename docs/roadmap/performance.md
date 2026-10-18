@@ -149,7 +149,10 @@ keeps an internal before/after baseline and an explicit unavailable result.
   separate from run variation. A current full-harness Clang 18 `perf` profile attributes 31.00% of
   self cycles to `FastPrimeField::mul()`, 16.95% to point doubling, 7.01% to full point addition,
   2.21% to mixed addition, and only 2.62% to field inversion. This rules out more inversion-window
-  tuning as the main route. Further work needs a generated carry-chain or a whole point-operation
+  tuning as the main route. Forcing the field selector and sparse multiply into the point formulas
+  then improved single-CPU 15-run keygen/sign/verify/ECDH medians by 15.6/9.3/5.7/5.2%, but the
+  OpenSSL ratios remain only 0.797/0.477/0.406/0.322. Further work needs a generated carry-chain or
+  a whole point-operation
   Tiger Lake target that compiles the field products together with doubling and addition, rather
   than another generic full-product buffer or an isolated leaf-function dispatch.
 - **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
