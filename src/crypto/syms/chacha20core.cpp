@@ -217,7 +217,8 @@ namespace crypto {
                 __cpuidex(regs, 7, 0);
                 return (regs[1] & (1 << 5)) != 0;   // AVX2 is EBX bit 5 of leaf 7
 #else
-                return false;
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx2") != 0;
 #endif
             }();
             return detected;
@@ -239,7 +240,8 @@ namespace crypto {
                 __cpuidex(regs, 7, 0);
                 return (regs[1] & (1 << 16)) != 0;  // AVX512F is EBX bit 16 of leaf 7
 #else
-                return false;
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f") != 0;
 #endif
             }();
             return detected;
@@ -256,6 +258,72 @@ namespace crypto {
             c = _mm256_add_epi32(c, d); b = _mm256_xor_si256(b, c); b = rotl32x8(b, 12);
             a = _mm256_add_epi32(a, b); d = _mm256_xor_si256(d, a); d = rotl32x8(d, 8);
             c = _mm256_add_epi32(c, d); b = _mm256_xor_si256(b, c); b = rotl32x8(b, 7);
+        }
+
+        CERTPP_TARGET_AVX2
+        inline void quarterRoundRows2(
+            __m256i x[4], const __m256i& rotate16, const __m256i& rotate8
+        ) {
+            x[0] = _mm256_add_epi32(x[0], x[1]);
+            x[3] = _mm256_shuffle_epi8(_mm256_xor_si256(x[3], x[0]), rotate16);
+            x[2] = _mm256_add_epi32(x[2], x[3]);
+            x[1] = rotl32x8(_mm256_xor_si256(x[1], x[2]), 12);
+            x[0] = _mm256_add_epi32(x[0], x[1]);
+            x[3] = _mm256_shuffle_epi8(_mm256_xor_si256(x[3], x[0]), rotate8);
+            x[2] = _mm256_add_epi32(x[2], x[3]);
+            x[1] = rotl32x8(_mm256_xor_si256(x[1], x[2]), 7);
+        }
+
+        /* Two blocks in the two 128-bit halves of four AVX2 registers. Each vector operation
+         * performs the four column (or diagonal) quarter-rounds inside both blocks, so no lane
+         * is discarded and the final rows can be stored without a transpose. */
+        CERTPP_TARGET_AVX2
+        void blocks2Rows(
+            const ChaCha20Core::SState& state, uint32_t counter,
+            uint8_t out[2 * ChaCha20Core::BLOCK_BYTES]
+        ) {
+            __m256i x[4], original[4];
+            for (size_t row = 0; row < 3; ++row) {
+                const __m128i words = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(state.words + 4 * row));
+                x[row] = _mm256_broadcastsi128_si256(words);
+                original[row] = x[row];
+            }
+
+            const __m128i first = _mm_setr_epi32(
+                int(counter), int(state.words[13]), int(state.words[14]), int(state.words[15]));
+            const __m128i second = _mm_setr_epi32(
+                int(counter + 1), int(state.words[13]), int(state.words[14]), int(state.words[15]));
+            x[3] = _mm256_inserti128_si256(_mm256_castsi128_si256(first), second, 1);
+            original[3] = x[3];
+
+            const __m256i rotate16 = _mm256_setr_epi8(
+                2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13,
+                2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
+            const __m256i rotate8 = _mm256_setr_epi8(
+                3,0,1,2, 7,4,5,6, 11,8,9,10, 15,12,13,14,
+                3,0,1,2, 7,4,5,6, 11,8,9,10, 15,12,13,14);
+
+            for (int round = 0; round < 10; ++round) {
+                quarterRoundRows2(x, rotate16, rotate8);
+                x[1] = _mm256_shuffle_epi32(x[1], 0x39);
+                x[2] = _mm256_shuffle_epi32(x[2], 0x4e);
+                x[3] = _mm256_shuffle_epi32(x[3], 0x93);
+                quarterRoundRows2(x, rotate16, rotate8);
+                x[1] = _mm256_shuffle_epi32(x[1], 0x93);
+                x[2] = _mm256_shuffle_epi32(x[2], 0x4e);
+                x[3] = _mm256_shuffle_epi32(x[3], 0x39);
+            }
+
+            for (size_t row = 0; row < 4; ++row) {
+                x[row] = _mm256_add_epi32(x[row], original[row]);
+                _mm_storeu_si128(
+                    reinterpret_cast<__m128i*>(out + row * 16),
+                    _mm256_castsi256_si128(x[row]));
+                _mm_storeu_si128(
+                    reinterpret_cast<__m128i*>(out + ChaCha20Core::BLOCK_BYTES + row * 16),
+                    _mm256_extracti128_si256(x[row], 1));
+            }
         }
 
         /* An 8x8 32-bit transpose: eight vectors each holding one state word across eight
@@ -374,8 +442,7 @@ namespace crypto {
         template <int N>
         CERTPP_TARGET_AVX512F
         inline __m512i rotl32x16(__m512i x) {
-            return _mm512_or_si512(_mm512_slli_epi32(x, N),
-                                   _mm512_srli_epi32(x, 32 - N));
+            return _mm512_rol_epi32(x, N);
         }
 
         CERTPP_TARGET_AVX512F
@@ -386,10 +453,51 @@ namespace crypto {
             c = _mm512_add_epi32(c, d); b = _mm512_xor_si512(b, c); b = rotl32x16<7>(b);
         }
 
+        template <int Quarter>
+        CERTPP_TARGET_AVX512F
+        inline __m512i joinTransposeQuarters(
+            __m512i rows0, __m512i rows4, __m512i rows8, __m512i rows12
+        ) {
+            constexpr int repeat = Quarter * 0x55;
+            const __m512i low = _mm512_shuffle_i32x4(rows0, rows4, repeat);
+            const __m512i high = _mm512_shuffle_i32x4(rows8, rows12, repeat);
+            return _mm512_shuffle_i32x4(low, high, 0x88);
+        }
+
+        /* Transposes sixteen rows of sixteen 32-bit words. The round function keeps one state
+         * word from sixteen independent blocks in each vector; output needs one whole block per
+         * vector. The first two stages form four-word columns inside each 128-bit lane, and the
+         * last two gather the same lane from each group of four rows. */
+        CERTPP_TARGET_AVX512F
+        inline void transpose16(__m512i* r) {
+            __m512i t[16];
+            for (size_t i = 0; i < 16; i += 2) {
+                t[i] = _mm512_unpacklo_epi32(r[i], r[i + 1]);
+                t[i + 1] = _mm512_unpackhi_epi32(r[i], r[i + 1]);
+            }
+
+            __m512i s[16];
+            for (size_t i = 0; i < 16; i += 4) {
+                s[i] = _mm512_unpacklo_epi64(t[i], t[i + 2]);
+                s[i + 1] = _mm512_unpackhi_epi64(t[i], t[i + 2]);
+                s[i + 2] = _mm512_unpacklo_epi64(t[i + 1], t[i + 3]);
+                s[i + 3] = _mm512_unpackhi_epi64(t[i + 1], t[i + 3]);
+            }
+
+            for (size_t offset = 0; offset < 4; ++offset) {
+                r[offset] = joinTransposeQuarters<0>(
+                    s[offset], s[4 + offset], s[8 + offset], s[12 + offset]);
+                r[4 + offset] = joinTransposeQuarters<1>(
+                    s[offset], s[4 + offset], s[8 + offset], s[12 + offset]);
+                r[8 + offset] = joinTransposeQuarters<2>(
+                    s[offset], s[4 + offset], s[8 + offset], s[12 + offset]);
+                r[12 + offset] = joinTransposeQuarters<3>(
+                    s[offset], s[4 + offset], s[8 + offset], s[12 + offset]);
+            }
+        }
+
         /* Sixteen blocks per pass. AVX-512 holds the same state word from sixteen independent
-         * counters in one vector. Output formatting reuses the already verified AVX2 8x8
-         * transpose twice for each half of the state, avoiding an additional 16x16 shuffle
-         * whose lane ordering would be harder to audit. */
+         * counters in one vector, then a 16x16 transpose makes each vector one complete block. */
         CERTPP_TARGET_AVX512F
         void xorStream16(
             const ChaCha20Core::SState& state, uint32_t counter,
@@ -430,38 +538,11 @@ namespace crypto {
                     v[i] = _mm512_add_epi32(v[i], (i == 12) ? counters : original[i]);
                 }
 
-                __m256i firstLo[8], firstHi[8], secondLo[8], secondHi[8];
-                for (size_t i = 0; i < 8; ++i) {
-                    firstLo[i] = _mm512_castsi512_si256(v[i]);
-                    firstHi[i] = _mm512_castsi512_si256(v[i + 8]);
-                    secondLo[i] = _mm512_extracti64x4_epi64(v[i], 1);
-                    secondHi[i] = _mm512_extracti64x4_epi64(v[i + 8], 1);
-                }
-                transpose8(firstLo);
-                transpose8(firstHi);
-                transpose8(secondLo);
-                transpose8(secondHi);
-
-                for (size_t block = 0; block < 8; ++block) {
-                    const size_t firstOffset = (blockIndex + block) * 64;
-                    const size_t secondOffset = (blockIndex + block + 8) * 64;
-
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + firstOffset),
-                        _mm256_xor_si256(
-                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + firstOffset)),
-                            firstLo[block]));
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + firstOffset + 32),
-                        _mm256_xor_si256(
-                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + firstOffset + 32)),
-                            firstHi[block]));
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + secondOffset),
-                        _mm256_xor_si256(
-                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + secondOffset)),
-                            secondLo[block]));
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + secondOffset + 32),
-                        _mm256_xor_si256(
-                            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + secondOffset + 32)),
-                            secondHi[block]));
+                transpose16(v);
+                for (size_t block = 0; block < 16; ++block) {
+                    const size_t offset = (blockIndex + block) * 64;
+                    const __m512i input = _mm512_loadu_si512(in + offset);
+                    _mm512_storeu_si512(out + offset, _mm512_xor_si512(input, v[block]));
                 }
             }
         }
@@ -499,6 +580,20 @@ namespace crypto {
             const uint32_t original = (i == 12) ? counter : state.words[i];
             storeLE32(out + 4 * i, working[i] + original);
         }
+    }
+
+    /* Two consecutive keystream blocks from a prepared state. */
+    void ChaCha20Core::blockPair(
+        const SState& state, uint32_t counter, uint8_t out[2 * BLOCK_BYTES]
+    ) {
+#if defined(CERTPP_CHACHA20_SSE2)
+        if (hasAvx2()) {
+            blocks2Rows(state, counter, out);
+            return;
+        }
+#endif
+        block(state, counter, out);
+        block(state, counter + 1, out + BLOCK_BYTES);
     }
 
     /* XORs the keystream over the input, 32 bits at a time for whole blocks. */

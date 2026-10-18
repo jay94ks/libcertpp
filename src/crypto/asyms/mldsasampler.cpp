@@ -79,14 +79,21 @@ namespace crypto {
 
         std::memset(out.coeffs, 0, sizeof(out.coeffs));
 
+        uint8_t positions[136]; // one SHAKE256 rate block
+        size_t positionOffset = sizeof(positions);
+
         for (size_t i = MlDsaRing::N - tau; i < MlDsaRing::N; ++i) {
             // Rejection-sample a position in [0, i]. Unbounded, per FIPS 204 Appendix C's
             // recommendation; the expected number of draws is barely above one.
             uint8_t j = 0;
             do {
-                if (!xof.squeeze(SByteSpan(&j, 1))) {
-                    return false;
+                if (positionOffset == sizeof(positions)) {
+                    if (!xof.squeeze(SByteSpan(positions, sizeof(positions)))) {
+                        return false;
+                    }
+                    positionOffset = 0;
                 }
+                j = positions[positionOffset++];
             } while (size_t(j) > i);
 
             const size_t signIndex = i + tau - MlDsaRing::N;
@@ -116,15 +123,20 @@ namespace crypto {
         size_t accepted = 0;
 
         while (accepted < MlDsaRing::N) {
-            uint8_t chunk[3];
-            if (!xof.squeeze(SByteSpan(chunk, sizeof(chunk)))) {
+            uint8_t block[168]; // one SHAKE128 rate block; divisible by three
+            if (!xof.squeeze(SByteSpan(block, sizeof(block)))) {
                 return false;
             }
 
-            int32_t coefficient = 0;
-            if (coeffFromThreeBytes(chunk[0], chunk[1], chunk[2], coefficient)) {
-                out.coeffs[accepted] = coefficient;
-                ++accepted;
+            for (size_t offset = 0; offset < sizeof(block) && accepted < MlDsaRing::N;
+                 offset += 3)
+            {
+                int32_t coefficient = 0;
+                if (coeffFromThreeBytes(
+                        block[offset], block[offset + 1], block[offset + 2], coefficient))
+                {
+                    out.coeffs[accepted++] = coefficient;
+                }
             }
         }
 
@@ -145,26 +157,29 @@ namespace crypto {
         size_t accepted = 0;
 
         while (accepted < MlDsaRing::N) {
-            uint8_t byte = 0;
-            if (!xof.squeeze(SByteSpan(&byte, 1))) {
+            uint8_t block[136]; // one SHAKE256 rate block
+            if (!xof.squeeze(SByteSpan(block, sizeof(block)))) {
                 return false;
             }
 
-            // Order matters: the low nibble is offered first, then the high one. A rejected low
-            // nibble must not consume the high one's turn, and the last accepted coefficient
-            // must not overrun -- hence the second bounds check rather than a single loop test.
-            int32_t low = 0;
-            if (coeffFromHalfByte(uint8_t(byte & 0x0Fu), eta, low)) {
-                out.coeffs[accepted] = low;
-                ++accepted;
-            }
-
-            int32_t high = 0;
-            if (accepted < MlDsaRing::N
-                && coeffFromHalfByte(uint8_t(byte >> 4), eta, high))
+            for (size_t offset = 0; offset < sizeof(block) && accepted < MlDsaRing::N;
+                 ++offset)
             {
-                out.coeffs[accepted] = high;
-                ++accepted;
+                const uint8_t byte = block[offset];
+
+                // Order matters: the low nibble is offered first, then the high one. A rejected
+                // low nibble must not consume the high one's turn.
+                int32_t low = 0;
+                if (coeffFromHalfByte(uint8_t(byte & 0x0Fu), eta, low)) {
+                    out.coeffs[accepted++] = low;
+                }
+
+                int32_t high = 0;
+                if (accepted < MlDsaRing::N
+                    && coeffFromHalfByte(uint8_t(byte >> 4), eta, high))
+                {
+                    out.coeffs[accepted++] = high;
+                }
             }
         }
 

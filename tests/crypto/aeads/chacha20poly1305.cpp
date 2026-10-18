@@ -465,11 +465,11 @@ TEST_CASE("CChaCha20Poly1305: a counter-nonce record stream over HKDF-derived ke
                                     SByteSpan(out.data(), sealed[0].size())));
 }
 
-// Messages long enough to reach the eight-blocks-at-a-time path (128 bytes in one push), with the
+// Messages long enough to reach the eight-, sixteen-, and thirty-two-block paths, with the
 // tags generated in Python. The published vectors in this file are all short -- RFC 8439 2.5.2's
 // message is 34 bytes -- so without this the vector path is never exercised by a KAT and a
 // limb-width error that only shows on long input would pass everything.
-TEST_CASE("CPoly1305: long messages, through the eight-block path") {
+TEST_CASE("CPoly1305: long messages, through the wide block paths") {
     // A fixed key, so the expectations are stable.
     const std::vector<uint8_t> key = [] {
         std::vector<uint8_t> k(32);
@@ -522,6 +522,20 @@ TEST_CASE("CPoly1305: long messages, through the eight-block path") {
             std::vector<uint8_t> streamed(16);
             REQUIRE(mac.finish(SByteSpan(streamed.data(), streamed.size())));
             CHECK(streamed == expected);
+        }
+
+        // Exercise the lazy power-table transition explicitly: the first push prepares only the
+        // sixteen-block table, then the second reaches the thirty-two-block path and extends it.
+        if (message.size() >= 1024) {
+            CPoly1305 mac;
+            REQUIRE(mac.reset(readOf(key)));
+            REQUIRE(mac.push(SReadOnlyByteSpan(message.data(), 256)) == 256);
+            REQUIRE(mac.push(SReadOnlyByteSpan(message.data() + 256, message.size() - 256))
+                    == message.size() - 256);
+
+            std::vector<uint8_t> staged(16);
+            REQUIRE(mac.finish(SByteSpan(staged.data(), staged.size())));
+            CHECK(staged == expected);
         }
     }
 }

@@ -24,7 +24,7 @@ include/
       base64.hpp                 # CBase64: base64 코덱. 스트리밍 push()/finish() 변환과 정적 일괄 encode()/decode() 둘 다. EBase64Mode
       json.hpp                   # CJson: JSON 값 트리, parseJson()/parseBson(), toString()/toBson()
       bignum.hpp                 # CBigNum: 임의 정밀도 음이 아닌 정수 (RSA/DSA/EC/Ed25519 연산)
-      montgomery.hpp              # CMontgomery: 홀수 모듈러스 하나와 미리 계산한 Montgomery 상수들. EC 체 연산을 위한 나눗셈 없는 mul/add/sub/dbl/neg/modExp
+      montgomery.hpp              # CMontgomery: 홀수 모듈러스 하나와 미리 계산한 Montgomery 상수들. 나눗셈 없는 mul/add/sub/dbl/neg/modExp/modExpProduct
       gf2m.hpp                    # CGf2m: 고정 용량 GF(2^m) 이진체 원소(다항식 기저). EGf2mKnownField + CGf2m::knownField()/knownFieldPtr()가 B-*/K-* 이진 곡선들이 공유하는 다섯 가지 체 크기를 지칭합니다
     io/
       span.hpp              # TSpan<T> / TReadOnlySpan<T> (템플릿 전용, .cpp 없음). SByteSpan/SReadOnlyByteSpan 별칭

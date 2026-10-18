@@ -356,10 +356,6 @@ namespace crypto {
         auto pub = std::make_shared<Ec2PublicKey>(_curve, q, _which);
         auto priv = std::make_shared<Ec2PrivateKey>(_curve, d, pub, _which);
 
-        if (checkPrivateKey(priv) != ERET_OK) {
-            return ERET_AGAIN;
-        }
-
         out = SKeyPair(pub, priv);
         return ERET_OK;
     }

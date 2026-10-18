@@ -232,3 +232,21 @@ absence of `CMontgomery::modExp` from the profile is the load-bearing evidence;
 the percentage is corroboration. A dedicated profile isolating
 `RsaContext::sign` would give a sharper number, and should be the first thing
 done when that work starts.
+
+#### Follow-up -- packed exponentiation and inversion
+
+The Montgomery routing landed with the CRT re-encrypt check intact. A later Windows Clang profile
+showed that long exponentiation still converted every intermediate between `CBigNum`'s 32-bit
+limbs and the 64-bit CIOS digits. Keeping the accumulator and sliding-window table packed for the
+entire chain reduced RSA-2048 signing from 1.334 to 0.968 ms. The same path accelerated
+Miller--Rabin and DSA exponentiation. `modExpProduct()` then kept DSA's two-base verification chain
+packed, and binary extended GCD removed quotient-sized division from odd-modulus inversions. An
+integrated CIOS loop advances product and reduction carries in one accumulator traversal, and a
+two-bit simultaneous product table reduces DSA verification's conditional multiplications.
+
+Eleven high-priority, single-processor runs against OpenSSL 3.6.4 produced median paired ratios of
+0.364/0.266/0.610 for RSA and 0.605/0.653/0.479 for DSA key generation, signing, and verification.
+RSA key-generation latency stayed effectively flat at 67.994 ms versus the prior 67.951 ms; its
+paired ratio moved because independent random prime searches make that row much noisier.
+The target is still open: generated code for the BMI2/ADX target uses `mulx` with ordinary carry chains and remains
+well behind OpenSSL's hand-tuned Montgomery kernel.

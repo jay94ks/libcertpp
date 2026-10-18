@@ -41,7 +41,23 @@ namespace utils {
         class Number;
         class Array;
         class Object;
+
+        /**
+         * Appends the JSON value as a BSON document to the output buffer.
+         * @param out The output buffer to append to.
+         * @param depth The current depth of the JSON value in the hierarchy.
+         * @return True if the operation was successful, false otherwise.
+         */
         bool appendBsonDocument(std::vector<uint8_t> &out, size_t depth) const;
+
+        /**
+         * Appends the JSON value as a BSON element to the output buffer.
+         * @param out The output buffer to append to.
+         * @param key The key of the BSON element.
+         * @param value The JSON value to append as a BSON element.
+         * @param depth The current depth of the JSON value in the hierarchy.
+         * @return True if the operation was successful, false otherwise.
+         */
         static bool appendBsonElement(std::vector<uint8_t> &out, const std::string &key,
                                       const CJsonPtr &value, size_t depth);
 

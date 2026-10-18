@@ -275,6 +275,85 @@ namespace crypto {
             return EC2PointLD{ std::move(x3), std::move(y3), std::move(z3) };
         }
 
+        /* Lopez-Dahab addition with an affine second operand (Z2 == 1). This is the algebraic
+         * specialization of addLD(), retaining its exceptional-case handling while removing
+         * every multiplication by Z2 and every square or power of Z2. */
+        CEc2Curve::EC2PointLD CEc2Curve::addMixedLD(
+            const EC2PointLD& p1, const SEc2Point& p2, const CGf2m& a, const CGf2m& b
+        ) {
+            if (p2.infinity) {
+                return p1;
+            }
+            if (p1.z.isZero()) {
+                return toLD(p2, *p2.x.field());
+            }
+
+            CGf2m z1Sq(p1.z);
+            z1Sq.square();
+
+            CGf2m A(p2.y);
+            A.mul(z1Sq);
+            A.add(p1.y);
+
+            CGf2m B(p2.x);
+            B.mul(p1.z);
+            B.add(p1.x);
+
+            if (B.isZero()) {
+                if (A.isZero()) {
+                    return doublePointLD(p1, a, b);
+                }
+                return infinityLD();
+            }
+
+            CGf2m B2(B);
+            B2.square();
+
+            CGf2m z3(B2);
+            z3.mul(z1Sq);
+
+            CGf2m A2(A);
+            A2.square();
+
+            CGf2m ABC(A);
+            ABC.mul(B);
+            ABC.mul(p1.z);
+
+            CGf2m B3(B2);
+            B3.mul(B);
+
+            CGf2m B3Z(B3);
+            B3Z.mul(p1.z);
+
+            CGf2m aB2Z2(B2);
+            aB2Z2.mul(z1Sq);
+            aB2Z2.mul(a);
+
+            A2.add(ABC);
+            A2.add(B3Z);
+            A2.add(aB2Z2);
+            CGf2m& x3 = A2;
+
+            ABC.mul(x3);
+            CGf2m& y3 = ABC;
+
+            A.mul(B3);
+            A.mul(p1.x);
+            A.mul(z1Sq);
+            y3.add(A);
+
+            CGf2m x3z3(x3);
+            x3z3.mul(z3);
+            y3.add(x3z3);
+
+            B2.square();
+            B2.mul(p1.y);
+            B2.mul(z1Sq);
+            y3.add(B2);
+
+            return EC2PointLD{ std::move(x3), std::move(y3), std::move(z3) };
+        }
+
         void CEc2Curve::condSwapLD(bool doSwap, EC2PointLD& a, EC2PointLD& b) {
             if (doSwap) {
                 std::swap(a, b);
@@ -485,7 +564,7 @@ namespace crypto {
                 }
             }
 
-            result = addLD(result, toLD(_baseTable[windowValue], *field), a, b);
+            result = addMixedLD(result, _baseTable[windowValue], a, b);
         }
 
         return toAffineFromLD(result);
@@ -505,9 +584,7 @@ namespace crypto {
             return SEc2Point();
         }
 
-        const EC2PointLD l1 = toLD(p1, *field);
-        const EC2PointLD l2 = toLD(p2, *field);
-        const EC2PointLD l12 = addLD(l1, l2, a, b);
+        const SEc2Point p12 = add(p1, p2);
         EC2PointLD accumulator = infinityLD();
 
         for (size_t i = iterations; i-- > 0; ) {
@@ -515,11 +592,11 @@ namespace crypto {
             const bool bit1 = k1.testBit(i);
             const bool bit2 = k2.testBit(i);
             if (bit1 && bit2) {
-                accumulator = addLD(accumulator, l12, a, b);
+                accumulator = addMixedLD(accumulator, p12, a, b);
             } else if (bit1) {
-                accumulator = addLD(accumulator, l1, a, b);
+                accumulator = addMixedLD(accumulator, p1, a, b);
             } else if (bit2) {
-                accumulator = addLD(accumulator, l2, a, b);
+                accumulator = addMixedLD(accumulator, p2, a, b);
             }
         }
 

@@ -399,6 +399,58 @@ TEST_CASE("CMontgomery::modExp(): agrees with CBigNum::modExp()") {
     }
 }
 
+TEST_CASE("CMontgomery::modExpProduct(): agrees with two independent exponentiations") {
+    Rng rng(0xD5A2B17E5EED1234ull);
+    const size_t widths[] = { 65, 256, 1024 };
+
+    for (size_t w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w) {
+        CAPTURE(widths[w]);
+        const CBigNum modulus = randomOddOfBits(rng, widths[w]);
+        const CMontgomery mont(modulus);
+        REQUIRE(mont.isValid());
+
+        for (size_t round = 0; round < 4; ++round) {
+            CAPTURE(round);
+            const CBigNum firstBase = randomOfBits(rng, widths[w] + 9);
+            const CBigNum secondBase = randomOfBits(rng, widths[w] + 13);
+            const size_t exponentBits = widths[w] < 256 ? widths[w] : size_t(256);
+            const CBigNum firstExponent = round == 0
+                ? CBigNum() : randomOfBits(rng, exponentBits);
+            const CBigNum secondExponent = round == 1
+                ? CBigNum() : randomOfBits(rng, exponentBits);
+
+            CBigNum reference = CBigNum::modExp(firstBase, firstExponent, modulus);
+            reference.mulMod(CBigNum::modExp(secondBase, secondExponent, modulus), modulus);
+            CHECK(mont.modExpProduct(
+                firstBase, firstExponent, secondBase, secondExponent
+            ).compare(reference) == 0);
+        }
+    }
+
+    // Exercise a one-bit leading window and unequal exponent lengths explicitly. The random cases
+    // above cover odd widths, but their two nonzero exponents normally have the same bit length.
+    const CBigNum modulus = randomOddOfBits(rng, 257);
+    const CMontgomery mont(modulus);
+    REQUIRE(mont.isValid());
+
+    const size_t exponentWidths[][2] = {
+        { 1, 3 }, { 3, 1 }, { 65, 256 }, { 256, 65 }, { 255, 257 }, { 257, 255 }
+    };
+    for (size_t i = 0; i < sizeof(exponentWidths) / sizeof(exponentWidths[0]); ++i) {
+        CAPTURE(i);
+        const CBigNum firstBase = randomOfBits(rng, 270);
+        const CBigNum secondBase = randomOfBits(rng, 274);
+        const CBigNum firstExponent = randomOfBits(rng, exponentWidths[i][0]);
+        const CBigNum secondExponent = randomOfBits(rng, exponentWidths[i][1]);
+
+        CBigNum reference = CBigNum::modExp(firstBase, firstExponent, modulus);
+        reference.mulMod(CBigNum::modExp(secondBase, secondExponent, modulus), modulus);
+        CHECK(mont.modExpProduct(
+            firstBase, firstExponent, secondBase, secondExponent
+        ).compare(reference) == 0);
+    }
+}
+
 TEST_CASE("CMontgomery: a long chain of operations stays in step with CBigNum") {
     // --> Every check above starts from freshly reduced operands, which would hide an error that
     // only accumulates: a result that is correct mod m but left unreduced feeds the next operation

@@ -102,10 +102,11 @@ namespace crypto {
      * curve; public rather than a src/-only implementation detail since the underlying group
      * arithmetic isn't tied to any one algorithm (matching CBigNum's own reasoning).
      *
-     * Scalar multiplication uses Jacobian coordinates and a fixed-shape ladder. The implementation
-     * removes direct branches and table indexes on ordinary private-scalar bits, but CBigNum's
-     * variable-length storage and the exceptional cases in the point formulas still prevent a
-     * constant-time guarantee.
+     * Scalar multiplication uses Jacobian coordinates. Builds with native 64-by-64-to-128
+     * multiplication use fixed-width Montgomery field values and full-scan window tables; other
+     * builds retain the CBigNum Montgomery ladder. Neither path indexes a table with private
+     * scalar bits, but exceptional cases in the point formulas and the fallback's variable-width
+     * arithmetic still prevent a constant-time guarantee.
      */
     class CERTPP_API CEcCurve {
     private:
@@ -240,9 +241,10 @@ namespace crypto {
         SEcPoint doublePoint(const SEcPoint& pt) const;
 
         /**
-         * Computes k*pt with a fixed-shape Montgomery ladder. Scalars in the ordinary private-key
+         * Computes k*pt with a full-scan fixed window when native 128-bit products are available,
+         * otherwise with a fixed-shape Montgomery ladder. Scalars in the ordinary private-key
          * range run for the subgroup order's bit width; oversized public inputs retain their full
-         * width for mathematical correctness.
+         * width for mathematical correctness. Neither path uses scalar bits as table indexes.
          * @param pt The point to multiply.
          * @param k The scalar to multiply by.
          * @return k*pt.
@@ -250,8 +252,10 @@ namespace crypto {
         SEcPoint scalarMul(const SEcPoint& pt, const CBigNum& k) const;
 
         /**
-         * Computes k*g through the same ladder as scalarMul(). This deliberately avoids a
-         * fixed-base table indexed by secret scalar bits.
+         * Computes k*g with full-scan window tables selected through conditional swaps, so secret
+         * scalar bits do not become memory indexes. The standard P-256 parameters use a cached
+         * 64-row, four-bit comb table; mutable or other curve parameters build a four-bit table
+         * per call.
          * @param k The scalar to multiply g by.
          * @return k*g.
          */

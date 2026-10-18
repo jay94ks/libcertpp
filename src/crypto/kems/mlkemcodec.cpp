@@ -15,26 +15,26 @@ namespace crypto {
         }
 
         uint8_t* dst = out.data;
-        for (size_t i = 0; i < needed; ++i) {
-            dst[i] = 0;
-        }
+        size_t dstIndex = 0;
+        uint32_t pending = 0;
+        size_t pendingBits = 0;
 
-        // --> Bit index i*d + j is coefficient i's bit j, and bit b of the stream lives in
-        // dst[b / 8] at position b % 8 -- little-endian within the byte. Coefficients run
-        // contiguously, so for d of 10/11/12 one coefficient spans two or three bytes; writing
-        // bit by bit keeps that straddling correct without any special cases.
+        // Coefficients are a contiguous little-endian bit stream. A small reservoir preserves
+        // that definition directly while emitting a byte at a time; it avoids testing and
+        // conditionally setting every individual bit in this serialization hot path.
         for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
             const uint32_t value = uint32_t(poly.coeffs[i]);
+            pending |= value << pendingBits;
+            pendingBits += d;
 
-            for (size_t j = 0; j < d; ++j) {
-                if ((value >> j) & 1u) {
-                    const size_t bit = i * d + j;
-                    dst[bit >> 3] = uint8_t(dst[bit >> 3] | (1u << (bit & 7u)));
-                }
+            while (pendingBits >= 8) {
+                dst[dstIndex++] = uint8_t(pending);
+                pending >>= 8;
+                pendingBits -= 8;
             }
         }
 
-        return true;
+        return dstIndex == needed && pendingBits == 0;
     }
 
     /* Unpacks 32*d bytes into 256 coefficients. */
@@ -49,28 +49,33 @@ namespace crypto {
         }
 
         const uint8_t* src = in.data;
-
+        size_t srcIndex = 0;
+        uint32_t pending = 0;
+        size_t pendingBits = 0;
+        const uint32_t mask = (uint32_t(1) << d) - 1;
         for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
-            uint32_t value = 0;
-
-            for (size_t j = 0; j < d; ++j) {
-                const size_t bit = i * d + j;
-                const uint32_t set = (src[bit >> 3] >> (bit & 7u)) & 1u;
-                value |= set << j;
+            while (pendingBits < d) {
+                pending |= uint32_t(src[srcIndex++]) << pendingBits;
+                pendingBits += 8;
             }
+            const uint32_t value = pending & mask;
+            pending >>= d;
+            pendingBits -= d;
 
             // --> d == 12 is the one width that reduces mod Q rather than mod 2^d, which is what
             // makes this decode lossy: a 12-bit segment in 3329..4095 folds into range instead of
             // being rejected here. Callers that must not accept such an encoding check
             // isCanonical12() first; see this class's own doc comment.
             if (d == 12) {
-                out.coeffs[i] = MlKemRing::reduce(int32_t(value));
+                const uint32_t reduced = value - uint32_t(SMlKemPoly::MODULUS);
+                out.coeffs[i] = int16_t(
+                    reduced + (reduced >> 31) * uint32_t(SMlKemPoly::MODULUS));
             } else {
                 out.coeffs[i] = int16_t(value);
             }
         }
 
-        return true;
+        return srcIndex == needed && pendingBits == 0;
     }
 
     /* True iff every 12-bit segment is below Q. */
@@ -80,16 +85,15 @@ namespace crypto {
         }
 
         const uint8_t* src = in.data;
-
-        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
-            uint32_t value = 0;
-
-            for (size_t j = 0; j < 12; ++j) {
-                const size_t bit = i * 12 + j;
-                value |= ((src[bit >> 3] >> (bit & 7u)) & 1u) << j;
-            }
-
-            if (value >= uint32_t(SMlKemPoly::MODULUS)) {
+        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS / 2; ++i) {
+            const uint32_t packed = uint32_t(src[3 * i])
+                | (uint32_t(src[3 * i + 1]) << 8)
+                | (uint32_t(src[3 * i + 2]) << 16);
+            const uint32_t first = packed & 0xFFFu;
+            const uint32_t second = packed >> 12;
+            if (first >= uint32_t(SMlKemPoly::MODULUS)
+                || second >= uint32_t(SMlKemPoly::MODULUS))
+            {
                 return false;
             }
         }
@@ -136,7 +140,8 @@ namespace crypto {
             // round(y * q / 2^d), ties upward -- exact, since the denominator is a power of two.
             const int64_t rounded = (y * q + (int64_t(1) << (d - 1))) >> d;
 
-            poly.coeffs[i] = MlKemRing::reduce(int32_t(rounded));
+            // y < 2^d makes the rounded result strictly smaller than Q.
+            poly.coeffs[i] = int16_t(rounded);
         }
 
         return true;

@@ -52,67 +52,7 @@ namespace crypto {
              * scalar bit: the conditional exchange is Fe25519::condSwap under a mask derived
              * arithmetically from the bit, never an `if`. */
             static void ladder(const uint8_t scalar[32], const uint8_t uBytes[32], uint8_t out[32]) {
-                Fe25519 x1, x2, z2, x3, z3;
-                x1.fromBytes(uBytes);
-                x2.setOne();
-                z2.setZero();
-                x3.fromBytes(uBytes);
-                z3.setOne();
-
-                uint32_t swap = 0;
-
-                for (size_t t = 255; t-- > 0; ) {
-                    // The scalar bit, read from the bytes directly -- no CBigNum::testBit, whose
-                    // cost would depend on the scalar's limb count.
-                    const uint32_t bit = uint32_t((scalar[t >> 3] >> (t & 7u)) & 1u);
-
-                    swap ^= bit;
-
-                    // mask is 0 or 0xFFFFFFFF, computed rather than branched on.
-                    const uint32_t mask = uint32_t(0) - swap;
-                    Fe25519::condSwap(mask, x2, x3);
-                    Fe25519::condSwap(mask, z2, z3);
-
-                    swap = bit;
-
-                    Fe25519 a, aa, b, bb, e, c, d, da, cb, scratch;
-
-                    Fe25519::add(a, x2, z2);
-                    Fe25519::square(aa, a);
-                    Fe25519::sub(b, x2, z2);
-                    Fe25519::square(bb, b);
-                    Fe25519::sub(e, aa, bb);
-                    Fe25519::add(c, x3, z3);
-                    Fe25519::sub(d, x3, z3);
-                    Fe25519::mul(da, d, a);
-                    Fe25519::mul(cb, c, b);
-
-                    Fe25519::add(scratch, da, cb);
-                    Fe25519::square(x3, scratch);
-
-                    Fe25519::sub(scratch, da, cb);
-                    Fe25519::square(scratch, scratch);
-                    Fe25519::mul(z3, scratch, x1);
-
-                    Fe25519::mul(x2, aa, bb);
-
-                    Fe25519::mulA24(scratch, e);
-                    Fe25519::add(scratch, scratch, aa);
-                    Fe25519::mul(z2, e, scratch);
-                }
-
-                const uint32_t mask = uint32_t(0) - swap;
-                Fe25519::condSwap(mask, x2, x3);
-                Fe25519::condSwap(mask, z2, z3);
-
-                // One inversion, by the fixed a^(p-2) chain. A zero z2 yields zero here rather
-                // than failing, which produces the all-zero output RFC 7748 6.1 already requires
-                // callers to reject -- so the degenerate case needs no branch of its own.
-                Fe25519 inverse;
-                Fe25519::invert(inverse, z2);
-                Fe25519::mul(x2, x2, inverse);
-
-                x2.toBytes(out);
+                Fe25519::x25519Ladder(scalar, uBytes, out);
             }
 
             /* RFC 7748's X25519 function proper: clamp, then multiply. */
@@ -123,6 +63,13 @@ namespace crypto {
                 ladder(clamped, uBytes, out);
 
                 CSecure::zero(SByteSpan(clamped, sizeof(clamped)));
+            }
+
+            /* Multiplies with a scalar already clamped when its key object was constructed. */
+            static void scalarMultClamped(
+                const uint8_t clamped[32], const uint8_t uBytes[32], uint8_t out[32]
+            ) {
+                ladder(clamped, uBytes, out);
             }
         };
 
@@ -198,12 +145,19 @@ namespace crypto {
         class X25519PrivateKey : public IPrivateKey {
         private:
             uint8_t _raw[32];
+            uint8_t _clamped[32];
             IPublicKeyPtr _publicKey;
 
         public:
             X25519PrivateKey(const uint8_t raw[32], IPublicKeyPtr publicKey) : _publicKey(std::move(publicKey)) {
                 algorithm(EASYM_X25519);
                 std::memcpy(_raw, raw, 32);
+                Curve25519::clampScalar(raw, _clamped);
+            }
+
+            ~X25519PrivateKey() override {
+                CSecure::zero(SByteSpan(_raw, sizeof(_raw)));
+                CSecure::zero(SByteSpan(_clamped, sizeof(_clamped)));
             }
 
             SKeySize keySize() const override {
@@ -234,6 +188,7 @@ namespace crypto {
             }
 
             const uint8_t* raw() const { return _raw; }
+            const uint8_t* clamped() const { return _clamped; }
         };
 
     } // namespace
@@ -253,8 +208,16 @@ namespace crypto {
     namespace {
 
         class X25519Context : public IAsymmetricContext {
+        private:
+            std::shared_ptr<X25519PrivateKey> _private;
+            IPublicKeyPtr _peerBase;
+            std::shared_ptr<X25519PublicKey> _peer;
+
         protected:
             void onReset() override {
+                _private = std::dynamic_pointer_cast<X25519PrivateKey>(privateKey());
+                _peerBase.reset();
+                _peer.reset();
             }
 
         public:
@@ -263,8 +226,7 @@ namespace crypto {
                     return ERET_KEY_EMPTY;
                 }
 
-                auto priv = std::dynamic_pointer_cast<X25519PrivateKey>(privateKey());
-                if (!priv) {
+                if (!_private) {
                     return ERET_KEY_FORMAT;
                 }
 
@@ -272,9 +234,17 @@ namespace crypto {
                     return ERET_KEY_EMPTY;
                 }
 
-                auto peer = std::dynamic_pointer_cast<X25519PublicKey>(peerPublicKey);
-                if (!peer) {
-                    return ERET_KEY_FORMAT; // peerPublicKey wasn't created by this algorithm
+                // OpenSSL likewise validates and binds the peer once on its EVP_PKEY_CTX. Cache a
+                // successful check for the same shared object rather than repeating RTTI on every
+                // derive; a different object is always checked before replacing the cache.
+                if (_peerBase != peerPublicKey) {
+                    std::shared_ptr<X25519PublicKey> checked =
+                        std::dynamic_pointer_cast<X25519PublicKey>(peerPublicKey);
+                    if (!checked) {
+                        return ERET_KEY_FORMAT; // peerPublicKey wasn't created by this algorithm
+                    }
+                    _peerBase = peerPublicKey;
+                    _peer = std::move(checked);
                 }
 
                 if (out.size < 32) {
@@ -283,10 +253,11 @@ namespace crypto {
 
                 // Fe25519::fromBytes masks bit 255 and reduces, which is RFC 7748 5's rule for
                 // a peer's u-coordinate: a non-canonical value is REDUCED, not rejected, unlike
-                // Ed25519's stricter point decode. scalarMult() clears its own clamped copy of
-                // the scalar; the secret bytes below are cleared once copied out.
+                // Ed25519's stricter point decode. The private key already owns a clamped copy;
+                // the secret bytes below are cleared once copied out.
                 uint8_t secretBytes[32];
-                Curve25519::scalarMult(priv->raw(), peer->encoded(), secretBytes);
+                Curve25519::scalarMultClamped(
+                    _private->clamped(), _peer->encoded(), secretBytes);
 
                 // RFC 7748 6.1: reject an all-zero shared secret (the peer supplied a low-order
                 // point, e.g. u = 0) rather than silently returning predictable output.

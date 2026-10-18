@@ -875,6 +875,62 @@ namespace certpp {
             return false;
         }
 
+        // Almost every cryptographic modulus is odd. The binary extended-GCD recurrence keeps
+        // both coefficients reduced modulo m and replaces quotient-sized multiplications plus
+        // Knuth-D division with shifts and subtractions. Its value-dependent branches preserve
+        // CBigNum's existing variable-time boundary; even moduli retain the general Euclidean
+        // path below.
+        if (!modulus.isEven()) {
+            CBigNum u(a);
+            CBigNum v(modulus);
+            CBigNum x1(uint64_t(1));
+            CBigNum x2;
+            const CBigNum one(uint64_t(1));
+
+            auto halve = [&modulus](CBigNum& value, CBigNum& coefficient) {
+                value.shr(1);
+                if (coefficient.isEven()) {
+                    coefficient.shr(1);
+                } else {
+                    coefficient.add(modulus);
+                    coefficient.shr(1);
+                }
+            };
+
+            while (u != one && v != one) {
+                if (u.isZero() || v.isZero()) {
+                    return false;
+                }
+                while (u.isEven()) {
+                    halve(u, x1);
+                }
+                while (v.isEven()) {
+                    halve(v, x2);
+                }
+
+                if (u >= v) {
+                    u.sub(v);
+                    if (x1 >= x2) {
+                        x1.sub(x2);
+                    } else {
+                        x1.add(modulus);
+                        x1.sub(x2);
+                    }
+                } else {
+                    v.sub(u);
+                    if (x2 >= x1) {
+                        x2.sub(x1);
+                    } else {
+                        x2.add(modulus);
+                        x2.sub(x1);
+                    }
+                }
+            }
+
+            out = u == one ? std::move(x1) : std::move(x2);
+            return true;
+        }
+
         CBigNum oldR = a;
         CBigNum r = modulus;
         SignedBig oldS{ CBigNum(uint64_t(1)), false };

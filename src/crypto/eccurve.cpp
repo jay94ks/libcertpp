@@ -1,8 +1,788 @@
 #include <certpp/crypto/eccurve.hpp>
+#include "fastprimefield.hpp"
+#include <cstring>
 #include <utility>
 
 namespace certpp {
 namespace crypto {
+
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+    namespace {
+
+        /* Stack-resident Montgomery field arithmetic for the prime curves. CBigNum remains the
+         * public representation and handles conversions at the scalar-multiplication boundary;
+         * the several thousand operations inside the point loop stay in fixed-width 64-bit
+         * limbs, avoiding heap-backed temporaries and repeated 32/64-bit packing. Nine limbs cover
+         * the largest built-in prime field, P-521. */
+        class FastPrimeField {
+        public:
+            static constexpr size_t MAX_LIMBS = 9;
+
+            struct Value {
+                uint64_t limbs[MAX_LIMBS] = {};
+            };
+
+        private:
+            size_t _count = 0;
+            uint64_t _modulus[MAX_LIMBS] = {};
+            uint64_t _n0inv = 0;
+            bool _p256 = false;
+
+            static uint64_t subtractRaw(
+                Value& out, const Value& left, const uint64_t* right, size_t count
+            ) {
+                uint64_t borrow = 0;
+                for (size_t i = 0; i < count; ++i) {
+                    const uint64_t first = left.limbs[i] - right[i];
+                    const uint64_t borrow1 = left.limbs[i] < right[i];
+                    const uint64_t second = first - borrow;
+                    const uint64_t borrow2 = first < borrow;
+                    out.limbs[i] = second;
+                    borrow = borrow1 | borrow2;
+                }
+                return borrow;
+            }
+
+            Value mulP256(const Value& left, const Value& right) const {
+                using Wide = unsigned __int128;
+                uint64_t t[6] = {};
+
+                // Keep the four-limb trip counts visible to the optimizer. The generic field
+                // accepts every built-in prime up to P-521, so its runtime count prevents the
+                // compiler from fully unrolling P-256's hottest multiply-accumulate loop.
+                for (size_t i = 0; i < 4; ++i) {
+                    Wide carry = 0;
+                    for (size_t j = 0; j < 4; ++j) {
+                        const Wide product = Wide(t[j])
+                            + Wide(left.limbs[j]) * right.limbs[i] + carry;
+                        t[j] = uint64_t(product);
+                        carry = product >> 64;
+                    }
+                    Wide top = Wide(t[4]) + carry;
+                    t[4] = uint64_t(top);
+                    t[5] = uint64_t(top >> 64);
+
+                    // P-256 has p[0] == -1 and n0inv == 1. Its other non-zero limbs are
+                    // 2^32-1 and 2^64-2^32+1, so shifts and additions replace four products.
+                    const uint64_t multiplier = t[0];
+                    Wide value = Wide(t[1]) + (Wide(multiplier) << 32);
+                    t[0] = uint64_t(value);
+                    carry = value >> 64;
+
+                    value = Wide(t[2]) + carry;
+                    t[1] = uint64_t(value);
+                    carry = value >> 64;
+
+                    const Wide sparseProduct = (Wide(multiplier) << 64)
+                        - (Wide(multiplier) << 32) + multiplier;
+                    value = Wide(t[3]) + sparseProduct + carry;
+                    t[2] = uint64_t(value);
+                    carry = value >> 64;
+
+                    top = Wide(t[4]) + carry;
+                    t[3] = uint64_t(top);
+                    t[4] = t[5] + uint64_t(top >> 64);
+                }
+
+                Value candidate;
+                for (size_t i = 0; i < 4; ++i) {
+                    candidate.limbs[i] = t[i];
+                }
+                Value reduced;
+                const uint64_t borrow = subtractRaw(reduced, candidate, _modulus, 4);
+                const uint64_t useReduced = uint64_t(t[4] != 0) | (borrow ^ uint64_t(1));
+                const uint64_t mask = uint64_t(0) - useReduced;
+                for (size_t i = 0; i < 4; ++i) {
+                    candidate.limbs[i] ^=
+                        (candidate.limbs[i] ^ reduced.limbs[i]) & mask;
+                }
+                return candidate;
+            }
+
+            template<size_t COUNT>
+            Value mulFixed(const Value& left, const Value& right) const {
+                using Wide = unsigned __int128;
+                uint64_t t[COUNT + 2] = {};
+
+                for (size_t i = 0; i < COUNT; ++i) {
+                    Wide carry = 0;
+                    for (size_t j = 0; j < COUNT; ++j) {
+                        const Wide value = Wide(t[j])
+                            + Wide(left.limbs[j]) * right.limbs[i] + carry;
+                        t[j] = uint64_t(value);
+                        carry = value >> 64;
+                    }
+                    Wide top = Wide(t[COUNT]) + carry;
+                    t[COUNT] = uint64_t(top);
+                    t[COUNT + 1] = uint64_t(top >> 64);
+
+                    const uint64_t multiplier = t[0] * _n0inv;
+                    carry = 0;
+                    for (size_t j = 0; j < COUNT; ++j) {
+                        const Wide value = Wide(t[j])
+                            + Wide(multiplier) * _modulus[j] + carry;
+                        if (j != 0) {
+                            t[j - 1] = uint64_t(value);
+                        }
+                        carry = value >> 64;
+                    }
+                    top = Wide(t[COUNT]) + carry;
+                    t[COUNT - 1] = uint64_t(top);
+                    t[COUNT] = t[COUNT + 1] + uint64_t(top >> 64);
+                }
+
+                Value candidate;
+                for (size_t i = 0; i < COUNT; ++i) {
+                    candidate.limbs[i] = t[i];
+                }
+                Value reduced;
+                const uint64_t borrow = subtractRaw(reduced, candidate, _modulus, COUNT);
+                const uint64_t useReduced = uint64_t(t[COUNT] != 0) | (borrow ^ uint64_t(1));
+                const uint64_t mask = uint64_t(0) - useReduced;
+                for (size_t i = 0; i < COUNT; ++i) {
+                    candidate.limbs[i] ^=
+                        (candidate.limbs[i] ^ reduced.limbs[i]) & mask;
+                }
+                return candidate;
+            }
+
+        public:
+            explicit FastPrimeField(const CBigNum& modulus) {
+                const size_t count = (modulus.bitLength() + 63) / 64;
+                if (count == 0 || count > MAX_LIMBS || modulus.isEven()) {
+                    return;
+                }
+
+                Value packed;
+                if (!load(modulus, packed, count)) {
+                    return;
+                }
+                _count = count;
+                std::memcpy(_modulus, packed.limbs, count * sizeof(uint64_t));
+
+                uint64_t inverse = _modulus[0];
+                for (size_t i = 0; i < 6; ++i) {
+                    inverse *= uint64_t(2) - _modulus[0] * inverse;
+                }
+                _n0inv = uint64_t(0) - inverse;
+                _p256 = _count == 4
+                    && _modulus[0] == UINT64_C(0xffffffffffffffff)
+                    && _modulus[1] == UINT64_C(0x00000000ffffffff)
+                    && _modulus[2] == UINT64_C(0x0000000000000000)
+                    && _modulus[3] == UINT64_C(0xffffffff00000001);
+            }
+
+            bool valid() const {
+                return _count != 0;
+            }
+
+            size_t count() const {
+                return _count;
+            }
+
+            static bool load(const CBigNum& value, Value& out, size_t count) {
+                uint8_t bytes[MAX_LIMBS * sizeof(uint64_t)] = {};
+                if (!value.toLittleEndian(SByteSpan(bytes, count * sizeof(uint64_t)))) {
+                    return false;
+                }
+                for (size_t i = 0; i < count; ++i) {
+                    uint64_t limb = 0;
+                    for (size_t j = 0; j < sizeof(uint64_t); ++j) {
+                        limb |= uint64_t(bytes[i * sizeof(uint64_t) + j]) << (8 * j);
+                    }
+                    out.limbs[i] = limb;
+                }
+                return true;
+            }
+
+            bool load(const CBigNum& value, Value& out) const {
+                return load(value, out, _count);
+            }
+
+            CBigNum store(const Value& value) const {
+                uint8_t bytes[MAX_LIMBS * sizeof(uint64_t)] = {};
+                for (size_t i = 0; i < _count; ++i) {
+                    uint64_t limb = value.limbs[i];
+                    for (size_t j = 0; j < sizeof(uint64_t); ++j) {
+                        bytes[i * sizeof(uint64_t) + j] = uint8_t(limb >> (8 * j));
+                    }
+                }
+                return CBigNum::fromLittleEndian(
+                    SReadOnlyByteSpan(bytes, _count * sizeof(uint64_t)));
+            }
+
+            Value add(const Value& left, const Value& right) const {
+                Value sum;
+                unsigned __int128 carry = 0;
+                for (size_t i = 0; i < _count; ++i) {
+                    const unsigned __int128 value =
+                        static_cast<unsigned __int128>(left.limbs[i]) + right.limbs[i] + carry;
+                    sum.limbs[i] = uint64_t(value);
+                    carry = value >> 64;
+                }
+
+                Value reduced;
+                const uint64_t borrow = subtractRaw(reduced, sum, _modulus, _count);
+                const uint64_t useReduced = uint64_t(carry) | (borrow ^ uint64_t(1));
+                const uint64_t mask = uint64_t(0) - useReduced;
+                for (size_t i = 0; i < _count; ++i) {
+                    sum.limbs[i] ^= (sum.limbs[i] ^ reduced.limbs[i]) & mask;
+                }
+                return sum;
+            }
+
+            Value sub(const Value& left, const Value& right) const {
+                Value difference;
+                const uint64_t borrow = subtractRaw(difference, left, right.limbs, _count);
+                const uint64_t mask = uint64_t(0) - borrow;
+                unsigned __int128 carry = 0;
+                for (size_t i = 0; i < _count; ++i) {
+                    const unsigned __int128 value = static_cast<unsigned __int128>(
+                        difference.limbs[i]) + (_modulus[i] & mask) + carry;
+                    difference.limbs[i] = uint64_t(value);
+                    carry = value >> 64;
+                }
+                return difference;
+            }
+
+            Value dbl(const Value& value) const {
+                return add(value, value);
+            }
+
+            Value mul(const Value& left, const Value& right) const {
+                if (_p256) {
+                    return mulP256(left, right);
+                }
+                switch (_count) {
+                    case 1: return mulFixed<1>(left, right);
+                    case 2: return mulFixed<2>(left, right);
+                    case 3: return mulFixed<3>(left, right);
+                    case 4: return mulFixed<4>(left, right);
+                    case 5: return mulFixed<5>(left, right);
+                    case 6: return mulFixed<6>(left, right);
+                    case 7: return mulFixed<7>(left, right);
+                    case 8: return mulFixed<8>(left, right);
+                    case 9: return mulFixed<9>(left, right);
+                    default: return Value();
+                }
+            }
+
+            Value inverse(const Value& value, const Value& one) const {
+                Value exponent;
+                std::memcpy(exponent.limbs, _modulus, _count * sizeof(uint64_t));
+                uint64_t borrow = 2;
+                for (size_t i = 0; i < _count; ++i) {
+                    const uint64_t before = exponent.limbs[i];
+                    exponent.limbs[i] -= borrow;
+                    borrow = before < borrow;
+                }
+
+                // p-2 is public and fixed for the field. A four-bit table halves the multiply
+                // count of binary Fermat inversion without introducing any secret-dependent
+                // lookup: the selected nibble depends only on the public modulus.
+                Value powers[16];
+                powers[0] = one;
+                powers[1] = value;
+                for (size_t i = 2; i < 16; ++i) {
+                    powers[i] = mul(powers[i - 1], value);
+                }
+
+                Value result = one;
+                const size_t windows = _count * 16;
+                for (size_t window = windows; window-- > 0; ) {
+                    result = mul(result, result);
+                    result = mul(result, result);
+                    result = mul(result, result);
+                    result = mul(result, result);
+                    const size_t bit = window * 4;
+                    const unsigned digit = unsigned(
+                        (exponent.limbs[bit / 64] >> (bit % 64)) & uint64_t(0xf));
+                    if (digit != 0) {
+                        result = mul(result, powers[digit]);
+                    }
+                }
+                return result;
+            }
+
+            uint64_t isZero(const Value& value) const {
+                uint64_t combined = 0;
+                for (size_t i = 0; i < _count; ++i) {
+                    combined |= value.limbs[i];
+                }
+                return ((combined | (uint64_t(0) - combined)) >> 63) ^ uint64_t(1);
+            }
+
+            uint64_t equal(const Value& left, const Value& right) const {
+                uint64_t difference = 0;
+                for (size_t i = 0; i < _count; ++i) {
+                    difference |= left.limbs[i] ^ right.limbs[i];
+                }
+                return ((difference | (uint64_t(0) - difference)) >> 63) ^ uint64_t(1);
+            }
+
+            void conditionalSwap(uint64_t swap, Value& left, Value& right) const {
+                const uint64_t mask = uint64_t(0) - swap;
+                for (size_t i = 0; i < _count; ++i) {
+                    const uint64_t difference = (left.limbs[i] ^ right.limbs[i]) & mask;
+                    left.limbs[i] ^= difference;
+                    right.limbs[i] ^= difference;
+                }
+            }
+        };
+
+        struct FastEcPoint {
+            FastPrimeField::Value x;
+            FastPrimeField::Value y;
+            FastPrimeField::Value z;
+        };
+
+        struct FastP256CombTable {
+            static constexpr size_t WINDOW_BITS = 4;
+            static constexpr size_t ROWS = (256 + WINDOW_BITS - 1) / WINDOW_BITS;
+            static constexpr size_t ENTRIES = size_t(1) << WINDOW_BITS;
+            FastEcPoint points[ROWS][ENTRIES];
+        };
+
+        FastEcPoint fastInfinity(
+            const FastPrimeField& field, const FastPrimeField::Value& one
+        ) {
+            FastEcPoint result;
+            result.x = one;
+            result.y = one;
+            return result;
+        }
+
+        void fastConditionalSwap(
+            const FastPrimeField& field, uint64_t swap, FastEcPoint& left, FastEcPoint& right
+        ) {
+            field.conditionalSwap(swap, left.x, right.x);
+            field.conditionalSwap(swap, left.y, right.y);
+            field.conditionalSwap(swap, left.z, right.z);
+        }
+
+        FastEcPoint fastNegate(
+            const FastEcPoint& point, const FastPrimeField& field
+        ) {
+            FastEcPoint result = point;
+            result.y = field.sub(FastPrimeField::Value(), result.y);
+            return result;
+        }
+
+        TArray<int8_t> computeWnaf(const CBigNum& scalar, unsigned width) {
+            const unsigned window = unsigned(1) << width;
+            const unsigned halfWindow = window >> 1;
+            CBigNum remaining(scalar);
+            TArray<int8_t> digits;
+            if (!digits.resize(scalar.bitLength() + 1)) {
+                return digits;
+            }
+            for (size_t i = 0; i < digits.size(); ++i) {
+                digits[i] = 0;
+            }
+
+            size_t position = 0;
+            while (!remaining.isZero()) {
+                if (!remaining.isEven()) {
+                    unsigned low = 0;
+                    for (unsigned bit = 0; bit < width; ++bit) {
+                        low |= unsigned(remaining.testBit(bit)) << bit;
+                    }
+                    int digit = int(low);
+                    if (low >= halfWindow) {
+                        digit -= int(window);
+                        remaining.add(CBigNum(uint64_t(-digit)));
+                    } else {
+                        remaining.sub(CBigNum(uint64_t(digit)));
+                    }
+                    digits[position] = int8_t(digit);
+                }
+                remaining.shr(1);
+                ++position;
+            }
+            return digits;
+        }
+
+        FastEcPoint fastDouble(
+            const FastEcPoint& point, const FastPrimeField& field,
+            const FastPrimeField::Value& aMont, const FastPrimeField::Value& one,
+            bool aMinusThree
+        ) {
+            if (field.isZero(point.z) || field.isZero(point.y)) {
+                return fastInfinity(field, one);
+            }
+
+            if (aMinusThree) {
+                // dbl-2001-b for short-Weierstrass curves with a == -3.
+                const auto delta = field.mul(point.z, point.z);
+                const auto gamma = field.mul(point.y, point.y);
+                const auto beta = field.mul(point.x, gamma);
+                auto alpha = field.mul(
+                    field.sub(point.x, delta), field.add(point.x, delta));
+                alpha = field.add(field.add(alpha, alpha), alpha);
+                const auto x3 = field.sub(field.mul(alpha, alpha),
+                    field.dbl(field.dbl(field.dbl(beta))));
+                auto z3 = field.mul(field.add(point.y, point.z),
+                    field.add(point.y, point.z));
+                z3 = field.sub(field.sub(z3, gamma), delta);
+                const auto fourBeta = field.dbl(field.dbl(beta));
+                auto y3 = field.mul(alpha, field.sub(fourBeta, x3));
+                auto eightGammaSquared = field.mul(gamma, gamma);
+                eightGammaSquared = field.dbl(field.dbl(field.dbl(eightGammaSquared)));
+                y3 = field.sub(y3, eightGammaSquared);
+                return FastEcPoint{ x3, y3, z3 };
+            }
+
+            const auto aa = field.mul(point.x, point.x);
+            const auto b = field.mul(point.y, point.y);
+            const auto c = field.mul(b, b);
+            const auto xPlusB = field.add(point.x, b);
+            auto d = field.sub(field.sub(field.mul(xPlusB, xPlusB), aa), c);
+            d = field.dbl(d);
+
+            auto z4 = field.mul(point.z, point.z);
+            z4 = field.mul(z4, z4);
+            auto e = field.add(field.add(aa, aa), aa);
+            e = field.add(e, field.mul(aMont, z4));
+
+            const auto f = field.mul(e, e);
+            const auto x3 = field.sub(f, field.dbl(d));
+            auto y3 = field.mul(e, field.sub(d, x3));
+            auto eightC = field.dbl(c);
+            eightC = field.dbl(eightC);
+            eightC = field.dbl(eightC);
+            y3 = field.sub(y3, eightC);
+            auto z3 = field.mul(point.y, point.z);
+            z3 = field.dbl(z3);
+            return FastEcPoint{ x3, y3, z3 };
+        }
+
+        FastEcPoint fastAdd(
+            const FastEcPoint& left, const FastEcPoint& right,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree
+        ) {
+            if (field.isZero(left.z)) {
+                return right;
+            }
+            if (field.isZero(right.z)) {
+                return left;
+            }
+
+            const auto z1z1 = field.mul(left.z, left.z);
+            const auto z2z2 = field.mul(right.z, right.z);
+            auto u1 = field.mul(left.x, z2z2);
+            const auto u2 = field.mul(right.x, z1z1);
+            const auto z2z2z2 = field.mul(z2z2, right.z);
+            const auto z1z1z1 = field.mul(z1z1, left.z);
+            auto s1 = field.mul(left.y, z2z2z2);
+            auto s2 = field.mul(right.y, z1z1z1);
+            const auto h = field.sub(u2, u1);
+            auto r = field.sub(s2, s1);
+
+            if (field.isZero(h)) {
+                if (field.isZero(r)) {
+                    return fastDouble(left, field, aMont, one, aMinusThree);
+                }
+                return fastInfinity(field, one);
+            }
+
+            auto i = field.dbl(h);
+            i = field.mul(i, i);
+            const auto j = field.mul(h, i);
+            r = field.dbl(r);
+            u1 = field.mul(u1, i);
+            auto x3 = field.sub(field.sub(field.mul(r, r), j), field.dbl(u1));
+            auto y3 = field.mul(r, field.sub(u1, x3));
+            s1 = field.dbl(field.mul(s1, j));
+            y3 = field.sub(y3, s1);
+            auto z3 = field.add(left.z, right.z);
+            z3 = field.sub(field.sub(field.mul(z3, z3), z1z1), z2z2);
+            z3 = field.mul(z3, h);
+            return FastEcPoint{ x3, y3, z3 };
+        }
+
+        FastEcPoint fastAddMixed(
+            const FastEcPoint& left, const FastEcPoint& affineRight,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree
+        ) {
+            if (field.isZero(left.z)) {
+                return affineRight;
+            }
+
+            // add-2007-bl with Z2 == 1. The fixed-base table is batch-normalized once, so every
+            // hot-loop addition avoids the second point's Z products from the general formula.
+            const auto z1z1 = field.mul(left.z, left.z);
+            const auto u2 = field.mul(affineRight.x, z1z1);
+            const auto s2 = field.mul(affineRight.y, field.mul(left.z, z1z1));
+            const auto h = field.sub(u2, left.x);
+            auto r = field.sub(s2, left.y);
+
+            if (field.isZero(h)) {
+                if (field.isZero(r)) {
+                    // A fixed-base comb never intentionally adds a point to itself, but retain a
+                    // correct exceptional result if an unusual scalar reaches that state.
+                    return fastDouble(left, field, aMont, one, aMinusThree);
+                }
+                return fastInfinity(field, one);
+            }
+
+            auto hh = field.mul(h, h);
+            auto i = field.dbl(field.dbl(hh));
+            const auto j = field.mul(h, i);
+            r = field.dbl(r);
+            const auto v = field.mul(left.x, i);
+            auto x3 = field.sub(field.sub(field.mul(r, r), j), field.dbl(v));
+            auto y3 = field.mul(r, field.sub(v, x3));
+            y3 = field.sub(y3, field.dbl(field.mul(left.y, j)));
+            auto z3 = field.add(left.z, h);
+            z3 = field.sub(field.sub(field.mul(z3, z3), z1z1), hh);
+            return FastEcPoint{ x3, y3, z3 };
+        }
+
+        void fastBatchNormalize(
+            FastEcPoint* points, size_t count,
+            const FastPrimeField& field, const FastPrimeField::Value& one,
+            FastPrimeField::Value* prefixes
+        ) {
+            FastPrimeField::Value product = one;
+            for (size_t i = 0; i < count; ++i) {
+                prefixes[i] = product;
+                if (!field.isZero(points[i].z)) {
+                    product = field.mul(product, points[i].z);
+                }
+            }
+
+            FastPrimeField::Value inverse = field.inverse(product, one);
+            for (size_t i = count; i-- > 0; ) {
+                if (field.isZero(points[i].z)) {
+                    continue;
+                }
+                const auto originalZ = points[i].z;
+                const auto zInverse = field.mul(inverse, prefixes[i]);
+                inverse = field.mul(inverse, originalZ);
+                const auto zInverse2 = field.mul(zInverse, zInverse);
+                points[i].x = field.mul(points[i].x, zInverse2);
+                points[i].y = field.mul(points[i].y, field.mul(zInverse2, zInverse));
+                points[i].z = one;
+            }
+        }
+
+        FastEcPoint fastWindowMultiply(
+            const FastEcPoint& basePoint, const CBigNum& scalar, size_t iterations,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree
+        ) {
+            constexpr size_t WINDOW_BITS = 4;
+            constexpr size_t TABLE_SIZE = size_t(1) << WINDOW_BITS;
+            FastEcPoint table[TABLE_SIZE];
+            table[0] = fastInfinity(field, one);
+            table[1] = basePoint;
+            for (size_t i = 2; i < TABLE_SIZE; ++i) {
+                table[i] = fastAdd(
+                    table[i - 1], basePoint, field, aMont, one, aMinusThree);
+            }
+
+            FastEcPoint accumulator = fastInfinity(field, one);
+            const size_t windows = (iterations + WINDOW_BITS - 1) / WINDOW_BITS;
+            for (size_t window = windows; window-- > 0; ) {
+                for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                    accumulator = fastDouble(
+                        accumulator, field, aMont, one, aMinusThree);
+                }
+
+                const size_t bitBase = window * WINDOW_BITS;
+                size_t digit = 0;
+                for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                    digit |= size_t(scalar.testBit(bitBase + bit)) << bit;
+                }
+
+                const size_t nonZero =
+                    (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+                const size_t tableDigit = digit | (nonZero ^ size_t(1));
+                FastEcPoint selected = table[1];
+                for (size_t i = 1; i < TABLE_SIZE; ++i) {
+                    FastEcPoint candidate = table[i];
+                    fastConditionalSwap(
+                        field, uint64_t(i == tableDigit), selected, candidate);
+                }
+
+                FastEcPoint unchanged = accumulator;
+                FastEcPoint sum = fastAdd(
+                    accumulator, selected, field, aMont, one, aMinusThree);
+                fastConditionalSwap(field, uint64_t(nonZero ^ size_t(1)), sum, unchanged);
+                accumulator = sum;
+            }
+            return accumulator;
+        }
+
+        SEcPoint fastToAffine(
+            const FastEcPoint& point, const FastPrimeField& field,
+            const FastPrimeField::Value& one, const CMontgomery& montgomery
+        ) {
+            if (field.isZero(point.z)) {
+                return SEcPoint();
+            }
+
+            const auto zInv = field.inverse(point.z, one);
+            const auto zInv2 = field.mul(zInv, zInv);
+            const auto zInv3 = field.mul(zInv2, zInv);
+            CBigNum x = montgomery.fromMont(field.store(field.mul(point.x, zInv2)));
+            CBigNum y = montgomery.fromMont(field.store(field.mul(point.y, zInv3)));
+            return SEcPoint(std::move(x), std::move(y));
+        }
+
+    } // namespace
+#endif
+
+    bool FastPrimeInverse(
+        const CBigNum& value, const CBigNum& prime, CBigNum& out
+    ) {
+        if (value.isZero() || prime.isZero() || prime.isEven()) {
+            return false;
+        }
+
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const CMontgomery montgomery(prime);
+        const FastPrimeField field(prime);
+        FastPrimeField::Value one;
+        FastPrimeField::Value input;
+        if (montgomery.isValid() && field.valid()
+            && field.load(montgomery.one(), one)
+            && field.load(montgomery.toMont(value), input)) {
+            out = montgomery.fromMont(field.store(field.inverse(input, one)));
+            return !out.isZero();
+        }
+#endif
+
+        return CBigNum::modInverse(value, prime, out);
+    }
+
+    bool PreparePrimeWnafTable(
+        const CEcCurve& curve, const SEcPoint& point, TArray<SEcPoint>& out
+    ) {
+        out.resize(0);
+        if (point.infinity) {
+            return false;
+        }
+
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        constexpr size_t TABLE_SIZE = 16;
+        const CMontgomery montgomery(curve.p);
+        const FastPrimeField field(curve.p);
+        CBigNum pMinusThree(curve.p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool aMinusThree = curve.a == pMinusThree;
+        FastPrimeField::Value one;
+        FastPrimeField::Value aMont;
+        FastEcPoint base;
+        if (!montgomery.isValid() || !field.valid()
+            || !field.load(montgomery.one(), one)
+            || !field.load(montgomery.toMont(curve.a), aMont)
+            || !field.load(montgomery.toMont(point.x), base.x)
+            || !field.load(montgomery.toMont(point.y), base.y)) {
+            return false;
+        }
+        base.z = one;
+
+        FastEcPoint table[TABLE_SIZE];
+        table[0] = base;
+        const FastEcPoint twice = fastDouble(base, field, aMont, one, aMinusThree);
+        for (size_t i = 1; i < TABLE_SIZE; ++i) {
+            table[i] = fastAdd(table[i - 1], twice, field, aMont, one, aMinusThree);
+        }
+        FastPrimeField::Value prefixes[TABLE_SIZE];
+        fastBatchNormalize(table, TABLE_SIZE, field, one, prefixes);
+
+        if (!out.resize(TABLE_SIZE)) {
+            return false;
+        }
+        for (size_t i = 0; i < TABLE_SIZE; ++i) {
+            CBigNum x = montgomery.fromMont(field.store(table[i].x));
+            CBigNum y = montgomery.fromMont(field.store(table[i].y));
+            out[i] = SEcPoint(std::move(x), std::move(y));
+        }
+        return true;
+#else
+        (void)curve;
+        return false;
+#endif
+    }
+
+    bool FastPrimeLinearCombinationPrepared(
+        const CEcCurve& curve,
+        const CBigNum& firstScalar, const TArray<SEcPoint>& firstTable,
+        const CBigNum& secondScalar, const TArray<SEcPoint>& secondTable,
+        SEcPoint& out
+    ) {
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        constexpr size_t TABLE_SIZE = 16;
+        if (firstTable.size() != TABLE_SIZE || secondTable.size() != TABLE_SIZE) {
+            return false;
+        }
+
+        const CMontgomery montgomery(curve.p);
+        const FastPrimeField field(curve.p);
+        CBigNum pMinusThree(curve.p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool aMinusThree = curve.a == pMinusThree;
+        FastPrimeField::Value one;
+        FastPrimeField::Value aMont;
+        FastEcPoint tables[2][TABLE_SIZE];
+        if (!montgomery.isValid() || !field.valid()
+            || !field.load(montgomery.one(), one)
+            || !field.load(montgomery.toMont(curve.a), aMont)) {
+            return false;
+        }
+        for (size_t i = 0; i < TABLE_SIZE; ++i) {
+            if (firstTable[i].infinity || secondTable[i].infinity
+                || !field.load(montgomery.toMont(firstTable[i].x), tables[0][i].x)
+                || !field.load(montgomery.toMont(firstTable[i].y), tables[0][i].y)
+                || !field.load(montgomery.toMont(secondTable[i].x), tables[1][i].x)
+                || !field.load(montgomery.toMont(secondTable[i].y), tables[1][i].y)) {
+                return false;
+            }
+            tables[0][i].z = one;
+            tables[1][i].z = one;
+        }
+
+        const TArray<int8_t> firstDigits = computeWnaf(firstScalar, 6);
+        const TArray<int8_t> secondDigits = computeWnaf(secondScalar, 6);
+        const size_t iterations = firstDigits.size() > secondDigits.size()
+            ? firstDigits.size() : secondDigits.size();
+        FastEcPoint accumulator = fastInfinity(field, one);
+        for (size_t i = iterations; i-- > 0; ) {
+            accumulator = fastDouble(accumulator, field, aMont, one, aMinusThree);
+            const int digits[2] = {
+                i < firstDigits.size() ? firstDigits[i] : 0,
+                i < secondDigits.size() ? secondDigits[i] : 0
+            };
+            for (size_t which = 0; which < 2; ++which) {
+                const int digit = digits[which];
+                if (digit == 0) {
+                    continue;
+                }
+                FastEcPoint addend = tables[which][
+                    (digit < 0 ? -digit : digit) / 2];
+                if (digit < 0) {
+                    addend = fastNegate(addend, field);
+                }
+                accumulator = fastAddMixed(
+                    accumulator, addend, field, aMont, one, aMinusThree);
+            }
+        }
+        out = fastToAffine(accumulator, field, one, montgomery);
+        return true;
+#else
+        (void)curve;
+        (void)firstScalar;
+        (void)firstTable;
+        (void)secondScalar;
+        (void)secondTable;
+        (void)out;
+        return false;
+#endif
+    }
 
         /* Parses a curve's hardcoded hex constant into a CBigNum at static-init time. The
          * strings are trusted literals (see _knownCurves below), so a parse failure (which
@@ -715,7 +1495,8 @@ namespace crypto {
         return SEcPoint(std::move(x3), std::move(y3));
     }
 
-    /* Branch-free double-and-add, entirely in Jacobian coordinates: R0/R1 always satisfy the
+    /* Portable branch-free-shaped double-and-add fallback, entirely in Jacobian coordinates:
+     * R0/R1 always satisfy the
      * invariant R1 == R0 + pt, and every iteration always computes both an addition and a
      * doubling -- only which register ends up holding which value depends on the scalar's bit,
      * via condSwapJac() rather than a branch choosing whether to run an addition at all (contrast
@@ -749,6 +1530,29 @@ namespace crypto {
             return result;
         }
 
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const FastPrimeField fastField(p);
+        CBigNum pMinusThree(p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool fastAMinusThree = a == pMinusThree;
+        FastPrimeField::Value fastOne;
+        FastPrimeField::Value fastA;
+        FastEcPoint fastInput;
+        if (fastField.valid() &&
+            fastField.load(field.one(), fastOne) &&
+            fastField.load(field.toMont(a), fastA) &&
+            fastField.load(field.toMont(pt.x), fastInput.x) &&
+            fastField.load(field.toMont(pt.y), fastInput.y)) {
+            fastInput.z = fastOne;
+            const size_t scalarBits = k.bitLength();
+            const size_t orderBits = n.bitLength();
+            const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
+            const FastEcPoint product = fastWindowMultiply(
+                fastInput, k, iterations, fastField, fastA, fastOne, fastAMinusThree);
+            return fastToAffine(product, fastField, fastOne, field);
+        }
+#endif
+
         const CBigNum aMont = field.toMont(a);
 
         ECPointJac r0 = infinityJac(field);
@@ -772,11 +1576,143 @@ namespace crypto {
         return toAffineFromJac(r0, field);
     }
 
-    /* Use the same ladder as arbitrary-point multiplication. The previous four-bit window method
-     * indexed a table with private scalar bits, which exposed a cache-timing signal even though it
-     * performed an addition for every window. */
+    /* Fixed-base multiplication with full-scan tables, so secret scalar bits never become memory
+     * indexes. The native fixed-width path caches a 64-row, four-bit comb only after every
+     * standard P-256 parameter and the generator compare equal; mutable or other parameters build
+     * a four-bit table per call. The portable CBigNum path always builds that per-call four-bit
+     * table. */
     SEcPoint CEcCurve::scalarMulBase(const CBigNum& k) const {
-        return scalarMul(g, k);
+        constexpr size_t WINDOW_BITS = 4;
+        constexpr size_t TABLE_SIZE = size_t(1) << WINDOW_BITS;
+
+        SEcPoint result;
+        if (g.infinity || k.isZero()) {
+            return result;
+        }
+
+        const CMontgomery field(p);
+        if (!field.isValid()) {
+            return result;
+        }
+
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const FastPrimeField fastField(p);
+        CBigNum pMinusThree(p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool fastAMinusThree = a == pMinusThree;
+        FastPrimeField::Value fastOne;
+        FastPrimeField::Value fastA;
+        FastEcPoint fastBase;
+        if (fastField.valid() &&
+            fastField.load(field.one(), fastOne) &&
+            fastField.load(field.toMont(a), fastA) &&
+            fastField.load(field.toMont(g.x), fastBase.x) &&
+            fastField.load(field.toMont(g.y), fastBase.y)) {
+            fastBase.z = fastOne;
+            const size_t scalarBits = k.bitLength();
+            const size_t orderBits = n.bitLength();
+            const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
+            if (iterations <= 256) {
+                const CEcCurve& standard = _knownCurves[ECURVE_P256 - 1];
+                const bool standardP256 = p == standard.p && a == standard.a
+                    && b == standard.b && n == standard.n && g.equals(standard.g);
+                if (standardP256) {
+                    static const FastP256CombTable comb = [&] {
+                        FastP256CombTable built;
+                        FastEcPoint windowBase = fastBase;
+                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                            built.points[window][0] = fastInfinity(fastField, fastOne);
+                            built.points[window][1] = windowBase;
+                            for (size_t digit = 2; digit < FastP256CombTable::ENTRIES; ++digit) {
+                                built.points[window][digit] = fastAdd(
+                                    built.points[window][digit - 1], windowBase,
+                                    fastField, fastA, fastOne, fastAMinusThree);
+                            }
+                            for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
+                                windowBase = fastDouble(
+                                    windowBase, fastField, fastA, fastOne, fastAMinusThree);
+                            }
+                        }
+                        FastPrimeField::Value prefixes[
+                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES];
+                        fastBatchNormalize(
+                            &built.points[0][0],
+                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES,
+                            fastField, fastOne, prefixes);
+                        return built;
+                    }();
+
+                    FastEcPoint accumulator = fastInfinity(fastField, fastOne);
+                    for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                        size_t digit = 0;
+                        for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
+                            digit |= size_t(k.testBit(
+                                window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
+                        }
+                        const size_t nonZero =
+                            (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+                        const size_t tableDigit = digit | (nonZero ^ size_t(1));
+                        FastEcPoint selected = comb.points[window][1];
+                        for (size_t i = 1; i < FastP256CombTable::ENTRIES; ++i) {
+                            FastEcPoint candidate = comb.points[window][i];
+                            fastConditionalSwap(
+                                fastField, uint64_t(i == tableDigit), selected, candidate);
+                        }
+                        FastEcPoint unchanged = accumulator;
+                        FastEcPoint sum = fastAddMixed(
+                            accumulator, selected,
+                            fastField, fastA, fastOne, fastAMinusThree);
+                        fastConditionalSwap(
+                            fastField, uint64_t(nonZero ^ size_t(1)), sum, unchanged);
+                        accumulator = sum;
+                    }
+                    return fastToAffine(accumulator, fastField, fastOne, field);
+                }
+            }
+            const FastEcPoint product = fastWindowMultiply(
+                fastBase, k, iterations, fastField, fastA, fastOne, fastAMinusThree);
+            return fastToAffine(product, fastField, fastOne, field);
+        }
+#endif
+
+        const CBigNum aMont = field.toMont(a);
+        TArray<ECPointJac> table;
+        if (!table.resize(TABLE_SIZE)) {
+            return result;
+        }
+
+        table[0] = infinityJac(field);
+        table[1] = toJacobian(g, field);
+        for (size_t i = 2; i < TABLE_SIZE; ++i) {
+            table[i] = addJac(table[i - 1], table[1], field, aMont);
+        }
+
+        ECPointJac accumulator = infinityJac(field);
+        const size_t scalarBits = k.bitLength();
+        const size_t orderBits = n.bitLength();
+        const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
+        const size_t windows = (iterations + WINDOW_BITS - 1) / WINDOW_BITS;
+
+        for (size_t window = windows; window-- > 0; ) {
+            for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                accumulator = doublePointJac(accumulator, field, aMont);
+            }
+
+            const size_t base = window * WINDOW_BITS;
+            size_t digit = 0;
+            for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                digit |= size_t(k.testBit(base + bit)) << bit;
+            }
+
+            ECPointJac selected = infinityJac(field);
+            for (size_t i = 0; i < TABLE_SIZE; ++i) {
+                ECPointJac candidate = table[i];
+                condSwapJac(i == digit, selected, candidate);
+            }
+            accumulator = addJac(accumulator, selected, field, aMont);
+        }
+
+        return toAffineFromJac(accumulator, field);
     }
 
     /* Joint multiplication for public verification scalars. Unlike scalarMul(), this routine is
@@ -798,6 +1734,81 @@ namespace crypto {
         if (!field.isValid()) {
             return result;
         }
+
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const FastPrimeField fastField(p);
+        CBigNum pMinusThree(p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool fastAMinusThree = a == pMinusThree;
+        FastPrimeField::Value fastOne;
+        FastPrimeField::Value fastA;
+        FastEcPoint fastP1;
+        FastEcPoint fastP2;
+        if (fastField.valid() &&
+            fastField.load(field.one(), fastOne) &&
+            fastField.load(field.toMont(a), fastA) &&
+            fastField.load(field.toMont(p1.x), fastP1.x) &&
+            fastField.load(field.toMont(p1.y), fastP1.y) &&
+            fastField.load(field.toMont(p2.x), fastP2.x) &&
+            fastField.load(field.toMont(p2.y), fastP2.y)) {
+            fastP1.z = p1.infinity ? FastPrimeField::Value() : fastOne;
+            fastP2.z = p2.infinity ? FastPrimeField::Value() : fastOne;
+            constexpr size_t WNAF_TABLE_SIZE = 8;
+            FastEcPoint tables[2][WNAF_TABLE_SIZE];
+            FastEcPoint* table1 = tables[0];
+            FastEcPoint* table2 = tables[1];
+            table1[0] = fastP1;
+            table2[0] = fastP2;
+            const FastEcPoint twiceP1 = fastDouble(
+                fastP1, fastField, fastA, fastOne, fastAMinusThree);
+            const FastEcPoint twiceP2 = fastDouble(
+                fastP2, fastField, fastA, fastOne, fastAMinusThree);
+            for (size_t i = 1; i < WNAF_TABLE_SIZE; ++i) {
+                table1[i] = fastAdd(
+                    table1[i - 1], twiceP1,
+                    fastField, fastA, fastOne, fastAMinusThree);
+                table2[i] = fastAdd(
+                    table2[i - 1], twiceP2,
+                    fastField, fastA, fastOne, fastAMinusThree);
+            }
+            FastPrimeField::Value prefixes[2 * WNAF_TABLE_SIZE];
+            fastBatchNormalize(
+                &tables[0][0], 2 * WNAF_TABLE_SIZE, fastField, fastOne, prefixes);
+
+            const TArray<int8_t> digits1 = computeWnaf(k1, 5);
+            const TArray<int8_t> digits2 = computeWnaf(k2, 5);
+            const size_t wnafIterations =
+                digits1.size() > digits2.size() ? digits1.size() : digits2.size();
+            FastEcPoint accumulator = fastInfinity(fastField, fastOne);
+
+            for (size_t i = wnafIterations; i-- > 0; ) {
+                accumulator = fastDouble(
+                    accumulator, fastField, fastA, fastOne, fastAMinusThree);
+                const int digit1 = i < digits1.size() ? digits1[i] : 0;
+                const int digit2 = i < digits2.size() ? digits2[i] : 0;
+                if (digit1 != 0) {
+                    FastEcPoint addend = table1[(digit1 < 0 ? -digit1 : digit1) / 2];
+                    if (digit1 < 0) {
+                        addend = fastNegate(addend, fastField);
+                    }
+                    accumulator = fastAddMixed(
+                        accumulator, addend,
+                        fastField, fastA, fastOne, fastAMinusThree);
+                }
+                if (digit2 != 0) {
+                    FastEcPoint addend = table2[(digit2 < 0 ? -digit2 : digit2) / 2];
+                    if (digit2 < 0) {
+                        addend = fastNegate(addend, fastField);
+                    }
+                    accumulator = fastAddMixed(
+                        accumulator, addend,
+                        fastField, fastA, fastOne, fastAMinusThree);
+                }
+            }
+
+            return fastToAffine(accumulator, fastField, fastOne, field);
+        }
+#endif
 
         const CBigNum aMont = field.toMont(a);
         const ECPointJac j1 = toJacobian(p1, field);

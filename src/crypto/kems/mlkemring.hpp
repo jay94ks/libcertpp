@@ -33,11 +33,10 @@ namespace crypto {
      *
      * Coefficients are kept fully reduced in [0, Q) at every public entry and exit point, and
      * intermediates run in int32_t, where a product of two coefficients (< 3329^2, about 1.1e7)
-     * has four orders of magnitude of headroom. Reduction is a plain `% Q` against a
-     * compile-time constant, which the compiler turns into a reciprocal multiply -- as fast as a
-     * hand-written Barrett step and considerably easier to audit, and it sidesteps the "is this
-     * value currently in Montgomery form?" class of bug entirely. If profiling ever justifies
-     * Montgomery representation, it can be introduced behind these same signatures.
+     * has four orders of magnitude of headroom. The general reduce() entry point accepts the full
+     * int32_t range and uses `% Q`; the bounded transform and multiply loops use a reciprocal
+     * Barrett step whose input limit is asserted where it is defined. Neither representation is
+     * Montgomery form, which avoids tracking an additional coefficient domain.
      */
     class MlKemRing {
     public:

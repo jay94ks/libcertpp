@@ -213,14 +213,15 @@
   and the signing algorithm itself) far more strongly than a
   self-consistency round-trip alone could.
 
-  `pointAdd()` (affine) stays the reference implementation for the
-  single-operation case. Scalar multiplication works internally in extended
-  projective coordinates (`EdPointProj`: Hisil/Wong/Carter/Dawson's `X/Z,
-  Y/Z, T=XY/Z`, "Twisted Edwards Curves Revisited") and converts to affine
-  once at the boundary. Unlike points use the complete `pointAddProj()` law;
-  repeated-point steps use the dedicated `pointDoubleProj()` formula, which
-  costs four field multiplications and four squarings instead of a unified
-  addition's nine multiplications.
+  Scalar multiplication works internally in extended projective coordinates
+  (`EdPointProj`: Hisil/Wong/Carter/Dawson's `X/Z, Y/Z, T=XY/Z`, "Twisted
+  Edwards Curves Revisited") and converts to affine only at an encoding or key
+  boundary. Cached and affine-precomputed points reduce mixed additions; public
+  double-scalar multiplication also keeps completed `P1P1` and `P2` forms to
+  avoid a field multiplication per doubling. `Fe25519::addLoose()` and
+  `subLoose()` skip a carry pass only when the result is consumed immediately
+  by a multiply or square. The dedicated `square()` kernel is generated and
+  mechanically checked by `tools/fe_square_gen.cpp` against `mul()`.
 
   Secret fixed-base multiplication (`scalarMulBase()`, used for `B*r` and
   `B*s`) recodes the scalar into 64 signed radix-16 digits. Its process-wide
@@ -229,11 +230,19 @@
   addition. Summing odd digits, doubling four times, then summing even digits
   reduces each operation from 256 point doublings to four without introducing
   a secret-indexed lookup. Arbitrary-point multiplication retains the
-  branch-free 256-bit ladder for secret scalars. Verification additionally
-  uses a 4-bit window only where both the point and scalar are public: the
-  fixed subgroup-order check and `k*A`, where `k = SHA-512(R || A || M) mod L`.
-  The optional radix-51 field layout retains the unified-addition ladder for
-  arbitrary points; its fixed-base signed-radix-16 path remains enabled.
+  branch-free 256-bit ladder for secret scalars. Verification uses public
+  sliding-window digits to compute `S*B - k*A`, where `k = SHA-512(R || A ||
+  M) mod L`, in one shared doubling chain. Each `EdPublicKey` prepares and
+  retains the eight odd multiples of `A`, so repeated verifications do not
+  rebuild the variable-base table. Imported public keys still pass the full
+  `L*A` subgroup check. Signature `R` decoding retains canonical, on-curve,
+  and identity checks but omits a separate `L*R`: with `A` already in the
+  subgroup, the exact uncofactored equation can accept only an `R` in the same
+  subgroup. An order-two `R` negative test covers that inference. On 64-bit
+  GCC/Clang builds, the default radix-51 field layout uses five unsigned limbs
+  and native 64-by-64-to-128 products. Targets without that product retain the
+  signed ten-limb radix-2^25.5 fallback. Both layouts use the same fixed-base
+  signed-radix-16 path.
 - **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`** define
   `Ed448` (EdDSA over edwards448/"Ed448-Goldilocks", RFC 8032) --
   structurally `Ed25519`'s twin, with its own field/point arithmetic (a
@@ -257,29 +266,31 @@
   bytes). Verified against RFC 8032's own TEST 1 vector, for the same
   reason as `Ed25519`.
 
-  `scalarMul()`/`scalarMulBase()` use extended projective coordinates with
-  their own branch-free ladder and fixed-base table; they do not share
-  Ed25519's newer signed-radix-16 table. A dedicated `a = 1` doubling formula
-  replaces unified addition for every doubling. Verification uses a 4-bit
-  window for the public subgroup-order check and a public-scalar Straus loop
-  to compute `S*B - k*A` with one shared doubling chain. Secret scalar paths
-  continue to use the ladder.
-  Edwards448 is *untwisted* (`a = 1`,
+  Field operations live in `src/crypto/asyms/fe448.hpp/.cpp`. Native
+  64-by-64-to-128 targets use eight radix-2^56 limbs; the portable fallback
+  uses sixteen radix-2^28 limbs so its products fit in `uint64_t`. Fixed
+  exponent chains implement inversion and point recovery without general
+  big-number division. Edwards448 is *untwisted* (`a = 1`,
   vs. edwards25519's `a = -1`), so `pointAddProj()` here uses the general
   `a`-parametrized addition law rather than `Ed25519`'s `a = -1`-specialized
   one -- derived directly from the affine addition law (see this function's
   own comment in `ed448.cpp`) rather than transcribed from a reference,
   since the well-known named formula for this shape is specific to `a =
-  -1`. `EdPointProj`'s four coordinates are held in **Montgomery form**
-  (`CMontgomery`, see `utils/montgomery.hpp` above) for the same reason
-  `CEcCurve`'s `ECPointJac` is, with `toProjective()`/`toAffine()` as the
-  conversion boundary; unlike `CEcCurve`, the context here is a
-  construct-on-first-use singleton next to `fieldPrime()`, since edwards448
-  has exactly one field prime and it is not a mutable public field. `d` is
-  cached in Montgomery form alongside it (`curveDMont()`), and `fieldSqrt()`'s
-  `x2^((p+1)/4)` runs through `CMontgomery::modExp()` -- ~446 squarings and
-  ~223 multiplies that each used to be followed by a long division, once per
-  decoded point, i.e. once per `verify()`.
+  -1`. Extended projective coordinates, a dedicated `a = 1` doubling formula,
+  and mixed affine/projective addition keep inversions out of scalar loops.
+
+  The private key caches its expanded RFC 8032 scalar and prefix. A
+  process-wide 10-column comb table accelerates base-point multiplication,
+  and each public key retains an equivalent table for repeated verification;
+  table construction batch-normalizes all 1,024 entries with one inversion.
+  Verification evaluates `S*B - k*A` with 45 shared doublings and at most 90
+  mixed additions. Imported public keys still pass `L*A == 0`. Signature `R`
+  decoding keeps canonical, on-curve, and identity checks but omits a separate
+  `L*R`: the exact uncofactored equation with `A` already in the subgroup can
+  accept only an `R` in the same subgroup, and an order-two `R` negative test
+  covers that boundary. Comb indices depend on the scalar, and the group-order
+  scalar arithmetic still uses `CBigNum`; Ed448 signing is therefore not
+  claimed constant-time.
 - **`crypto/asyms/x25519.hpp` / `src/crypto/asyms/x25519.cpp`** define
   `X25519` (Diffie-Hellman key agreement over Curve25519, RFC 7748) --
   same field prime as `Ed25519` (`2^255 - 19`), and in fact the same field
@@ -289,11 +300,12 @@
   not full affine point addition. `sign()`/`verify()` are left at
   `IAsymmetricContext`'s
   `ERET_NOTSUP` defaults (no signing operation exists); only
-  `deriveSharedSecret()` is overridden. A private key's raw 32 bytes are
-  stored unclamped and clamped at each scalar-mult call site instead
-  (RFC 7748 5's own recommended split of responsibility), so
-  `serialize()`/`createPrivateKey()` always round-trip the caller's exact
-  original bytes. `deriveSharedSecret()` rejects an all-zero computed
+  `deriveSharedSecret()` is overridden. A private key retains both the caller's
+  raw 32 bytes and a clamped working copy, so `serialize()`/`createPrivateKey()`
+  round-trip the exact original bytes while repeated scalar multiplications do
+  not repeat the clamp and secure-copy work. A context also caches successful
+  concrete-type checks for its bound private key and the current peer key.
+  `deriveSharedSecret()` rejects an all-zero computed
   secret (RFC 7748 6.1 -- a low-order peer point, e.g. `u = 0`) rather than
   returning predictable output. Keys serialize as RFC 7748's raw 32-byte
   u-coordinate/scalar encodings, no DER. Verified against RFC 7748 5.2's

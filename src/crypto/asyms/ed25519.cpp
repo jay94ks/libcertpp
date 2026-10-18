@@ -66,6 +66,28 @@ namespace crypto {
             Fe25519 x, y, z, t;
         };
 
+        /* Cached projective and affine-precomputed forms used by public verification and the
+         * fixed-base table. Keeping y+x, y-x and 2*d*x*y ready removes one or two field
+         * multiplications from every addition compared with two generic projective points. */
+        struct EdPointCached {
+            Fe25519 yPlusX, yMinusX, z, t2d;
+        };
+
+        struct EdPointPrecomp {
+            Fe25519 yPlusX, yMinusX, xy2d;
+        };
+
+        struct EdPointP2 {
+            Fe25519 x, y, z;
+        };
+
+        /* Completed coordinates: affine x = X/Z and y = Y/T. They let a doubling remain in
+         * its four-square form until the next addition decision, saving one field multiply per
+         * bit in verification-time scalar multiplication. */
+        struct EdPointP1P1 {
+            Fe25519 x, y, z, t;
+        };
+
         /* Everything specific to implementing edwards25519 (RFC 8032): field/group constants,
          * point arithmetic (affine and extended-projective), point encode/decode, and the
          * SHA-512-based key-derivation RFC 8032 ties to this specific curve -- bundled into one
@@ -83,8 +105,6 @@ namespace crypto {
          * fixed-base table below have since been tightened further without changing that split. */
         class Edwards25519 {
         private:
-            static constexpr size_t PUBLIC_WINDOW = 4;
-            static constexpr size_t PUBLIC_TABLE_SIZE = size_t(1) << PUBLIC_WINDOW; // 16
             static constexpr size_t BASE_TABLE_POSITIONS = 32;
             static constexpr size_t BASE_TABLE_ENTRIES = 8;
 
@@ -141,12 +161,30 @@ namespace crypto {
                 return out;
             }
 
+            static EdPoint toAffine(const EdPointP2& pt) {
+                Fe25519 zInv;
+                Fe25519::invert(zInv, pt.z);
+
+                EdPoint out;
+                Fe25519::mul(out.x, pt.x, zInv);
+                Fe25519::mul(out.y, pt.y, zInv);
+                return out;
+            }
+
             static EdPointProj identityPointProj() {
                 EdPointProj out;
                 out.x.setZero();
                 out.y.setOne();
                 out.z.setOne();
                 out.t.setZero();
+                return out;
+            }
+
+            static EdPointP2 identityPointP2() {
+                EdPointP2 out;
+                out.x.setZero();
+                out.y.setOne();
+                out.z.setOne();
                 return out;
             }
 
@@ -162,27 +200,27 @@ namespace crypto {
                 return v;
             }
 
-            /* Extended-coordinates unified addition ("add-2008-hwcd-3"): like the affine
-             * pointAdd() below, this same formula handles P1 + P1 (doubling) too -- it's a direct
+            /* Extended-coordinates unified addition ("add-2008-hwcd-3"): this formula handles
+             * P1 + P1 (doubling) too -- it is a direct
              * coordinate transform of the same complete twisted Edwards addition law, just
              * avoiding a modular inversion per call by carrying the common denominator in Z
              * instead of dividing it out immediately. pointDoubleProj() handles the much more
              * frequent same-point case with its cheaper dedicated formula.
              *
              * Nine field multiplications and seven additions/subtractions, all on Fe25519, and
-             * no reduction step of its own -- every Fe25519 entry point leaves its result
-             * carry-reduced, which is what removed the mod() that used to follow each one. */
+             * no general modular reduction step of its own. The loose sums feed directly into a
+             * multiplication; each multiplied result is carry-reduced for the next formula. */
             static EdPointProj pointAddProj(const EdPointProj& p1, const EdPointProj& p2) {
                 Fe25519 lhs, rhs;
 
-                Fe25519::sub(lhs, p1.y, p1.x);
-                Fe25519::sub(rhs, p2.y, p2.x);
+                Fe25519::subLoose(lhs, p1.y, p1.x);
+                Fe25519::subLoose(rhs, p2.y, p2.x);
 
                 Fe25519 A;
                 Fe25519::mul(A, lhs, rhs);
 
-                Fe25519::add(lhs, p1.y, p1.x);
-                Fe25519::add(rhs, p2.y, p2.x);
+                Fe25519::addLoose(lhs, p1.y, p1.x);
+                Fe25519::addLoose(rhs, p2.y, p2.x);
 
                 Fe25519 B;
                 Fe25519::mul(B, lhs, rhs);
@@ -196,16 +234,176 @@ namespace crypto {
                 Fe25519::add(D, D, D);
 
                 Fe25519 E, F, G, H;
-                Fe25519::sub(E, B, A);
-                Fe25519::sub(F, D, C);
-                Fe25519::add(G, D, C);
-                Fe25519::add(H, B, A);
+                Fe25519::subLoose(E, B, A);
+                Fe25519::subLoose(F, D, C);
+                Fe25519::addLoose(G, D, C);
+                Fe25519::addLoose(H, B, A);
 
                 EdPointProj out;
                 Fe25519::mul(out.x, E, F);
                 Fe25519::mul(out.y, G, H);
                 Fe25519::mul(out.z, F, G);
                 Fe25519::mul(out.t, E, H);
+                return out;
+            }
+
+            static EdPointCached toCached(const EdPointProj& pt) {
+                EdPointCached out;
+                Fe25519::addLoose(out.yPlusX, pt.y, pt.x);
+                Fe25519::subLoose(out.yMinusX, pt.y, pt.x);
+                out.z = pt.z;
+                Fe25519::mul(out.t2d, pt.t, twoCurveD());
+                return out;
+            }
+
+            static EdPointProj pointAddCached(
+                const EdPointProj& p1, const EdPointCached& p2
+            ) {
+                Fe25519 lhs, rhs;
+                Fe25519::subLoose(lhs, p1.y, p1.x);
+                Fe25519::addLoose(rhs, p1.y, p1.x);
+
+                Fe25519 A, B, C, D;
+                Fe25519::mul(A, lhs, p2.yMinusX);
+                Fe25519::mul(B, rhs, p2.yPlusX);
+                Fe25519::mul(C, p1.t, p2.t2d);
+                Fe25519::mul(D, p1.z, p2.z);
+                Fe25519::add(D, D, D);
+
+                Fe25519 E, F, G, H;
+                Fe25519::subLoose(E, B, A);
+                Fe25519::subLoose(F, D, C);
+                Fe25519::addLoose(G, D, C);
+                Fe25519::addLoose(H, B, A);
+
+                EdPointProj out;
+                Fe25519::mul(out.x, E, F);
+                Fe25519::mul(out.y, G, H);
+                Fe25519::mul(out.z, F, G);
+                Fe25519::mul(out.t, E, H);
+                return out;
+            }
+
+            static EdPointProj pointAddPrecomp(
+                const EdPointProj& p1, const EdPointPrecomp& p2
+            ) {
+                Fe25519 lhs, rhs;
+                Fe25519::subLoose(lhs, p1.y, p1.x);
+                Fe25519::addLoose(rhs, p1.y, p1.x);
+
+                Fe25519 A, B, C, D;
+                Fe25519::mul(A, lhs, p2.yMinusX);
+                Fe25519::mul(B, rhs, p2.yPlusX);
+                Fe25519::mul(C, p1.t, p2.xy2d);
+                Fe25519::add(D, p1.z, p1.z);
+
+                Fe25519 E, F, G, H;
+                Fe25519::subLoose(E, B, A);
+                Fe25519::subLoose(F, D, C);
+                Fe25519::addLoose(G, D, C);
+                Fe25519::addLoose(H, B, A);
+
+                EdPointProj out;
+                Fe25519::mul(out.x, E, F);
+                Fe25519::mul(out.y, G, H);
+                Fe25519::mul(out.z, F, G);
+                Fe25519::mul(out.t, E, H);
+                return out;
+            }
+
+            static EdPointCached negate(const EdPointCached& pt) {
+                EdPointCached out;
+                out.yPlusX = pt.yMinusX;
+                out.yMinusX = pt.yPlusX;
+                out.z = pt.z;
+                Fe25519::neg(out.t2d, pt.t2d);
+                return out;
+            }
+
+            static EdPointPrecomp negate(const EdPointPrecomp& pt) {
+                EdPointPrecomp out;
+                out.yPlusX = pt.yMinusX;
+                out.yMinusX = pt.yPlusX;
+                Fe25519::neg(out.xy2d, pt.xy2d);
+                return out;
+            }
+
+            static EdPointP2 toP2(const EdPointP1P1& pt) {
+                EdPointP2 out;
+                Fe25519::mul(out.x, pt.x, pt.t);
+                Fe25519::mul(out.y, pt.y, pt.z);
+                Fe25519::mul(out.z, pt.z, pt.t);
+                return out;
+            }
+
+            static EdPointProj toP3(const EdPointP1P1& pt) {
+                EdPointProj out;
+                Fe25519::mul(out.x, pt.x, pt.t);
+                Fe25519::mul(out.y, pt.y, pt.z);
+                Fe25519::mul(out.z, pt.z, pt.t);
+                Fe25519::mul(out.t, pt.x, pt.y);
+                return out;
+            }
+
+            static EdPointP1P1 pointDoubleP2(const EdPointP2& pt) {
+                EdPointP1P1 out;
+                Fe25519::square(out.x, pt.x);
+                Fe25519::square(out.z, pt.y);
+                Fe25519::square(out.t, pt.z);
+                Fe25519::add(out.t, out.t, out.t);
+
+                Fe25519 sum, sumSquared;
+                Fe25519::addLoose(sum, pt.x, pt.y);
+                Fe25519::square(sumSquared, sum);
+                Fe25519::add(out.y, out.z, out.x);
+                Fe25519::sub(out.z, out.z, out.x);
+                Fe25519::sub(out.x, sumSquared, out.y);
+                Fe25519::sub(out.t, out.t, out.z);
+                return out;
+            }
+
+            static EdPointP1P1 pointAddCachedP1P1(
+                const EdPointProj& p1, const EdPointCached& p2
+            ) {
+                Fe25519 yMinusX, yPlusX;
+                Fe25519::subLoose(yMinusX, p1.y, p1.x);
+                Fe25519::addLoose(yPlusX, p1.y, p1.x);
+
+                Fe25519 A, B, C, D;
+                Fe25519::mul(A, yMinusX, p2.yMinusX);
+                Fe25519::mul(B, yPlusX, p2.yPlusX);
+                Fe25519::mul(C, p1.t, p2.t2d);
+                Fe25519::mul(D, p1.z, p2.z);
+                Fe25519::add(D, D, D);
+
+                EdPointP1P1 out;
+                Fe25519::subLoose(out.x, B, A);
+                Fe25519::addLoose(out.y, B, A);
+                Fe25519::addLoose(out.z, D, C);
+                Fe25519::subLoose(out.t, D, C);
+                return out;
+            }
+
+            static EdPointP1P1 pointAddPrecompP1P1(
+                const EdPointProj& p1, const EdPointPrecomp& p2
+            ) {
+                Fe25519 yMinusX, yPlusX;
+                Fe25519::subLoose(yMinusX, p1.y, p1.x);
+                Fe25519::addLoose(yPlusX, p1.y, p1.x);
+
+                Fe25519 A, B, C;
+                Fe25519::mul(A, yMinusX, p2.yMinusX);
+                Fe25519::mul(B, yPlusX, p2.yPlusX);
+                Fe25519::mul(C, p1.t, p2.xy2d);
+
+                Fe25519 D;
+                Fe25519::add(D, p1.z, p1.z);
+
+                EdPointP1P1 out;
+                Fe25519::subLoose(out.x, B, A);
+                Fe25519::addLoose(out.y, B, A);
+                Fe25519::addLoose(out.z, D, C);
+                Fe25519::subLoose(out.t, D, C);
                 return out;
             }
 
@@ -225,7 +423,7 @@ namespace crypto {
                 Fe25519::neg(D, A);
 
                 Fe25519 sum;
-                Fe25519::add(sum, pt.x, pt.y);
+                Fe25519::addLoose(sum, pt.x, pt.y);
                 Fe25519::square(E, sum);
                 Fe25519::sub(E, E, A);
                 Fe25519::sub(E, E, B);
@@ -314,14 +512,8 @@ namespace crypto {
                     return false;
                 }
 
-                Fe25519 vInv;
-                Fe25519::invert(vInv, v);
-
-                Fe25519 x2;
-                Fe25519::mul(x2, u, vInv);
-
                 Fe25519 x;
-                if (!Fe25519::squareRoot(x, x2)) {
+                if (!Fe25519::squareRootRatio(x, u, v)) {
                     return false;
                 }
 
@@ -359,7 +551,7 @@ namespace crypto {
                 return b;
             }
 
-            using BaseTableRow = std::array<EdPointProj, BASE_TABLE_ENTRIES>;
+            using BaseTableRow = std::array<EdPointPrecomp, BASE_TABLE_ENTRIES>;
             using BaseTable = std::array<BaseTableRow, BASE_TABLE_POSITIONS>;
 
             /* Row i contains (1..8) * 256^i * B. This is the standard signed-radix-16 Ed25519
@@ -369,13 +561,15 @@ namespace crypto {
             static const BaseTable& baseTable() {
                 static const BaseTable table = [] {
                     BaseTable t;
+                    std::array<EdPointProj, BASE_TABLE_POSITIONS * BASE_TABLE_ENTRIES> points;
                     EdPointProj positionBase = toProjective(basePoint());
 
                     for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
-                        t[position][0] = positionBase;
+                        const size_t offset = position * BASE_TABLE_ENTRIES;
+                        points[offset] = positionBase;
                         for (size_t multiple = 1; multiple < BASE_TABLE_ENTRIES; ++multiple) {
-                            t[position][multiple] =
-                                pointAddProj(t[position][multiple - 1], positionBase);
+                            points[offset + multiple] =
+                                pointAddProj(points[offset + multiple - 1], positionBase);
                         }
 
                         if (position + 1 < BASE_TABLE_POSITIONS) {
@@ -383,6 +577,35 @@ namespace crypto {
                                 positionBase = pointDoubleProj(positionBase);
                             }
                         }
+                    }
+
+                    /* Batch-normalize the 256 generated points with one inversion. The table is
+                     * initialized once; each subsequent mixed addition saves two field
+                     * multiplications and the stored table is smaller than its projective form. */
+                    std::array<Fe25519, BASE_TABLE_POSITIONS * BASE_TABLE_ENTRIES> prefixes;
+                    Fe25519 product;
+                    product.setOne();
+                    for (size_t i = 0; i < points.size(); ++i) {
+                        prefixes[i] = product;
+                        Fe25519::mul(product, product, points[i].z);
+                    }
+                    Fe25519::invert(product, product);
+
+                    for (size_t i = points.size(); i-- > 0; ) {
+                        Fe25519 zInv;
+                        Fe25519::mul(zInv, product, prefixes[i]);
+                        Fe25519::mul(product, product, points[i].z);
+
+                        Fe25519 x, y, xy;
+                        Fe25519::mul(x, points[i].x, zInv);
+                        Fe25519::mul(y, points[i].y, zInv);
+                        Fe25519::mul(xy, x, y);
+
+                        EdPointPrecomp& out =
+                            t[i / BASE_TABLE_ENTRIES][i % BASE_TABLE_ENTRIES];
+                        Fe25519::add(out.yPlusX, y, x);
+                        Fe25519::sub(out.yMinusX, y, x);
+                        Fe25519::mul(out.xy2d, xy, twoCurveD());
                     }
 
                     return t;
@@ -398,25 +621,39 @@ namespace crypto {
                 return uint32_t(0) - (nonZero ^ 1u);
             }
 
+            static void conditionalAssign(
+                uint32_t mask, Fe25519& target, const Fe25519& source
+            ) {
+                const Fe25519::Limb limbMask = Fe25519::Limb(int32_t(mask));
+                for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
+                    target.limbs[i] ^= limbMask & (target.limbs[i] ^ source.limbs[i]);
+                }
+            }
+
             /* Selects digit * 256^position * B by scanning the full row. digit is in [-8, 8].
              * Neither the table address nor the operation count depends on the secret digit. */
-            static EdPointProj selectBasePoint(size_t position, int16_t digit) {
+            static EdPointPrecomp selectBasePoint(size_t position, int16_t digit) {
                 const uint32_t encoded = uint32_t(int32_t(digit));
                 const uint32_t negative = encoded >> 31;
                 const uint32_t signMask = uint32_t(0) - negative;
                 const uint32_t magnitude = (encoded ^ signMask) + negative;
 
-                EdPointProj selected = identityPointProj();
+                EdPointPrecomp selected;
+                selected.yPlusX.setOne();
+                selected.yMinusX.setOne();
+                selected.xy2d.setZero();
                 const BaseTableRow& row = baseTable()[position];
                 for (uint32_t i = 1; i <= BASE_TABLE_ENTRIES; ++i) {
-                    EdPointProj candidate = row[i - 1];
-                    condSwapPointProj(equalMask(magnitude, i), selected, candidate);
+                    const uint32_t mask = equalMask(magnitude, i);
+                    conditionalAssign(mask, selected.yPlusX, row[i - 1].yPlusX);
+                    conditionalAssign(mask, selected.yMinusX, row[i - 1].yMinusX);
+                    conditionalAssign(mask, selected.xy2d, row[i - 1].xy2d);
                 }
 
-                EdPointProj negated = selected;
-                Fe25519::neg(negated.x, selected.x);
-                Fe25519::neg(negated.t, selected.t);
-                condSwapPointProj(signMask, selected, negated);
+                EdPointPrecomp negated = negate(selected);
+                conditionalAssign(signMask, selected.yPlusX, negated.yPlusX);
+                conditionalAssign(signMask, selected.yMinusX, negated.yMinusX);
+                conditionalAssign(signMask, selected.xy2d, negated.xy2d);
                 return selected;
             }
 
@@ -448,6 +685,32 @@ namespace crypto {
                 return pt.x.isZero() && pt.y.isEqual(one);
             }
 
+            static bool isIdentity(const EdPointProj& pt) {
+                Fe25519 difference;
+                Fe25519::sub(difference, pt.y, pt.z);
+                return pt.x.isZero() && difference.isZero();
+            }
+
+            static bool isIdentity(const EdPointP2& pt) {
+                Fe25519 difference;
+                Fe25519::sub(difference, pt.y, pt.z);
+                return pt.x.isZero() && difference.isZero();
+            }
+
+            static bool isEqual(const EdPointProj& projective, const EdPoint& affine) {
+                Fe25519 x, y;
+                Fe25519::mul(x, affine.x, projective.z);
+                Fe25519::mul(y, affine.y, projective.z);
+                return projective.x.isEqual(x) && projective.y.isEqual(y);
+            }
+
+            static bool isEqual(const EdPointP2& projective, const EdPoint& affine) {
+                Fe25519 x, y;
+                Fe25519::mul(x, affine.x, projective.z);
+                Fe25519::mul(y, affine.y, projective.z);
+                return projective.x.isEqual(x) && projective.y.isEqual(y);
+            }
+
             /* Checks -x^2 + y^2 == 1 + d*x^2*y^2 (mod p), i.e. edwards25519's curve equation
              * (RFC 8032 5.1). Stated in that literal form rather than the rearrangement the
              * CBigNum version used, which existed only to dodge a modNeg(); over signed limbs a
@@ -471,91 +734,184 @@ namespace crypto {
                 return lhs.isEqual(rhs);
             }
 
-            /* Twisted Edwards addition (a = -1). Unconditionally complete (no exceptional input
-             * pairs, including P + P) since d is not a square mod p for edwards25519 -- unlike
-             * short-Weierstrass addition, this same formula handles doubling.
-             *
-             * Two inversions per call, so this is for the places that add a handful of points and
-             * want the result in affine form (building the base table, and combining verify()'s
-             * two terms); everything in a loop uses pointAddProj() instead. */
-            static EdPoint pointAdd(const EdPoint& p1, const EdPoint& p2) {
-                Fe25519 one;
-                one.setOne();
-
-                Fe25519 x1y2, y1x2, y1y2, x1x2;
-                Fe25519::mul(x1y2, p1.x, p2.y);
-                Fe25519::mul(y1x2, p1.y, p2.x);
-                Fe25519::mul(y1y2, p1.y, p2.y);
-                Fe25519::mul(x1x2, p1.x, p2.x);
-
-                Fe25519 dxxyy;
-                Fe25519::mul(dxxyy, curveD(), x1x2);
-                Fe25519::mul(dxxyy, dxxyy, y1y2);
-
-                Fe25519 xNum, xDen, yNum, yDen;
-                Fe25519::add(xNum, x1y2, y1x2);
-                Fe25519::add(xDen, one, dxxyy);
-                Fe25519::add(yNum, y1y2, x1x2);
-                Fe25519::sub(yDen, one, dxxyy);
-
-                Fe25519 xDenInv, yDenInv;
-                Fe25519::invert(xDenInv, xDen);
-                Fe25519::invert(yDenInv, yDen);
-
-                EdPoint out;
-                Fe25519::mul(out.x, xNum, xDenInv);
-                Fe25519::mul(out.y, yNum, yDenInv);
-                return out;
-            }
-
             static EdPoint scalarMul(const EdPoint& pt, const CBigNum& k) {
                 return toAffine(scalarMulProj(toProjective(pt), k));
+            }
+
+            static void slidePublic(std::array<int8_t, SCALAR_BITS>& out, const CBigNum& k) {
+                for (size_t i = 0; i < SCALAR_BITS; ++i) {
+                    out[i] = k.testBit(i) ? int8_t(1) : int8_t(0);
+                }
+
+                for (size_t i = 0; i < SCALAR_BITS; ++i) {
+                    if (out[i] == 0) {
+                        continue;
+                    }
+                    for (size_t distance = 1;
+                         distance <= 6 && i + distance < SCALAR_BITS; ++distance) {
+                        if (out[i + distance] == 0) {
+                            continue;
+                        }
+
+                        const int shifted = int(out[i + distance]) << distance;
+                        if (int(out[i]) + shifted <= 15) {
+                            out[i] = int8_t(int(out[i]) + shifted);
+                            out[i + distance] = 0;
+                        } else if (int(out[i]) - shifted >= -15) {
+                            out[i] = int8_t(int(out[i]) - shifted);
+                            for (size_t carry = i + distance; carry < SCALAR_BITS; ++carry) {
+                                if (out[carry] == 0) {
+                                    out[carry] = 1;
+                                    break;
+                                }
+                                out[carry] = 0;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
 
             /* Windowed multiplication for verification-time public scalars and points. Unlike
              * scalarMulProj(), this indexes a table with scalar bits, so it must never receive a
              * private scalar. Its current callers use either the fixed public group order L or
-             * k = SHA-512(R || A || message) mod L; avoiding the ladder's unconditional addition
-             * for every bit is safe there and removes 178 point additions per multiplication.
+             * k = SHA-512(R || A || message) mod L. Avoiding the ladder's unconditional addition
+             * for every bit is safe there and replaces most additions with a public sliding-window
+             * table lookup.
              *
              * The optional radix-51 field layout retains the ladder. The fixed-base vectors pass
              * there, but the dedicated-doubling/window combination does not retain the correct
              * result across a full arbitrary-point multiplication. Keeping the proven path is
              * preferable to making an opt-in layout silently reject a valid signature. */
-            static EdPoint scalarMulPublic(const EdPoint& pt, const CBigNum& k) {
+            static EdPointP2 scalarMulPublicProj(const EdPoint& pt, const CBigNum& k) {
 #if defined(CERTPP_FE25519_RADIX51)
-                return scalarMul(pt, k);
+                const EdPointProj result = scalarMulProj(toProjective(pt), k);
+                return EdPointP2{ result.x, result.y, result.z };
 #else
-                EdPointProj table[PUBLIC_TABLE_SIZE];
-                table[0] = identityPointProj();
-                table[1] = toProjective(pt);
-                for (size_t i = 2; i < PUBLIC_TABLE_SIZE; ++i) {
-                    table[i] = pointAddProj(table[i - 1], table[1]);
+                std::array<int8_t, SCALAR_BITS> digits;
+                slidePublic(digits, k);
+
+                const std::array<EdPointCached, 8> oddTable = publicOddTable(pt);
+
+                size_t top = SCALAR_BITS;
+                while (top != 0 && digits[top - 1] == 0) {
+                    --top;
                 }
 
-                EdPointProj result = identityPointProj();
-                for (size_t w = SCALAR_BITS / PUBLIC_WINDOW; w-- > 0; ) {
-                    for (size_t i = 0; i < PUBLIC_WINDOW; ++i) {
-                        result = pointDoubleProj(result);
+                EdPointP2 result = identityPointP2();
+                while (top-- != 0) {
+                    EdPointP1P1 completed = pointDoubleP2(result);
+                    const int digit = digits[top];
+                    if (digit != 0) {
+                        const size_t index = size_t((digit < 0 ? -digit : digit) / 2);
+                        EdPointCached selected = oddTable[index];
+                        if (digit < 0) {
+                            selected = negate(selected);
+                        }
+                        completed = pointAddCachedP1P1(toP3(completed), selected);
                     }
+                    result = toP2(completed);
+                }
 
-                    const size_t base = w * PUBLIC_WINDOW;
-                    size_t windowValue = 0;
-                    for (size_t b = 0; b < PUBLIC_WINDOW; ++b) {
-                        if (k.testBit(base + b)) {
-                            windowValue |= size_t(1) << b;
+                return result;
+#endif
+            }
+
+            static EdPoint scalarMulPublic(const EdPoint& pt, const CBigNum& k) {
+                return toAffine(scalarMulPublicProj(pt, k));
+            }
+
+            static EdPointPrecomp toPrecomp(const EdPointProj& pt) {
+                const EdPoint affine = toAffine(pt);
+                EdPointPrecomp out;
+                Fe25519::add(out.yPlusX, affine.y, affine.x);
+                Fe25519::sub(out.yMinusX, affine.y, affine.x);
+                Fe25519 xy;
+                Fe25519::mul(xy, affine.x, affine.y);
+                Fe25519::mul(out.xy2d, xy, twoCurveD());
+                return out;
+            }
+
+            static const std::array<EdPointPrecomp, 8>& baseOddTable() {
+                static const std::array<EdPointPrecomp, 8> table = [] {
+                    std::array<EdPointPrecomp, 8> out;
+                    EdPointProj odd = toProjective(basePoint());
+                    const EdPointCached twice = toCached(pointDoubleProj(odd));
+                    for (size_t i = 0; i < out.size(); ++i) {
+                        out[i] = toPrecomp(odd);
+                        if (i + 1 != out.size()) {
+                            odd = pointAddCached(odd, twice);
                         }
                     }
+                    return out;
+                }();
+                return table;
+            }
 
-                    // The scalar and point are public in this helper, so skipping a zero window
-                    // leaks nothing and avoids an identity addition.
-                    if (windowValue != 0) {
-                        result = pointAddProj(result, table[windowValue]);
+            static std::array<EdPointCached, 8> publicOddTable(const EdPoint& pt) {
+                std::array<EdPointCached, 8> out;
+                EdPointProj odd = toProjective(pt);
+                const EdPointCached twice = toCached(pointDoubleProj(odd));
+                for (size_t i = 0; i < out.size(); ++i) {
+                    out[i] = toCached(odd);
+                    if (i + 1 != out.size()) {
+                        odd = pointAddCached(odd, twice);
                     }
                 }
+                return out;
+            }
 
-                return toAffine(result);
-#endif
+            /* Computes baseScalar*B - pointScalar*pt with the verification scalars' sliding
+             * windows sharing one doubling chain. Both scalars are public, so table indices,
+             * signs and skipped zero digits carry no secret information. The odd multiples of
+             * the public key are prepared once when that key is created and reused by every
+             * verification through the key. */
+            static EdPointP2 doubleScalarMulPublic(
+                const CBigNum& baseScalar,
+                const std::array<EdPointCached, 8>& pointOdd,
+                const CBigNum& pointScalar
+            ) {
+                std::array<int8_t, SCALAR_BITS> pointDigits;
+                std::array<int8_t, SCALAR_BITS> baseDigits;
+                slidePublic(pointDigits, pointScalar);
+                slidePublic(baseDigits, baseScalar);
+
+                size_t top = SCALAR_BITS;
+                while (top != 0 && pointDigits[top - 1] == 0 && baseDigits[top - 1] == 0) {
+                    --top;
+                }
+
+                EdPointP2 result = identityPointP2();
+                const std::array<EdPointPrecomp, 8>& baseOdd = baseOddTable();
+                while (top-- != 0) {
+                    EdPointP1P1 completed = pointDoubleP2(result);
+
+                    const int pointDigit = pointDigits[top];
+                    if (pointDigit != 0) {
+                        const size_t index = size_t((pointDigit < 0 ? -pointDigit : pointDigit) / 2);
+                        EdPointCached selected = pointOdd[index];
+                        // The equation subtracts k*A, reversing the digit's own sign.
+                        if (pointDigit > 0) {
+                            selected = negate(selected);
+                        }
+                        completed = pointAddCachedP1P1(toP3(completed), selected);
+                    }
+
+                    const int baseDigit = baseDigits[top];
+                    if (baseDigit != 0) {
+                        const size_t index = size_t((baseDigit < 0 ? -baseDigit : baseDigit) / 2);
+                        EdPointPrecomp selected = baseOdd[index];
+                        if (baseDigit < 0) {
+                            selected = negate(selected);
+                        }
+                        completed = pointAddPrecompP1P1(toP3(completed), selected);
+                    }
+
+                    result = toP2(completed);
+                }
+
+                return result;
             }
 
             /* Fixed-base multiplication via the signed-radix-16 table above. Every digit scans
@@ -579,14 +935,14 @@ namespace crypto {
 
                 EdPointProj result = identityPointProj();
                 for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
-                    result = pointAddProj(
+                    result = pointAddPrecomp(
                         result, selectBasePoint(position, digits[2 * position + 1]));
                 }
                 for (size_t i = 0; i < 4; ++i) {
                     result = pointDoubleProj(result);
                 }
                 for (size_t position = 0; position < BASE_TABLE_POSITIONS; ++position) {
-                    result = pointAddProj(
+                    result = pointAddPrecomp(
                         result, selectBasePoint(position, digits[2 * position]));
                 }
 
@@ -612,8 +968,13 @@ namespace crypto {
             }
 
             /* Decodes a point per RFC 8032 5.1.3, validating it lies on the curve (recoverX()
-             * already guarantees this by construction, but the check is cheap and explicit). */
-            static bool decodePoint(SReadOnlyByteSpan bytes32, EdPoint& out) {
+             * already guarantees this by construction, but the check is cheap and explicit).
+             * Imported public keys require the prime-order subgroup. Verification may skip the
+             * repeated subgroup multiplication for R because A is already in that subgroup and
+             * the exact equation S*B == R + k*A can hold only when R is there too. */
+            static bool decodePoint(
+                SReadOnlyByteSpan bytes32, EdPoint& out, bool requireMainSubgroup = true
+            ) {
                 if (bytes32.size != 32) {
                     return false;
                 }
@@ -652,10 +1013,10 @@ namespace crypto {
                 // message (lhs == scalarMul(0) == identity, rhs == pointAdd(identity,
                 // scalarMul(identity, k)) == identity for every k) -- a universal forgery in the
                 // same spirit as CVE-2022-21449's missing r/s == 0 checks, just via an unchecked
-                // low-order point instead of a raw zero. Both checks already existed in
-                // checkPrivateKey() for self-generated keys (see its own identical pair, #1 and
-                // #4); this extends them to every decoded point (both an imported public key via
-                // createPublicKey(), and the signature's own R component in verify()).
+                // low-order point instead of a raw zero. Public-key decoding also performs the
+                // full subgroup check below. Verification decodes R with requireMainSubgroup ==
+                // false and relies on its exact, uncofactored equation to reject every R outside
+                // the subgroup; the identity remains an explicit rejection on both paths.
                 if (isIdentity(candidate)) {
                     return false; // the identity has order 1, which trivially "divides" L too --
                                    // the subgroup check below can't tell it apart from a real point.
@@ -665,7 +1026,8 @@ namespace crypto {
                 // has order exactly L), so L*point == identity for a legitimate point;
                 // edwards25519's cofactor is 8 and gcd(8, L) == 1, so for a genuine low-order
                 // point of order h' | 8 (h' > 1), L mod h' is invertible and L*point != identity.
-                if (!isIdentity(scalarMulPublic(candidate, groupOrder()))) {
+                if (requireMainSubgroup
+                    && !isIdentity(scalarMulPublicProj(candidate, groupOrder()))) {
                     return false;
                 }
 
@@ -712,10 +1074,13 @@ namespace crypto {
         class EdPublicKey : public IPublicKey {
         private:
             EdPoint _point;
+            std::array<EdPointCached, 8> _oddTable;
             uint8_t _encoded[32];
 
         public:
-            EdPublicKey(EdPoint point, const uint8_t encoded[32]) : _point(std::move(point)) {
+            EdPublicKey(EdPoint point, const uint8_t encoded[32])
+                : _point(std::move(point)),
+                  _oddTable(Edwards25519::publicOddTable(_point)) {
                 algorithm(EASYM_ED25519);
                 std::memcpy(_encoded, encoded, 32);
             }
@@ -744,18 +1109,28 @@ namespace crypto {
             }
 
             const EdPoint& point() const { return _point; }
+            const std::array<EdPointCached, 8>& oddTable() const { return _oddTable; }
             const uint8_t* encoded() const { return _encoded; }
         };
 
         class EdPrivateKey : public IPrivateKey {
         private:
             uint8_t _seed[32];
+            CBigNum _scalar;
+            uint8_t _prefix[32];
             IPublicKeyPtr _publicKey;
 
         public:
             EdPrivateKey(const uint8_t seed[32], IPublicKeyPtr publicKey) : _publicKey(std::move(publicKey)) {
                 algorithm(EASYM_ED25519);
                 std::memcpy(_seed, seed, 32);
+                Edwards25519::deriveFromSeed(seed, _scalar, _prefix);
+            }
+
+            ~EdPrivateKey() override {
+                CSecure::zero(SByteSpan(_seed, sizeof(_seed)));
+                _scalar.secureClear();
+                CSecure::zero(SByteSpan(_prefix, sizeof(_prefix)));
             }
 
             SKeySize keySize() const override {
@@ -786,6 +1161,8 @@ namespace crypto {
             }
 
             const uint8_t* seed() const { return _seed; }
+            const CBigNum& scalar() const { return _scalar; }
+            const uint8_t* prefix() const { return _prefix; }
         };
 
     } // namespace
@@ -841,21 +1218,18 @@ namespace crypto {
                 // a field element.
                 const CBigNum& L = Edwards25519::groupOrder();
 
-                CBigNum s;
-                uint8_t prefix[32];
-                Edwards25519::deriveFromSeed(priv->seed(), s, prefix);
+                CBigNum s(priv->scalar());
 
                 // --> EdDSA's per-signature nonce r is as sensitive as the key: the signature
                 // publishes S = r + k*s mod L with k public, so anyone who learns r for one
                 // signature recovers s. prefix and rHash are what determine r, so they count as
-                // the same secret. Each of these is cleared at the point it stops being needed,
-                // which leaves only one exit below where any of them is still live.
+                // the same secret. The expanded prefix is retained inside the private-key object
+                // and cleared by its destructor; the per-signature hash is cleared here.
                 uint8_t rHash[64];
-                Edwards25519::sha512({ SReadOnlyByteSpan(prefix, 32), message }, rHash);
+                Edwards25519::sha512({ SReadOnlyByteSpan(priv->prefix(), 32), message }, rHash);
                 CBigNum r = CBigNum::fromLittleEndian(SReadOnlyByteSpan(rHash, 64)).mod(L);
 
                 CSecure::zero(SByteSpan(rHash, sizeof(rHash)));
-                CSecure::zero(SByteSpan(prefix, sizeof(prefix)));
 
                 EdPoint rPoint = Edwards25519::scalarMulBase(r);
                 uint8_t rEncoded[32];
@@ -908,7 +1282,13 @@ namespace crypto {
                 SReadOnlyByteSpan sEncoded = signature.slice(32, 32);
 
                 EdPoint rPoint;
-                if (!Edwards25519::decodePoint(rEncoded, rPoint)) {
+                /* The public key was checked for main-subgroup membership when it was imported
+                 * (and a generated key is s*B). The exact, uncofactored equation checked below
+                 * therefore implies that any accepted R equals S*B-k*A and is itself in the
+                 * main subgroup. Repeating L*R here cannot reject anything the equation accepts;
+                 * skip only that redundant multiplication while retaining canonical decoding,
+                 * on-curve recovery and the explicit identity rejection. */
+                if (!Edwards25519::decodePoint(rEncoded, rPoint, false)) {
                     return ERET_BADREQ;
                 }
 
@@ -923,11 +1303,9 @@ namespace crypto {
                 Edwards25519::sha512({ rEncoded, SReadOnlyByteSpan(pub->encoded(), 32), message }, kHash);
                 CBigNum k = CBigNum::fromLittleEndian(SReadOnlyByteSpan(kHash, 64)).mod(L);
 
-                EdPoint lhs = Edwards25519::scalarMulBase(sBig);
-                EdPoint rhs = Edwards25519::pointAdd(
-                    rPoint, Edwards25519::scalarMulPublic(pub->point(), k));
-
-                return (lhs.x.isEqual(rhs.x) && lhs.y.isEqual(rhs.y)) ? ERET_OK : ERET_BADREQ;
+                EdPointP2 expectedR = Edwards25519::doubleScalarMulPublic(
+                    sBig, pub->oddTable(), k);
+                return Edwards25519::isEqual(expectedR, rPoint) ? ERET_OK : ERET_BADREQ;
             }
 
             ERetCode createEncrypter(IAsymmetricTransformerPtr&) override {

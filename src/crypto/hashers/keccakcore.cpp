@@ -48,6 +48,7 @@ namespace crypto {
             }();
             return supported;
         }
+#endif // CERTPP_ARCH_HAS_ANDN
 
         /* dest = (~src1) & src2, in one instruction where BMI1 exists and as the pair elsewhere.
          *
@@ -69,15 +70,16 @@ namespace crypto {
          * attribute at all -- see the same note on ghash.cpp's reverseBitsInBytesGfni() -- because
          * it exposes the BMI intrinsics without one. */
         inline uint64_t andn64(uint64_t a, uint64_t b) {
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(CERTPP_ARCH_HAS_ANDN) && (defined(__GNUC__) || defined(__clang__))
             uint64_t r;
             __asm__("andn %1, %2, %0" : "=r"(r) : "r"(b), "r"(a));
             return r;
-#else
+#elif defined(CERTPP_ARCH_HAS_ANDN)
             return _andn_u64(a, b);
+#else
+            return (~a) & b;
 #endif
         }
-#endif // CERTPP_ARCH_HAS_ANDN
 
 #if defined(CERTPP_ARCH_HAS_AVX512F)
         bool hasAvx512Keccak() {

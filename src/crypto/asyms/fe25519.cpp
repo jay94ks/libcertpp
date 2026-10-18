@@ -52,25 +52,81 @@ namespace crypto {
             }
         }
 
-        /* The same carry pass, over 128-bit accumulators.
-         *
-         * mulA24() needs it: 121665 * (2^51 - 1) is 2^68, which does not fit an int64_t. The
-         * 2^25.5 path never had this problem because 121665 * (2^26 - 1) is 2^43.
-         */
-        void carryPass128(__int128* t) {
-            __int128 carry = 0;
+        void storeReduced128(Fe25519& out, unsigned __int128* t) {
+            constexpr uint64_t mask = (uint64_t(1) << 51) - 1;
+            uint64_t reduced[Fe25519::LIMBS];
+
+            unsigned __int128 carry = t[0] >> 51;
+            reduced[0] = uint64_t(t[0]) & mask;
+            t[1] += carry;
+            carry = t[1] >> 51;
+            reduced[1] = uint64_t(t[1]) & mask;
+            t[2] += carry;
+            carry = t[2] >> 51;
+            reduced[2] = uint64_t(t[2]) & mask;
+            t[3] += carry;
+            carry = t[3] >> 51;
+            reduced[3] = uint64_t(t[3]) & mask;
+            t[4] += carry;
+            carry = t[4] >> 51;
+            reduced[4] = uint64_t(t[4]) & mask;
+
+            unsigned __int128 low = (unsigned __int128)(reduced[0]) + carry * 19;
+            reduced[0] = uint64_t(low) & mask;
+            carry = low >> 51;
+            low = (unsigned __int128)(reduced[1]) + carry;
+            reduced[1] = uint64_t(low) & mask;
+            reduced[2] += uint64_t(low >> 51);
 
             for (size_t i = 0; i < Fe25519::LIMBS; ++i) {
-                t[i] += carry;
-                carry = t[i] >> 51;
-                t[i] -= carry << 51;
+                out.limbs[i] = reduced[i];
             }
+        }
 
-            t[0] += carry * 19;
+        /* Reduces five folded product accumulators while retaining two independent carry chains.
+         *
+         * A strictly limb-0-to-limb-4 carry makes every accumulator wait for the previous one,
+         * even though multiplication produced all five independently. Here the even and odd
+         * chains advance separately until the final two short carries. The result is deliberately
+         * only carry-bounded: limbs 1 and 3 may exceed 2^51 by a small carry, which is within the
+         * documented loose-input bounds and avoids another serial pass in every ladder operation.
+         */
+        inline void storeProductReduced(
+            Fe25519& out,
+            unsigned __int128 h0,
+            unsigned __int128 h1,
+            unsigned __int128 h2,
+            unsigned __int128 h3,
+            unsigned __int128 h4
+        ) {
+            constexpr uint64_t mask = (uint64_t(1) << 51) - 1;
 
-            carry = t[0] >> 51;
-            t[0] -= carry << 51;
-            t[1] += carry;
+            h3 += uint64_t(h2 >> 51);
+            uint64_t r2 = uint64_t(h2) & mask;
+
+            h1 += uint64_t(h0 >> 51);
+            uint64_t r0 = uint64_t(h0) & mask;
+
+            h4 += uint64_t(h3 >> 51);
+            uint64_t r3 = uint64_t(h3) & mask;
+
+            r2 += uint64_t(h1 >> 51);
+            uint64_t r1 = uint64_t(h1) & mask;
+
+            r0 += uint64_t(h4 >> 51) * 19;
+            const uint64_t r4 = uint64_t(h4) & mask;
+
+            r3 += r2 >> 51;
+            r2 &= mask;
+
+            r1 += r0 >> 51;
+            r0 &= mask;
+
+            out.limbs[0] = r0;
+            out.limbs[1] = r1;
+            out.limbs[2] = r2;
+            out.limbs[3] = r3;
+            out.limbs[4] = r4;
         }
 
         /* The 5x5 product, accumulated as explicit (hi, lo) pairs rather than __int128 values.
@@ -434,7 +490,6 @@ namespace crypto {
         // q - 2^51 rather than q; this pass then has nothing left to carry.
 
         std::memset(out, 0, BYTES);
-
         for (size_t i = 0; i < LIMBS; ++i) {
             const int width = widthOf(i);
 
@@ -459,6 +514,19 @@ namespace crypto {
 
     /* out = a - b. */
     void Fe25519::sub(Fe25519& out, const Fe25519& a, const Fe25519& b) {
+#if defined(CERTPP_FE25519_RADIX51)
+        // Keep every limb non-negative in the unsigned radix-51 representation. Adding 2p is
+        // congruent to zero and gives enough headroom for any two carry-reduced inputs.
+        constexpr uint64_t B = uint64_t(1) << 51;
+        unsigned __int128 t[LIMBS] = {
+            (unsigned __int128)(a.limbs[0]) + (2 * B - 38) - b.limbs[0],
+            (unsigned __int128)(a.limbs[1]) + (2 * B - 2) - b.limbs[1],
+            (unsigned __int128)(a.limbs[2]) + (2 * B - 2) - b.limbs[2],
+            (unsigned __int128)(a.limbs[3]) + (2 * B - 2) - b.limbs[3],
+            (unsigned __int128)(a.limbs[4]) + (2 * B - 2) - b.limbs[4],
+        };
+        storeReduced128(out, t);
+#else
         int64_t t[LIMBS];
         for (size_t i = 0; i < LIMBS; ++i) {
             // Signed limbs, so this just goes negative and the carry pass sorts it out -- no
@@ -468,47 +536,32 @@ namespace crypto {
 
         carryPass(t);
         store(out, t);
+#endif
     }
 
     /* out = a * b. */
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((always_inline))
+#endif
     void Fe25519::mul(Fe25519& out, const Fe25519& a, const Fe25519& b) {
 #if defined(CERTPP_FE25519_RADIX51)
-        // 5x5 = 25 products, each a native 64x64->128 that the compiler emits as one MUL r64 on
-        // x86-64 and one UMULL on AArch64. Signed, because a limb can be negative after sub() and
-        // an unsigned multiply of a negative limb would be silently wrong -- the same reason the
-        // 2^25.5 path multiplies in int64_t rather than uint64_t.
-        //
-        // Bounds, so the reduction's three rounds are an argument rather than a guess: limbs are
-        // carry-reduced on every entry point so each is under 2^51, each product is under 2^102,
-        // and t[k] takes at most five of them, so t[k] < 2^105 before reduce9() and every
-        // intermediate after it stays inside __int128.
-        Acc t[10];
-        for (size_t i = 0; i < 10; ++i) { t[i].lo = 0; t[i].hi = 0; }
+        // Fold terms above 2^255 directly with 2^255 == 19. Unsigned 128-bit products accept the
+        // single doubled-range result produced by addLoose()/subLoose(), allowing point formulas
+        // to omit carry passes before an immediate multiply.
+        const unsigned __int128 f0 = a.limbs[0], f1 = a.limbs[1], f2 = a.limbs[2];
+        const unsigned __int128 f3 = a.limbs[3], f4 = a.limbs[4];
+        const uint64_t g0 = b.limbs[0], g1 = b.limbs[1], g2 = b.limbs[2];
+        const uint64_t g3 = b.limbs[3], g4 = b.limbs[4];
+        const uint64_t g1_19 = g1 * 19, g2_19 = g2 * 19;
+        const uint64_t g3_19 = g3 * 19, g4_19 = g4 * 19;
 
-        const uint64_t f0 = uint64_t(a.limbs[0]), f1 = uint64_t(a.limbs[1]);
-        const uint64_t f2 = uint64_t(a.limbs[2]), f3 = uint64_t(a.limbs[3]);
-        const uint64_t f4 = uint64_t(a.limbs[4]);
-        const uint64_t g0 = uint64_t(b.limbs[0]), g1 = uint64_t(b.limbs[1]);
-        const uint64_t g2 = uint64_t(b.limbs[2]), g3 = uint64_t(b.limbs[3]);
-        const uint64_t g4 = uint64_t(b.limbs[4]);
+        const unsigned __int128 h0 = f0*g0 + f1*g4_19 + f2*g3_19 + f3*g2_19 + f4*g1_19;
+        const unsigned __int128 h1 = f0*g1 + f1*g0 + f2*g4_19 + f3*g3_19 + f4*g2_19;
+        const unsigned __int128 h2 = f0*g2 + f1*g1 + f2*g0 + f3*g4_19 + f4*g3_19;
+        const unsigned __int128 h3 = f0*g3 + f1*g2 + f2*g1 + f3*g0 + f4*g4_19;
+        const unsigned __int128 h4 = f0*g4 + f1*g3 + f2*g2 + f3*g1 + f4*g0;
 
-        accumulate(t[0], f0, g0);
-        accumulate(t[1], f0, g1); accumulate(t[1], f1, g0);
-        accumulate(t[2], f0, g2); accumulate(t[2], f1, g1); accumulate(t[2], f2, g0);
-        accumulate(t[3], f0, g3); accumulate(t[3], f1, g2);
-        accumulate(t[3], f2, g1); accumulate(t[3], f3, g0);
-        accumulate(t[4], f0, g4); accumulate(t[4], f1, g3);
-        accumulate(t[4], f2, g2); accumulate(t[4], f3, g1); accumulate(t[4], f4, g0);
-        accumulate(t[5], f1, g4); accumulate(t[5], f2, g3);
-        accumulate(t[5], f3, g2); accumulate(t[5], f4, g1);
-        accumulate(t[6], f2, g4); accumulate(t[6], f3, g3); accumulate(t[6], f4, g2);
-        accumulate(t[7], f3, g4); accumulate(t[7], f4, g3);
-        accumulate(t[8], f4, g4);
-
-        int64_t r[5];
-        reduce9(t, r);
-        carryPass(r);
-        store(out, r);
+        storeProductReduced(out, h0, h1, h2, h3, h4);
 #else
         // Generated from the rule validated against exact arithmetic: a doubling when
         // both limb indices are odd, and a factor of 19 when the product lands at 2^255
@@ -605,15 +658,42 @@ namespace crypto {
     }
 
     /* out = a^2. */
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((always_inline))
+#endif
     void Fe25519::square(Fe25519& out, const Fe25519& a) {
 #if defined(CERTPP_FE25519_RADIX51)
-        // 5x5 = 25 products, of which the 15 off-diagonal pairs each appear twice and merge
-        // to 1, so a dedicated squaring here would be 10. The asymmetry that makes the
-        // 2^25.5 merge delicate is much weaker at radix 2^51 -- the 19-fold applies to limb
-        // 4 on both sides alike -- but the win is small enough that leaving this as mul(a, a)
-        // costs less than a second generated form to keep correct. The 2^25.5 path, which is
-        // the default and the one MSVC takes, has the real 100 -> 45 reduction below.
-        mul(out, a, a);
+        // Ten products, scheduled so doubling and the 19-fold happen on 64-bit operands before
+        // multiplication. This keeps the five wide accumulators independent and avoids carrying
+        // several temporary 128-bit products through the expression tree.
+        uint64_t g0 = a.limbs[0], g1 = a.limbs[1], g2 = a.limbs[2];
+        uint64_t g3 = a.limbs[3], g4 = a.limbs[4];
+        unsigned __int128 h0 = (unsigned __int128)g0 * g0;
+        g0 *= 2;
+        unsigned __int128 h1 = (unsigned __int128)g0 * g1;
+        unsigned __int128 h2 = (unsigned __int128)g0 * g2;
+        unsigned __int128 h3 = (unsigned __int128)g0 * g3;
+        unsigned __int128 h4 = (unsigned __int128)g0 * g4;
+
+        g0 = g4;
+        g4 *= 19;
+        h3 += (unsigned __int128)g0 * g4;
+        h2 += (unsigned __int128)g1 * g1;
+        g1 *= 2;
+        h3 += (unsigned __int128)g1 * g2;
+        h4 += (unsigned __int128)g1 * g3;
+        h0 += (unsigned __int128)g1 * g4;
+
+        g0 = g3;
+        g3 *= 19;
+        h1 += (unsigned __int128)g0 * g3;
+        h2 += (unsigned __int128)(g0 * 2) * g4;
+        h4 += (unsigned __int128)g2 * g2;
+        g2 *= 2;
+        h0 += (unsigned __int128)g2 * g3;
+        h1 += (unsigned __int128)g2 * g4;
+
+        storeProductReduced(out, h0, h1, h2, h3, h4);
 #else
         // --> A dedicated squaring: 55 products against mul()'s 100, because each of the 45
         // off-diagonal pairs appears twice and is computed once.
@@ -644,16 +724,34 @@ namespace crypto {
         const int64_t s6 = a.limbs[6], s7 = a.limbs[7], s8 = a.limbs[8];
         const int64_t s9 = a.limbs[9];
 
-        int64_t t0 = 1*s0*s0 + 76*s1*s9 + 38*s2*s8 + 76*s3*s7 + 38*s4*s6 + 38*s5*s5;
-        int64_t t1 = 2*s0*s1 + 38*s2*s9 + 38*s3*s8 + 38*s4*s7 + 38*s5*s6;
-        int64_t t2 = 2*s0*s2 + 2*s1*s1 + 76*s3*s9 + 38*s4*s8 + 76*s5*s7 + 19*s6*s6;
-        int64_t t3 = 2*s0*s3 + 2*s1*s2 + 38*s4*s9 + 38*s5*s8 + 38*s6*s7;
-        int64_t t4 = 2*s0*s4 + 4*s1*s3 + 1*s2*s2 + 76*s5*s9 + 38*s6*s8 + 38*s7*s7;
-        int64_t t5 = 2*s0*s5 + 2*s1*s4 + 2*s2*s3 + 38*s6*s9 + 38*s7*s8;
-        int64_t t6 = 2*s0*s6 + 4*s1*s5 + 2*s2*s4 + 2*s3*s3 + 76*s7*s9 + 19*s8*s8;
-        int64_t t7 = 2*s0*s7 + 2*s1*s6 + 2*s2*s5 + 2*s3*s4 + 38*s8*s9;
-        int64_t t8 = 2*s0*s8 + 4*s1*s7 + 2*s2*s6 + 4*s3*s5 + 1*s4*s4 + 38*s9*s9;
-        int64_t t9 = 2*s0*s9 + 2*s1*s8 + 2*s2*s7 + 2*s3*s6 + 2*s4*s5;
+        const int64_t s0_2 = s0 * 2;
+        const int64_t s1_2 = s1 * 2;
+        const int64_t s2_2 = s2 * 2;
+        const int64_t s3_2 = s3 * 2;
+        const int64_t s4_2 = s4 * 2;
+        const int64_t s5_2 = s5 * 2;
+        const int64_t s5_19 = s5 * 19;
+        const int64_t s6_2 = s6 * 2;
+        const int64_t s6_19 = s6 * 19;
+        const int64_t s7_2 = s7 * 2;
+        const int64_t s7_19 = s7 * 19;
+        const int64_t s7_38 = s7 * 38;
+        const int64_t s8_2 = s8 * 2;
+        const int64_t s8_19 = s8 * 19;
+        const int64_t s9_2 = s9 * 2;
+        const int64_t s9_19 = s9 * 19;
+        const int64_t s9_38 = s9 * 38;
+
+        int64_t t0 = s0*s0 + s1_2*s9_38 + s2_2*s8_19 + s3_2*s7_38 + s4_2*s6_19 + s5_2*s5_19;
+        int64_t t1 = s0_2*s1 + s2_2*s9_19 + s3_2*s8_19 + s4_2*s7_19 + s5_2*s6_19;
+        int64_t t2 = s0_2*s2 + s1_2*s1 + s3_2*s9_38 + s4_2*s8_19 + s5_2*s7_38 + s6*s6_19;
+        int64_t t3 = s0_2*s3 + s1_2*s2 + s4_2*s9_19 + s5_2*s8_19 + s6_2*s7_19;
+        int64_t t4 = s0_2*s4 + s1_2*s3_2 + s2*s2 + s5_2*s9_38 + s6_2*s8_19 + s7_2*s7_19;
+        int64_t t5 = s0_2*s5 + s1_2*s4 + s2_2*s3 + s6_2*s9_19 + s7_2*s8_19;
+        int64_t t6 = s0_2*s6 + s1_2*s5_2 + s2_2*s4 + s3_2*s3 + s7_2*s9_38 + s8*s8_19;
+        int64_t t7 = s0_2*s7 + s1_2*s6 + s2_2*s5 + s3_2*s4 + s8_2*s9_19;
+        int64_t t8 = s0_2*s8 + s1_2*s7_2 + s2_2*s6 + s3_2*s5_2 + s4*s4 + s9_2*s9_19;
+        int64_t t9 = s0_2*s9 + s1_2*s8 + s2_2*s7 + s3_2*s6 + s4_2*s5;
 
         int64_t t[LIMBS] = { t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 };
 
@@ -666,29 +764,20 @@ namespace crypto {
     }
 
     /* out = a * 121665. */
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((always_inline))
+#endif
     void Fe25519::mulA24(Fe25519& out, const Fe25519& a) {
 #if defined(CERTPP_FE25519_RADIX51)
-        // --> 128-bit accumulators here, where the 2^25.5 path gets away with int64_t: 121665 *
-        // (2^51 - 1) is 2^68, which does not fit in 64 bits. That overflow is the whole reason
-        // this operation cannot share its body between the two layouts.
-        __int128 t[LIMBS];
+        // Each product needs 128 bits: 121665 * (2^51 - 1) is 2^68. Feed the five independent
+        // products into the same two-chain reduction as general multiplication.
+        const unsigned __int128 h0 = (unsigned __int128)a.limbs[0] * 121665;
+        const unsigned __int128 h1 = (unsigned __int128)a.limbs[1] * 121665;
+        const unsigned __int128 h2 = (unsigned __int128)a.limbs[2] * 121665;
+        const unsigned __int128 h3 = (unsigned __int128)a.limbs[3] * 121665;
+        const unsigned __int128 h4 = (unsigned __int128)a.limbs[4] * 121665;
 
-        for (size_t i = 0; i < LIMBS; ++i) {
-            t[i] = __int128(a.limbs[i]) * 121665;
-        }
-
-        carryPass128(t);
-        carryPass128(t);
-
-        // --> Narrow rather than reinterpret: both carryPasses leave each limb under 2^51, so
-        // the conversion is value-preserving, and a __int128 array has no int64_t layout to alias
-        // even if it did.
-        int64_t r[LIMBS];
-        for (size_t i = 0; i < LIMBS; ++i) {
-            r[i] = int64_t(t[i]);
-        }
-
-        store(out, r);
+        storeProductReduced(out, h0, h1, h2, h3, h4);
 #else
         int64_t t[LIMBS];
 
@@ -759,6 +848,191 @@ namespace crypto {
         }
 
         return false;
+    }
+
+    /* out = sqrt(u / v), using one fixed exponentiation rather than invert(v) + sqrt(). */
+    bool Fe25519::squareRootRatio(
+        Fe25519& out, const Fe25519& u, const Fe25519& v
+    ) {
+        // RFC 8032 5.1.3: x = u*v^3*(u*v^7)^((p-5)/8), where (p-5)/8 = 2^252-3.
+        Fe25519 v2, v3, v7;
+        square(v2, v);
+        mul(v3, v2, v);
+        square(v7, v3);
+        mul(v7, v7, v);
+
+        Fe25519 uv7;
+        mul(uv7, u, v7);
+
+        Fe25519 chain, unused11;
+        powTwo250Minus1(chain, unused11, uv7);          // (u*v^7)^(2^250 - 1)
+        square(chain, chain);
+        square(chain, chain);
+        mul(chain, chain, uv7);                         // (u*v^7)^(2^252 - 3)
+
+        Fe25519 candidate;
+        mul(candidate, chain, v3);
+        mul(candidate, candidate, u);
+
+        Fe25519 check;
+        square(check, candidate);
+        mul(check, check, v);
+        if (check.isEqual(u)) {
+            out = candidate;
+            return true;
+        }
+
+        Fe25519 negativeU;
+        neg(negativeU, u);
+        if (!check.isEqual(negativeU)) {
+            return false;
+        }
+
+        mul(candidate, candidate, sqrtMinusOne());
+        square(check, candidate);
+        mul(check, check, v);
+        if (!check.isEqual(u)) {
+            return false;
+        }
+
+        out = candidate;
+        return true;
+    }
+
+    namespace {
+
+#if defined(__GNUC__) || defined(__clang__)
+        __attribute__((always_inline, flatten))
+#endif
+        inline void x25519LadderBody(
+            const uint8_t scalar[Fe25519::BYTES],
+            const uint8_t u[Fe25519::BYTES],
+            uint8_t out[Fe25519::BYTES]
+        ) {
+            Fe25519 x1, x2, z2, x3, z3;
+            x1.fromBytes(u);
+            x2.setOne();
+            z2.setZero();
+            x3 = x1;
+            z3.setOne();
+
+            uint32_t swap = 0;
+            for (size_t bitIndex = 255; bitIndex-- > 0; ) {
+                const uint32_t bit =
+                    uint32_t((scalar[bitIndex >> 3] >> (bitIndex & 7u)) & 1u);
+                swap ^= bit;
+                const uint32_t mask = uint32_t(0) - swap;
+                Fe25519::condSwap(mask, x2, x3);
+                Fe25519::condSwap(mask, z2, z3);
+                swap = bit;
+
+                // Reuse coordinates once their old values are dead. Four temporaries are enough
+                // for the same operation order and give the flattened accelerated loop shorter
+                // live ranges than ten distinct field elements.
+                Fe25519 t0, t1, t2, t3;
+                Fe25519::subLoose(t0, x2, z2);       // B
+                Fe25519::addLoose(x2, x2, z2);       // A
+                Fe25519::square(t1, x2);             // AA
+                Fe25519::square(z2, t0);             // BB
+                Fe25519::subLoose(t2, t1, z2);       // E
+                Fe25519::subLoose(t3, x3, z3);       // D
+                Fe25519::addLoose(x3, x3, z3);       // C
+                Fe25519::mul(z3, t3, x2);            // DA
+                Fe25519::mul(t3, x3, t0);            // CB
+
+                Fe25519::addLoose(t0, z3, t3);
+                Fe25519::square(x3, t0);
+                Fe25519::subLoose(t0, z3, t3);
+                Fe25519::square(t0, t0);
+                Fe25519::mul(z3, t0, x1);
+                Fe25519::mul(x2, t1, z2);
+                Fe25519::mulA24(t0, t2);
+                Fe25519::addLoose(t0, t0, t1);
+                Fe25519::mul(z2, t2, t0);
+            }
+
+            const uint32_t mask = uint32_t(0) - swap;
+            Fe25519::condSwap(mask, x2, x3);
+            Fe25519::condSwap(mask, z2, z3);
+
+            Fe25519 inverse;
+            Fe25519::invert(inverse, z2);
+            Fe25519::mul(x2, x2, inverse);
+            x2.toBytes(out);
+        }
+
+#if defined(CERTPP_ARCH_HAS_MULX) && defined(CERTPP_FE25519_RADIX51)
+        /* AVX2 widens the two conditional swaps, while BMI2 removes MUL's fixed rdx:rax
+         * destination from the 5x51 products. ADX lets the compiler schedule the corresponding
+         * carry additions independently. The decision is cached and depends only on public CPU
+         * capabilities, never on the scalar or point. */
+        enum class EX25519Acceleration {
+            None,
+            Generic,
+            TigerLake,
+        };
+
+        EX25519Acceleration x25519Acceleration() {
+            static const EX25519Acceleration detected = [] {
+                __builtin_cpu_init();
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+                if (__builtin_cpu_is("tigerlake") != 0) {
+                    return EX25519Acceleration::TigerLake;
+                }
+#endif
+                if (__builtin_cpu_supports("avx2") != 0 &&
+                    __builtin_cpu_supports("bmi2") != 0 &&
+                    __builtin_cpu_supports("adx") != 0) {
+                    return EX25519Acceleration::Generic;
+                }
+                return EX25519Acceleration::None;
+            }();
+            return detected;
+        }
+
+        __attribute__((target("avx2,bmi2,adx"), flatten))
+        void x25519LadderAccelerated(
+            const uint8_t scalar[Fe25519::BYTES],
+            const uint8_t u[Fe25519::BYTES],
+            uint8_t out[Fe25519::BYTES]
+        ) {
+            x25519LadderBody(scalar, u, out);
+        }
+
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+        /* Tiger Lake's function-level architecture setting adds its scheduling model and full
+         * register set. Keeping this as a separate exact-model dispatch avoids imposing that ISA
+         * on other AVX2/BMI2/ADX processors, which continue through the generic function above. */
+        __attribute__((target("arch=tigerlake"), flatten))
+        void x25519LadderTigerLake(
+            const uint8_t scalar[Fe25519::BYTES],
+            const uint8_t u[Fe25519::BYTES],
+            uint8_t out[Fe25519::BYTES]
+        ) {
+            x25519LadderBody(scalar, u, out);
+        }
+#endif
+#endif
+
+    } // namespace
+
+    void Fe25519::x25519Ladder(
+        const uint8_t scalar[BYTES], const uint8_t u[BYTES], uint8_t out[BYTES]
+    ) {
+#if defined(CERTPP_ARCH_HAS_MULX) && defined(CERTPP_FE25519_RADIX51)
+        const EX25519Acceleration acceleration = x25519Acceleration();
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+        if (acceleration == EX25519Acceleration::TigerLake) {
+            x25519LadderTigerLake(scalar, u, out);
+            return;
+        }
+#endif
+        if (acceleration == EX25519Acceleration::Generic) {
+            x25519LadderAccelerated(scalar, u, out);
+            return;
+        }
+#endif
+        x25519LadderBody(scalar, u, out);
     }
 
     /* Swaps a and b under a mask, without branching. */

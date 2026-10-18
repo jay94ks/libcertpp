@@ -8,6 +8,8 @@
 namespace certpp {
 namespace crypto {
 
+    class MlKemContext;
+
     /**
      * One element of ML-KEM's polynomial ring R_q = Z_q[X]/(X^256 + 1), q = 3329 (FIPS 203 2.4.4),
      * held as 256 coefficients each reduced into [0, MODULUS).
@@ -347,6 +349,50 @@ namespace crypto {
         );
 
     private:
+        struct PreparedPublic {
+            SMlKemPoly tHat[SMlKemParams::MAX_K];
+            SMlKemPoly aHat[SMlKemParams::MAX_K][SMlKemParams::MAX_K];
+        };
+
+        struct PreparedPrivate {
+            SMlKemPoly sHat[SMlKemParams::MAX_K];
+        };
+
+        friend class MlKemContext;
+
+        /* Decodes an encapsulation key and expands its public matrix once. */
+        static bool preparePublic(
+            const SMlKemParams& params, const SReadOnlyByteSpan& ek, PreparedPublic& out
+        );
+
+        /* Decodes the K-PKE secret vector once. */
+        static bool preparePrivate(
+            const SMlKemParams& params, const SReadOnlyByteSpan& dkPke, PreparedPrivate& out
+        );
+
+        /* K-PKE operations over already decoded and expanded key material. */
+        static bool kpkeEncryptPrepared(
+            const SMlKemParams& params, const PreparedPublic& prepared,
+            const SReadOnlyByteSpan& message, const SReadOnlyByteSpan& randomness,
+            const SByteSpan& ciphertext
+        );
+        static bool kpkeDecryptPrepared(
+            const SMlKemParams& params, const PreparedPrivate& prepared,
+            const SReadOnlyByteSpan& ciphertext, const SByteSpan& message
+        );
+
+        /* KEM operations over key material prepared by a reusable IKemContext. */
+        static bool encapsulatePrepared(
+            const SMlKemParams& params, const SReadOnlyByteSpan& ek,
+            const PreparedPublic& prepared, const SReadOnlyByteSpan& message,
+            const SByteSpan& ciphertext, const SByteSpan& sharedSecret
+        );
+        static bool decapsulatePrepared(
+            const SMlKemParams& params, const SReadOnlyByteSpan& dk,
+            const PreparedPrivate& preparedPrivate, const PreparedPublic& preparedPublic,
+            const SReadOnlyByteSpan& ciphertext, const SByteSpan& sharedSecret
+        );
+
         /* H(x) = SHA3-256(x), FIPS 203 4.1. */
         static bool hashH(const SReadOnlyByteSpan& input, const SByteSpan& out);
 

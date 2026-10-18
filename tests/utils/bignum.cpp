@@ -183,6 +183,47 @@ TEST_CASE("CBigNum: modInverse") {
 
     CBigNum notInvertible;
     CHECK_FALSE(CBigNum::modInverse(CBigNum(uint64_t(2)), CBigNum(uint64_t(4)), notInvertible));
+
+    // Exhaustively exercise the odd-modulus binary path against a machine-word Euclidean gcd,
+    // including values above the modulus and non-coprime odd composites.
+    for (uint64_t modulus = 3; modulus < 128; modulus += 2) {
+        for (uint64_t value = 0; value <= 2 * modulus + 3; ++value) {
+            uint64_t a = value % modulus;
+            uint64_t b = modulus;
+            while (b != 0) {
+                const uint64_t remainder = a % b;
+                a = b;
+                b = remainder;
+            }
+
+            CBigNum candidate;
+            const bool invertible = CBigNum::modInverse(
+                CBigNum(value), CBigNum(modulus), candidate
+            );
+            CAPTURE(modulus);
+            CAPTURE(value);
+            REQUIRE(invertible == (a == 1));
+            if (invertible) {
+                CBigNum product(value);
+                product.mulMod(candidate, CBigNum(modulus));
+                CHECK(product == CBigNum(uint64_t(1)));
+            }
+        }
+    }
+
+    // A cryptographic-width case catches coefficient growth and cross-limb halving errors that
+    // the exhaustive machine-word sweep cannot reach.
+    crypto::CEcCurve p256;
+    REQUIRE(crypto::CEcCurve::knownCurves(crypto::ECURVE_P256, p256));
+    CBigNum wideValue;
+    REQUIRE(CBigNum::fromHex(
+        "B6F4A2C9715D8E30F08C624AB1D933A0E57F20C14B7AD95362E8C19F4305D277",
+        wideValue
+    ));
+    CBigNum wideInverse;
+    REQUIRE(CBigNum::modInverse(wideValue, p256.n, wideInverse));
+    wideValue.mulMod(wideInverse, p256.n);
+    CHECK(wideValue == CBigNum(uint64_t(1)));
 }
 
 TEST_CASE("CBigNum: isProbablePrime") {

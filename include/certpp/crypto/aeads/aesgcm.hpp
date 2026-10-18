@@ -55,8 +55,10 @@ namespace crypto {
 
         uint8_t _roundKeys[ROUND_KEY_BYTES];
         uint8_t _subkey[16];    // --> H = E_K(0^128), GHASH's key.
+        uint8_t _ghashPowers[16][16]; // --> H^16..H, cached once per key where supported.
         uint32_t _rounds;
         size_t _keyBytes;
+        bool _ghashPowersReady;
 
     public:
         /** AES-128's key length in bytes. */

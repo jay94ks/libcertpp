@@ -255,6 +255,40 @@ TEST_CASE("Ed448: verify rejects a signature whose R is the identity point, even
     ) != ERET_OK);
 }
 
+TEST_CASE("Ed448: exact verification rejects the order-two point as R and as a public key") {
+    IAsymmetricPtr ed = IAsymmetric::builtIn(EASYM_ED448);
+    const SKeyPair& pair = sharedTestKeyPair();
+    REQUIRE(pair);
+
+    IAsymmetricContextPtr ctx = ed->createContext();
+    ctx->keyPair(pair);
+    const uint8_t message[] = "order-two Ed448 negative control";
+    const SReadOnlyByteSpan messageSpan(message, sizeof(message) - 1);
+
+    TArray<uint8_t> signature;
+    signature.resize(ctx->sizeOfSign());
+    SByteSpan signatureSpan(signature.begin(), signature.size());
+    REQUIRE(ctx->sign(messageSpan, signatureSpan) == ERET_OK);
+
+    // (x=0, y=-1) has order two. p-1 encodes as 0xfe, 27 bytes of 0xff, 0xfe,
+    // then 27 bytes of 0xff; the final Ed448 sign byte is zero. Verification omits the
+    // redundant L*R multiplication, so this checks that the exact uncofactored equation still
+    // rejects a low-order R.
+    signature[0] = 0xfe;
+    for (size_t i = 1; i < 28; ++i) {
+        signature[i] = 0xff;
+    }
+    signature[28] = 0xfe;
+    for (size_t i = 29; i < 56; ++i) {
+        signature[i] = 0xff;
+    }
+    signature[56] = 0x00;
+
+    CHECK(ctx->verify(messageSpan,
+        SReadOnlyByteSpan(signature.begin(), signatureSpan.size)) != ERET_OK);
+    CHECK_FALSE(ed->createPublicKey(SReadOnlyByteSpan(signature.begin(), 57)));
+}
+
 TEST_CASE("Ed448: verify rejects a signature produced by a different key pair") {
     IAsymmetricPtr ed = IAsymmetric::builtIn(EASYM_ED448);
     const SKeyPair& pair = sharedTestKeyPair();

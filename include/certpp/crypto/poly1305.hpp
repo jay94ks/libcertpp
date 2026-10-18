@@ -39,21 +39,26 @@ namespace crypto {
         bool _keyed;
 
 #if defined(CERTPP_ARCH_HAS_IFMA_POLY1305)
-        /* r^1..r^8 as 26-bit limbs, for the eight-blocks-at-a-time path. Filled on first use
-         * rather than at reset(): seven 130-bit multiplies is real cost on a 64-byte record, and
-         * the vector path would never earn it back there.
+        /* r^1..r^32 as 26-bit limbs, for the wide paths. The first sixteen powers are filled when
+         * an eight-block group first appears; powers seventeen through thirty-two are added only
+         * when the thirty-two-block path can use them. This keeps the wider aggregation from adding
+         * setup cost to medium-sized records.
          *
-         * Laid out limb-major as [5][8] rather than power-major as [8][5], and widened to
-         * uint64_t, because this is the layout `absorb8()` consumes: lane j needs limb m of
-         * power (7 - j), so [5][8] is five aligned 64-byte loads. Storing it power-major meant
+         * Laid out limb-major as [5][32] rather than power-major as [32][5], and widened to
+         * uint64_t, because this is the layout the wide path consumes: lane j needs limb m of
+         * a descending power, so each half is five aligned 64-byte loads. Storing it power-major meant
          * rebuilding that every group of eight blocks with forty scalar stores and five
          * loads, to re-lay-out a table computed exactly once per message. Measured at 10.11 ns
          * -> 1.96 ns per group, which is 10.3% of a group's total. */
-        alignas(64) uint64_t _powers[5][8];
+        alignas(64) uint64_t _powers[5][32];
         bool _powersReady;
+        bool _widePowersReady;
 
-        /* Fills _powers the first time eight whole blocks are pushed. */
+        /* Fills r^1..r^16 for the eight- and sixteen-block paths. */
         void preparePowers();
+
+        /* Extends the table through r^32 for the thirty-two-block path. */
+        void prepareWidePowers();
 #endif
 
     public:

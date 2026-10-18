@@ -61,17 +61,10 @@
 /*
  * A BMI2 MULX under x86-64.
  *
- * Worth having because of what it is *not*: MUL r64 always writes rdx:rax and flags rdx as
- * clobbered, so a run of consecutive 64x64->128 products -- which is exactly what a 5x5 field
- * multiply is, twenty-five of them back to back -- has to spill and re-establish rdx around
- * every single one. MULX takes two freely-chosen destinations and clobbers neither, so the
- * compiler can keep the accumulators where it wants them.
- *
- * That argument is a hypothesis, and this library does not ship one: CBigNum's MULX/ADCX path
- * measured as worth nothing at all, because its multiply is long enough that the rdx traffic is
- * lost in the rest. Fe25519::mul is the opposite shape -- 25 products and almost nothing else --
- * so it is worth one measurement rather than either assumption. Whether it is kept is decided by
- * that measurement, not by this comment; see mulBmi251()'s own note.
+ * MUL r64 always writes rdx:rax, while MULX permits two freely chosen destinations and leaves the
+ * flags untouched. The radix-51 X25519 ladder uses this gate for a function-level BMI2/ADX/AVX2
+ * target after a cached runtime feature check. That lets the compiler schedule its independent
+ * field accumulators without imposing those instructions on the portable fallback.
  *
  * Gate mirrors bignum.hpp's and gf2m.hpp's exactly: the DISABLE option, and x86-64 only.
  */
@@ -120,11 +113,10 @@
 /*
  * AVX512-IFMA under x86-64: vpmadd52luq/vpmadd52huq, 52-bit multiply-accumulate eight lanes wide.
  *
- * One use, and it is the one the roadmap's item 4 named -- a first, because every other named
- * mechanism in this session turned out not to be the bottleneck. ChaCha20-Poly1305 measured
- * 833 MiB/s against OpenSSL's 3631, and decomposing at 64 KiB put ChaCha20's xorStream at 2492 and
- * Poly1305's MAC at 1196.9: Poly1305 is two thirds of the AEAD's cost and, at 1196.9 against
- * OpenSSL's 12633.4, the largest single gap in the survey at 0.09x.
+ * Used by Poly1305's wide block aggregation. Eight independent lanes form the block products;
+ * long messages combine four groups before one horizontal reduction and scalar accumulator
+ * update. The implementation extends its precomputed powers from r^16 to r^32 only when that
+ * thirty-two-block path is reached.
  *
  * A separate gate from ANDN's even though both are x86-64 feature flags, because AVX512-IFMA is
  * rare and entirely independent: a CPU can have BMI1 without it -- most do -- and a CPU with

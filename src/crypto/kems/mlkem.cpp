@@ -218,49 +218,62 @@ namespace crypto {
         return true;
     }
 
-    /* K-PKE.Encrypt (FIPS 203 Algorithm 14). */
-    bool CMlKem::kpkeEncrypt(
-        const SMlKemParams& params, const SReadOnlyByteSpan& ekPke,
-        const SReadOnlyByteSpan& message, const SReadOnlyByteSpan& randomness,
-        const SByteSpan& ciphertext
+    /* Decodes t-hat and expands A-hat for repeated use with one encapsulation key. */
+    bool CMlKem::preparePublic(
+        const SMlKemParams& params, const SReadOnlyByteSpan& ek, PreparedPublic& out
     ) {
-        const size_t k = params.k;
-
-        if (!params.isValid()) {
-            return false;
-        }
-        if (ekPke.size != params.ekBytes() || !ekPke.data) {
-            return false;
-        }
-        if (message.size != 32 || !message.data) {
-            return false;
-        }
-        if (randomness.size != 32 || !randomness.data) {
-            return false;
-        }
-        if (ciphertext.size != params.ciphertextBytes() || !ciphertext.data) {
+        if (!params.isValid() || ek.size != params.ekBytes() || !ek.data) {
             return false;
         }
 
-        SMlKemPoly tHat[SMlKemParams::MAX_K];
-        for (size_t i = 0; i < k; ++i) {
-            if (!MlKemCodec::byteDecode(12, SReadOnlyByteSpan(ekPke.data + 384 * i, 384), tHat[i])) {
+        for (size_t i = 0; i < params.k; ++i) {
+            if (!MlKemCodec::byteDecode(
+                    12, SReadOnlyByteSpan(ek.data + 384 * i, 384), out.tHat[i]))
+            {
                 return false;
             }
         }
 
-        const SReadOnlyByteSpan rhoSpan(ekPke.data + 384 * k, 32);
-
-        // Same sampling byte order as KeyGen; the transpose is applied when multiplying, below.
-        SMlKemPoly aHat[SMlKemParams::MAX_K][SMlKemParams::MAX_K];
-        for (size_t i = 0; i < k; ++i) {
-            for (size_t j = 0; j < k; ++j) {
-                if (!CMlKemSampler::sampleNtt(rhoSpan, uint8_t(j), uint8_t(i), aHat[i][j])) {
+        const SReadOnlyByteSpan rho(ek.data + 384 * params.k, 32);
+        for (size_t i = 0; i < params.k; ++i) {
+            for (size_t j = 0; j < params.k; ++j) {
+                if (!CMlKemSampler::sampleNtt(
+                        rho, uint8_t(j), uint8_t(i), out.aHat[i][j]))
+                {
                     return false;
                 }
             }
         }
 
+        return true;
+    }
+
+    /* Decodes s-hat for repeated use with one decapsulation key. */
+    bool CMlKem::preparePrivate(
+        const SMlKemParams& params, const SReadOnlyByteSpan& dkPke, PreparedPrivate& out
+    ) {
+        if (!params.isValid() || dkPke.size != params.dkPkeBytes() || !dkPke.data) {
+            return false;
+        }
+
+        for (size_t i = 0; i < params.k; ++i) {
+            if (!MlKemCodec::byteDecode(
+                    12, SReadOnlyByteSpan(dkPke.data + 384 * i, 384), out.sHat[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /* K-PKE.Encrypt with a decoded public vector and expanded matrix. */
+    bool CMlKem::kpkeEncryptPrepared(
+        const SMlKemParams& params, const PreparedPublic& prepared,
+        const SReadOnlyByteSpan& message, const SReadOnlyByteSpan& randomness,
+        const SByteSpan& ciphertext
+    ) {
+        const size_t k = params.k;
         uint8_t prfOut[64 * 3];
         uint8_t counter = 0;
 
@@ -295,15 +308,13 @@ namespace crypto {
         SMlKemPoly e2;
         {
             const SByteSpan outSpan(prfOut, 64 * params.eta2);
-            if (!prf(params.eta2, randomness, counter, outSpan)) {
-                return false;
-            }
-            if (!CMlKemSampler::samplePolyCbd(params.eta2, outSpan, e2)) {
+            if (!prf(params.eta2, randomness, counter, outSpan)
+                || !CMlKemSampler::samplePolyCbd(params.eta2, outSpan, e2))
+            {
                 return false;
             }
         }
 
-        // u = NTT^-1(A-hat^T * y-hat) + e1. The transpose is the aHat[j][i] indexing here.
         const size_t c1Stride = 32 * params.du;
         for (size_t i = 0; i < k; ++i) {
             SMlKemPoly accumulator;
@@ -311,29 +322,27 @@ namespace crypto {
 
             for (size_t j = 0; j < k; ++j) {
                 SMlKemPoly product;
-                MlKemRing::multiplyNtt(product, aHat[j][i], yHat[j]);
+                MlKemRing::multiplyNtt(product, prepared.aHat[j][i], yHat[j]);
                 MlKemRing::add(accumulator, accumulator, product);
             }
 
             MlKemRing::inverseNtt(accumulator);
             MlKemRing::add(accumulator, accumulator, e1[i]);
 
-            if (!MlKemCodec::compress(params.du, accumulator)) {
-                return false;
-            }
-            if (!MlKemCodec::byteEncode(
-                    params.du, accumulator, SByteSpan(ciphertext.data + c1Stride * i, c1Stride)))
+            if (!MlKemCodec::compress(params.du, accumulator)
+                || !MlKemCodec::byteEncode(
+                    params.du, accumulator,
+                    SByteSpan(ciphertext.data + c1Stride * i, c1Stride)))
             {
                 return false;
             }
         }
 
-        // v = NTT^-1(t-hat^T * y-hat) + e2 + Decompress_1(ByteDecode_1(message))
         SMlKemPoly v;
         MlKemRing::setZero(v);
         for (size_t i = 0; i < k; ++i) {
             SMlKemPoly product;
-            MlKemRing::multiplyNtt(product, tHat[i], yHat[i]);
+            MlKemRing::multiplyNtt(product, prepared.tHat[i], yHat[i]);
             MlKemRing::add(v, v, product);
         }
         MlKemRing::inverseNtt(v);
@@ -350,8 +359,87 @@ namespace crypto {
         }
 
         return MlKemCodec::byteEncode(
-            params.dv, v, SByteSpan(ciphertext.data + c1Stride * k, 32 * params.dv)
-        );
+            params.dv, v, SByteSpan(ciphertext.data + c1Stride * k, 32 * params.dv));
+    }
+
+    /* K-PKE.Encrypt (FIPS 203 Algorithm 14). */
+    bool CMlKem::kpkeEncrypt(
+        const SMlKemParams& params, const SReadOnlyByteSpan& ekPke,
+        const SReadOnlyByteSpan& message, const SReadOnlyByteSpan& randomness,
+        const SByteSpan& ciphertext
+    ) {
+        if (!params.isValid()) {
+            return false;
+        }
+        if (ekPke.size != params.ekBytes() || !ekPke.data) {
+            return false;
+        }
+        if (message.size != 32 || !message.data) {
+            return false;
+        }
+        if (randomness.size != 32 || !randomness.data) {
+            return false;
+        }
+        if (ciphertext.size != params.ciphertextBytes() || !ciphertext.data) {
+            return false;
+        }
+
+        PreparedPublic prepared{};
+        if (!preparePublic(params, ekPke, prepared)) {
+            return false;
+        }
+
+        return kpkeEncryptPrepared(params, prepared, message, randomness, ciphertext);
+    }
+
+    /* K-PKE.Decrypt with a decoded secret vector. */
+    bool CMlKem::kpkeDecryptPrepared(
+        const SMlKemParams& params, const PreparedPrivate& prepared,
+        const SReadOnlyByteSpan& ciphertext, const SByteSpan& message
+    ) {
+        const size_t k = params.k;
+        const size_t c1Stride = 32 * params.du;
+
+        SMlKemPoly u[SMlKemParams::MAX_K];
+        for (size_t i = 0; i < k; ++i) {
+            if (!MlKemCodec::byteDecode(
+                    params.du,
+                    SReadOnlyByteSpan(ciphertext.data + c1Stride * i, c1Stride), u[i])
+                || !MlKemCodec::decompress(params.du, u[i]))
+            {
+                return false;
+            }
+            MlKemRing::ntt(u[i]);
+        }
+
+        SMlKemPoly v;
+        if (!MlKemCodec::byteDecode(
+                params.dv,
+                SReadOnlyByteSpan(ciphertext.data + c1Stride * k, 32 * params.dv), v)
+            || !MlKemCodec::decompress(params.dv, v))
+        {
+            return false;
+        }
+
+        SMlKemPoly accumulator;
+        MlKemRing::setZero(accumulator);
+        for (size_t i = 0; i < k; ++i) {
+            SMlKemPoly product;
+            MlKemRing::multiplyNtt(product, prepared.sHat[i], u[i]);
+            MlKemRing::add(accumulator, accumulator, product);
+        }
+
+        MlKemRing::inverseNtt(accumulator);
+        MlKemRing::sub(v, v, accumulator);
+
+        if (!MlKemCodec::compress(1, v)) {
+            return false;
+        }
+
+        const bool encoded = MlKemCodec::byteEncode(1, v, message);
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&accumulator), sizeof(accumulator)));
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&v), sizeof(v)));
+        return encoded;
     }
 
     /* K-PKE.Decrypt (FIPS 203 Algorithm 15). */
@@ -359,8 +447,6 @@ namespace crypto {
         const SMlKemParams& params, const SReadOnlyByteSpan& dkPke,
         const SReadOnlyByteSpan& ciphertext, const SByteSpan& message
     ) {
-        const size_t k = params.k;
-
         if (!params.isValid()) {
             return false;
         }
@@ -374,63 +460,14 @@ namespace crypto {
             return false;
         }
 
-        const size_t c1Stride = 32 * params.du;
-
-        SMlKemPoly u[SMlKemParams::MAX_K];
-        for (size_t i = 0; i < k; ++i) {
-            if (!MlKemCodec::byteDecode(
-                    params.du, SReadOnlyByteSpan(ciphertext.data + c1Stride * i, c1Stride), u[i]))
-            {
-                return false;
-            }
-            if (!MlKemCodec::decompress(params.du, u[i])) {
-                return false;
-            }
-
-            MlKemRing::ntt(u[i]);
-        }
-
-        SMlKemPoly v;
-        if (!MlKemCodec::byteDecode(
-                params.dv, SReadOnlyByteSpan(ciphertext.data + c1Stride * k, 32 * params.dv), v))
-        {
-            return false;
-        }
-        if (!MlKemCodec::decompress(params.dv, v)) {
+        PreparedPrivate prepared{};
+        if (!preparePrivate(params, dkPke, prepared)) {
             return false;
         }
 
-        // w = v - NTT^-1(s-hat^T * NTT(u))
-        SMlKemPoly accumulator;
-        MlKemRing::setZero(accumulator);
-
-        for (size_t i = 0; i < k; ++i) {
-            SMlKemPoly sHat;
-            if (!MlKemCodec::byteDecode(12, SReadOnlyByteSpan(dkPke.data + 384 * i, 384), sHat)) {
-                return false;
-            }
-
-            SMlKemPoly product;
-            MlKemRing::multiplyNtt(product, sHat, u[i]);
-            MlKemRing::add(accumulator, accumulator, product);
-        }
-
-        MlKemRing::inverseNtt(accumulator);
-        MlKemRing::sub(v, v, accumulator);
-
-        if (!MlKemCodec::compress(1, v)) {
-            return false;
-        }
-
-        const bool encoded = MlKemCodec::byteEncode(1, v, message);
-
-        // accumulator held s-hat^T * NTT(u), which is derived from the decapsulation key; v held
-        // the recovered message before it was encoded out. The loop's own sHat copies go out of
-        // scope each iteration and are not reachable from here.
-        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&accumulator), sizeof(accumulator)));
-        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&v), sizeof(v)));
-
-        return encoded;
+        const bool decrypted = kpkeDecryptPrepared(params, prepared, ciphertext, message);
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&prepared), sizeof(prepared)));
+        return decrypted;
     }
 
     /* ML-KEM.KeyGen_internal (FIPS 203 Algorithm 16). */
@@ -469,6 +506,34 @@ namespace crypto {
         return true;
     }
 
+    /* ML-KEM.Encaps_internal over a prepared encapsulation key. */
+    bool CMlKem::encapsulatePrepared(
+        const SMlKemParams& params, const SReadOnlyByteSpan& ek,
+        const PreparedPublic& prepared, const SReadOnlyByteSpan& message,
+        const SByteSpan& ciphertext, const SByteSpan& sharedSecret
+    ) {
+        uint8_t combined[64];
+        std::memcpy(combined, message.data, 32);
+        if (!hashH(ek, SByteSpan(combined + 32, 32))) {
+            return false;
+        }
+
+        uint8_t randomness[32];
+        if (!hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
+                   sharedSecret, SByteSpan(randomness, sizeof(randomness))))
+        {
+            return false;
+        }
+
+        const bool encrypted = kpkeEncryptPrepared(
+            params, prepared, message, SReadOnlyByteSpan(randomness, sizeof(randomness)),
+            ciphertext);
+
+        CSecure::zero(SByteSpan(combined, sizeof(combined)));
+        CSecure::zero(SByteSpan(randomness, sizeof(randomness)));
+        return encrypted;
+    }
+
     /* ML-KEM.Encaps_internal (FIPS 203 Algorithm 17). */
     bool CMlKem::encapsulate(
         const SMlKemParams& params, const SReadOnlyByteSpan& ek, const SReadOnlyByteSpan& message,
@@ -490,32 +555,78 @@ namespace crypto {
             return false;
         }
 
-        // (K, r) = G(message || H(ek)). Binding the encapsulation key into the derivation is what
-        // stops a ciphertext being replayed under a different key.
+        PreparedPublic prepared{};
+        if (!preparePublic(params, ek, prepared)) {
+            return false;
+        }
+
+        return encapsulatePrepared(
+            params, ek, prepared, message, ciphertext, sharedSecret);
+    }
+
+    /* ML-KEM.Decaps_internal over prepared private and public key material. */
+    bool CMlKem::decapsulatePrepared(
+        const SMlKemParams& params, const SReadOnlyByteSpan& dk,
+        const PreparedPrivate& preparedPrivate, const PreparedPublic& preparedPublic,
+        const SReadOnlyByteSpan& ciphertext, const SByteSpan& sharedSecret
+    ) {
+        const size_t k = params.k;
+        const SReadOnlyByteSpan ek(dk.data + 384 * k, params.ekBytes());
+        const SReadOnlyByteSpan h(dk.data + 768 * k + 32, 32);
+        const SReadOnlyByteSpan z(dk.data + 768 * k + 64, 32);
+
+        uint8_t recovered[32];
         uint8_t combined[64];
-        std::memcpy(combined, message.data, 32);
-        if (!hashH(ek, SByteSpan(combined + 32, 32))) {
-            return false;
-        }
-
+        uint8_t candidateSecret[32];
         uint8_t randomness[32];
-        if (!hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
-                   sharedSecret, SByteSpan(randomness, sizeof(randomness))))
-        {
-            return false;
+        uint8_t rejectionInput[32 + SMlKemParams::maxCiphertextBytes()];
+        uint8_t rejectionSecret[32];
+        uint8_t reencrypted[SMlKemParams::maxCiphertextBytes()];
+        uint8_t matches = 0;
+
+        bool ok = kpkeDecryptPrepared(
+            params, preparedPrivate, ciphertext, SByteSpan(recovered, sizeof(recovered)));
+
+        if (ok) {
+            std::memcpy(combined, recovered, 32);
+            std::memcpy(combined + 32, h.data, 32);
+            ok = hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
+                       SByteSpan(candidateSecret, sizeof(candidateSecret)),
+                       SByteSpan(randomness, sizeof(randomness)));
         }
 
-        const bool encrypted = kpkeEncrypt(
-            params, ek, message, SReadOnlyByteSpan(randomness, sizeof(randomness)), ciphertext
-        );
+        if (ok) {
+            std::memcpy(rejectionInput, z.data, 32);
+            std::memcpy(rejectionInput + 32, ciphertext.data, ciphertext.size);
+            ok = hashJ(SReadOnlyByteSpan(rejectionInput, 32 + ciphertext.size),
+                       SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
+        }
 
-        // combined's first half is the message, which determines the shared secret; randomness
-        // reproduces the ciphertext from it. H(ek) in the second half is public, but clearing the
-        // whole buffer is simpler than clearing half of it and no less correct.
+        if (ok) {
+            ok = kpkeEncryptPrepared(
+                params, preparedPublic, SReadOnlyByteSpan(recovered, sizeof(recovered)),
+                SReadOnlyByteSpan(randomness, sizeof(randomness)),
+                SByteSpan(reencrypted, ciphertext.size));
+        }
+
+        if (ok) {
+            matches = CSecure::equalsMask(
+                SReadOnlyByteSpan(reencrypted, ciphertext.size), ciphertext);
+            ok = CSecure::select(
+                matches,
+                SReadOnlyByteSpan(candidateSecret, sizeof(candidateSecret)),
+                SReadOnlyByteSpan(rejectionSecret, sizeof(rejectionSecret)),
+                sharedSecret);
+        }
+
+        CSecure::zero(SByteSpan(&matches, sizeof(matches)));
+        CSecure::zero(SByteSpan(recovered, sizeof(recovered)));
         CSecure::zero(SByteSpan(combined, sizeof(combined)));
+        CSecure::zero(SByteSpan(candidateSecret, sizeof(candidateSecret)));
         CSecure::zero(SByteSpan(randomness, sizeof(randomness)));
-
-        return encrypted;
+        CSecure::zero(SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
+        CSecure::zero(SByteSpan(rejectionInput, 32));
+        return ok;
     }
 
     /* ML-KEM.Decaps_internal (FIPS 203 Algorithm 18). */
@@ -540,88 +651,22 @@ namespace crypto {
 
         const SReadOnlyByteSpan dkPke(dk.data, params.dkPkeBytes());
         const SReadOnlyByteSpan ek(dk.data + 384 * k, params.ekBytes());
-        const SReadOnlyByteSpan h(dk.data + 768 * k + 32, 32);
-        const SReadOnlyByteSpan z(dk.data + 768 * k + 64, 32);
 
-        // --> Single exit from here on, with every secret cleared at the bottom. FIPS 203 requires
-        // the implicit-reject flag and the values it chose between to be destroyed before this
-        // returns, and an early `return false` in the middle would skip that -- so the steps chain
-        // through `ok` instead. Each of those failures needs a hasher to fail at a fixed, correct
-        // output size, i.e. never; the structure is for the guarantee, not the likelihood.
-        //
-        // ciphertext.size is params.ciphertextBytes() and params is one of the three valid sets, so
-        // it is at most maxCiphertextBytes() -- rejectionInput and reencrypted both fit.
-        uint8_t recovered[32];
-        uint8_t combined[64];
-        uint8_t candidateSecret[32];
-        uint8_t randomness[32];
-        uint8_t rejectionInput[32 + SMlKemParams::maxCiphertextBytes()];
-        uint8_t rejectionSecret[32];
-        uint8_t reencrypted[SMlKemParams::maxCiphertextBytes()];
-        uint8_t matches = 0;
-
-        bool ok = kpkeDecrypt(params, dkPke, ciphertext, SByteSpan(recovered, sizeof(recovered)));
-
-        if (ok) {
-            std::memcpy(combined, recovered, 32);
-            std::memcpy(combined + 32, h.data, 32);
-
-            ok = hashG(SReadOnlyByteSpan(combined, sizeof(combined)),
-                       SByteSpan(candidateSecret, sizeof(candidateSecret)),
-                       SByteSpan(randomness, sizeof(randomness)));
+        PreparedPrivate preparedPrivate{};
+        PreparedPublic preparedPublic{};
+        if (!preparePrivate(params, dkPke, preparedPrivate)
+            || !preparePublic(params, ek, preparedPublic))
+        {
+            CSecure::zero(SByteSpan(
+                reinterpret_cast<uint8_t*>(&preparedPrivate), sizeof(preparedPrivate)));
+            return false;
         }
 
-        if (ok) {
-            // The implicit-rejection secret, derived from the private key's own z and the
-            // ciphertext -- J(z || c), the value a tampered ciphertext resolves to.
-            std::memcpy(rejectionInput, z.data, 32);
-            std::memcpy(rejectionInput + 32, ciphertext.data, ciphertext.size);
-
-            ok = hashJ(SReadOnlyByteSpan(rejectionInput, 32 + ciphertext.size),
-                       SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
-        }
-
-        if (ok) {
-            // Re-encrypt and compare. A ciphertext that does not reproduce itself yields the
-            // rejection secret rather than an error: the caller must not be able to tell the two
-            // cases apart, which is what makes the FO transform chosen-ciphertext secure.
-            // Reporting failure here would hand an attacker the decryption oracle the transform
-            // exists to deny.
-            ok = kpkeEncrypt(
-                params, ek, SReadOnlyByteSpan(recovered, sizeof(recovered)),
-                SReadOnlyByteSpan(randomness, sizeof(randomness)),
-                SByteSpan(reencrypted, ciphertext.size));
-        }
-
-        if (ok) {
-            // Both halves of this are constant-time on purpose, and neither can be written the
-            // obvious way. memcmp() stops at the first mismatch, so its running time would reveal
-            // how long a prefix of the re-encryption matched -- far more than the one bit the
-            // transform is hiding. And `matches ? a : b` branches on the verdict, which *is* that
-            // one bit. So the comparison yields a mask, and the mask drives a byte-wise select.
-            matches = CSecure::equalsMask(
-                SReadOnlyByteSpan(reencrypted, ciphertext.size), ciphertext);
-
-            ok = CSecure::select(
-                matches,
-                SReadOnlyByteSpan(candidateSecret, sizeof(candidateSecret)),
-                SReadOnlyByteSpan(rejectionSecret, sizeof(rejectionSecret)),
-                sharedSecret);
-        }
-
-        // The decrypted message and the re-derived randomness matter most of these: either one
-        // reconstructs the shared secret for a *valid* ciphertext, so leaving them in a stack frame
-        // the next call reuses would undo the point of deriving them freshly each time. Only z is
-        // cleared out of rejectionInput -- the ciphertext following it is public.
-        CSecure::zero(SByteSpan(&matches, sizeof(matches)));
-        CSecure::zero(SByteSpan(recovered, sizeof(recovered)));
-        CSecure::zero(SByteSpan(combined, sizeof(combined)));
-        CSecure::zero(SByteSpan(candidateSecret, sizeof(candidateSecret)));
-        CSecure::zero(SByteSpan(randomness, sizeof(randomness)));
-        CSecure::zero(SByteSpan(rejectionSecret, sizeof(rejectionSecret)));
-        CSecure::zero(SByteSpan(rejectionInput, 32));
-
-        return ok;
+        const bool decapsulated = decapsulatePrepared(
+            params, dk, preparedPrivate, preparedPublic, ciphertext, sharedSecret);
+        CSecure::zero(SByteSpan(
+            reinterpret_cast<uint8_t*>(&preparedPrivate), sizeof(preparedPrivate)));
+        return decapsulated;
     }
 
     /* True iff ek is the right length and its encoded t-hat is canonical. */
@@ -777,19 +822,36 @@ namespace crypto {
             SReadOnlyByteSpan span() const { return _encoded.toSpan(); }
         };
 
-        class MlKemContext : public IKemContext {
-        protected:
+    } // namespace
+
+    class MlKemContext : public IKemContext {
+        CMlKem::PreparedPublic _preparedPublic{};
+        CMlKem::PreparedPrivate _preparedPrivate{};
+        bool _hasPreparedPublic = false;
+        bool _hasPreparedPrivate = false;
+
+    protected:
             /* Both sizes are fixed per parameter set, so they come from whichever key is bound.
              * Either half carries the parameter set, and a context bound to only one of them is
              * the normal case for encapsulation (the peer's public key alone). */
             void onReset() override {
                 const SMlKemParams* params = nullptr;
+                std::shared_ptr<MlKemPublicKey> pub;
+                std::shared_ptr<MlKemPrivateKey> priv;
 
-                if (auto pub = std::dynamic_pointer_cast<MlKemPublicKey>(publicKey())) {
+                CSecure::zero(SByteSpan(
+                    reinterpret_cast<uint8_t*>(&_preparedPrivate), sizeof(_preparedPrivate)));
+                _hasPreparedPublic = false;
+                _hasPreparedPrivate = false;
+
+                pub = std::dynamic_pointer_cast<MlKemPublicKey>(publicKey());
+                priv = std::dynamic_pointer_cast<MlKemPrivateKey>(privateKey());
+                if (pub) {
                     params = &pub->params();
                 }
-                else if (auto priv = std::dynamic_pointer_cast<MlKemPrivateKey>(privateKey())) {
+                else if (priv) {
                     params = &priv->params();
+                    pub = std::dynamic_pointer_cast<MlKemPublicKey>(priv->publicKey());
                 }
 
                 if (!params) {
@@ -798,9 +860,25 @@ namespace crypto {
 
                 sizeOfCiphertext(params->ciphertextBytes());
                 sizeOfSharedSecret(params->sharedSecretBytes());
+
+                if (pub) {
+                    _hasPreparedPublic = CMlKem::preparePublic(
+                        *params, pub->span(), _preparedPublic);
+                }
+                if (priv) {
+                    _hasPreparedPrivate = CMlKem::preparePrivate(
+                        *params,
+                        SReadOnlyByteSpan(priv->span().data, params->dkPkeBytes()),
+                        _preparedPrivate);
+                }
             }
 
-        public:
+    public:
+            ~MlKemContext() override {
+                CSecure::zero(SByteSpan(
+                    reinterpret_cast<uint8_t*>(&_preparedPrivate), sizeof(_preparedPrivate)));
+            }
+
             ERetCode encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret) override {
                 if (!publicKey()) {
                     return ERET_KEY_EMPTY;
@@ -809,6 +887,9 @@ namespace crypto {
                 auto pub = std::dynamic_pointer_cast<MlKemPublicKey>(publicKey());
                 if (!pub) {
                     return ERET_KEY_FORMAT;
+                }
+                if (!_hasPreparedPublic) {
+                    return ERET_KEY_ERROR;
                 }
 
                 const SMlKemParams& params = pub->params();
@@ -826,8 +907,9 @@ namespace crypto {
                     return ERET_UNKNOWN;
                 }
 
-                const bool encapsulated = CMlKem::encapsulate(
-                    params, pub->span(), SReadOnlyByteSpan(message, sizeof(message)),
+                const bool encapsulated = CMlKem::encapsulatePrepared(
+                    params, pub->span(), _preparedPublic,
+                    SReadOnlyByteSpan(message, sizeof(message)),
                     SByteSpan(ciphertext.data, params.ciphertextBytes()),
                     SByteSpan(sharedSecret.data, params.sharedSecretBytes()));
 
@@ -862,6 +944,9 @@ namespace crypto {
                 if (!priv) {
                     return ERET_KEY_FORMAT;
                 }
+                if (!_hasPreparedPrivate || !_hasPreparedPublic) {
+                    return ERET_KEY_ERROR;
+                }
 
                 const SMlKemParams& params = priv->params();
                 if (ciphertext.size != params.ciphertextBytes() || !ciphertext.data) {
@@ -871,8 +956,8 @@ namespace crypto {
                     return ERET_NOSPC;
                 }
 
-                if (!CMlKem::decapsulate(
-                        params, priv->span(), ciphertext,
+                if (!CMlKem::decapsulatePrepared(
+                        params, priv->span(), _preparedPrivate, _preparedPublic, ciphertext,
                         SByteSpan(sharedSecret.data, params.sharedSecretBytes())))
                 {
                     return ERET_UNKNOWN;
@@ -882,8 +967,6 @@ namespace crypto {
                 return ERET_OK;
             }
         };
-
-    } // namespace
 
     /* Maps an EKems value to the parameter set it names. */
     bool MLKEM::paramsOf(EKems which, SMlKemParams& out) {

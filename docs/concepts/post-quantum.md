@@ -150,6 +150,11 @@
   rather than the algorithm (asserting, among other things, that repeated
   `encapsulate()` calls against one key differ, since a shared secret that
   was a function of the key alone would be reused every session).
+
+  Binding a key to `IKemContext` also prepares the key material used repeatedly: the public
+  key's decoded t-hat and expanded A-hat matrix, and the private key's decoded s-hat vector.
+  Encapsulation and decapsulation reuse those values until the context is reset. The raw
+  `CMlKem` span API remains stateless and prepares its caller-supplied encoding on every call.
 - **`src/crypto/kems/mlkemring.hpp`/`.cpp`, `src/crypto/kems/mlkemcodec.hpp`/
   `.cpp`** hold the arithmetic and wire encoding `CMlKem` is built from:
   `MlKemRing` (NTT, inverse NTT, base-case multiply over R_q, plus a
@@ -189,10 +194,13 @@
   Beyond the transform it provides `centered()` -- FIPS 204's `mod±`,
   the representative in (-q/2, q/2] -- and `infinityNorm()`, which ML-DSA's
   signing loop rejects on, so it belongs to the ring rather than to a
-  caller. Nothing is kept in Montgomery form; FIPS 204 Appendix A warns that
-  implementations usually store the zetas array that way, which makes a
-  representation mismatch there exactly the self-consistent-but-wrong
-  failure mode this library has been bitten by before, so
+  caller. Coefficients remain in normal form at every ring boundary. The hot
+  NTT loops derive a second twiddle table in Montgomery multiplication form
+  and convert each product back immediately, avoiding per-coefficient division
+  without changing the transform representation. FIPS 204 Appendix A warns
+  that implementations usually store the zetas array in Montgomery form,
+  which makes a representation mismatch there exactly the
+  self-consistent-but-wrong failure mode this library has been bitten by before, so
   `tests/crypto/asyms/mldsaring.cpp` checks the table against Appendix B's
   printed values as well as against its defining property.
 - **`src/crypto/asyms/mldsarounding.hpp`/`.cpp`** define `MlDsaRounding`,
@@ -228,7 +236,9 @@
   signatures are built from. `simpleBitPack`/`simpleBitUnpack` handle
   coefficients in [0, b]; `bitPack`/`bitUnpack` handle [-a, b] by encoding
   `b - w_i`, so a signed range fits an unsigned field. Bits run little-endian
-  within each byte, as in ML-KEM.
+  within each byte, as in ML-KEM. The implementation moves those fields through
+  a 64-bit reservoir; its widest field is 20 bits, so the next field always fits
+  after complete bytes are flushed.
 
   **Decoding does not imply the range**, and FIPS 204 says so itself under
   Algorithm 17: for some (a, b) there are byte strings that decode outside the
@@ -256,7 +266,10 @@
   `rejBoundedPoly` and the `expandA`/`expandS`/`expandMask` procedures over
   them. All three samplers consume a seed-dependent amount of stream, so they
   read through `squeeze()` rather than `finish()` -- which is why incremental
-  squeezing was a hard prerequisite rather than a convenience.
+  squeezing was a hard prerequisite rather than a convenience. The rejection
+  loops squeeze complete SHAKE rate blocks and consume them in the standard's
+  byte, three-byte, or low-nibble-first order; batching changes call overhead,
+  not the sampled stream.
 
   Two things here are easy to get wrong and invisible without an external
   vector. The XOFs are not interchangeable: `rejNttPoly`/`expandA` use

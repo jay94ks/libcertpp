@@ -4,6 +4,131 @@
 
 namespace certpp {
 
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && \
+    (defined(__x86_64__) || defined(_M_X64))
+    namespace {
+
+        /* Fixed-width 64-bit integrated CIOS multiplication for an already-packed Montgomery
+         * chain. Product and reduction carries advance together, so each accumulator digit is read
+         * once instead of being written by a product pass and read again by a reduction pass.
+         * Keeping operands packed across repeated squares also avoids converting every intermediate
+         * through CBigNum's 32-bit storage. out may alias either input; scratch holds count+2 digits. */
+        template<bool Accelerated>
+#if defined(__clang__)
+        __attribute__((always_inline))
+#endif
+        inline void mulWideChainBody(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            (void)Accelerated;
+            using Wide = unsigned __int128;
+            std::memset(scratch, 0, (count + 2) * sizeof(uint64_t));
+
+            for (size_t i = 0; i < count; ++i) {
+                const uint64_t bi = b[i];
+                Wide product = Wide(scratch[0]) + Wide(a[0]) * bi;
+                uint64_t productDigit = uint64_t(product);
+                Wide productCarry = product >> 64;
+
+                const uint64_t multiplier = productDigit * n0inv;
+                Wide reduction = Wide(productDigit) + Wide(multiplier) * modulus[0];
+                Wide reductionCarry = reduction >> 64;
+
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#endif
+                for (size_t j = 1; j < count; ++j) {
+                    product = Wide(scratch[j]) + Wide(a[j]) * bi + productCarry;
+                    productDigit = uint64_t(product);
+                    productCarry = product >> 64;
+
+                    reduction = Wide(productDigit)
+                        + Wide(multiplier) * modulus[j] + reductionCarry;
+                    scratch[j - 1] = uint64_t(reduction);
+                    reductionCarry = reduction >> 64;
+                }
+
+                const Wide productTop = Wide(scratch[count]) + productCarry;
+                const Wide reductionTop = Wide(uint64_t(productTop)) + reductionCarry;
+                scratch[count - 1] = uint64_t(reductionTop);
+                scratch[count] = uint64_t(productTop >> 64)
+                    + uint64_t(reductionTop >> 64);
+            }
+
+            auto compare = [count](const uint64_t* lhs, const uint64_t* rhs) {
+                for (size_t i = count; i-- > 0; ) {
+                    if (lhs[i] != rhs[i]) {
+                        return lhs[i] < rhs[i] ? -1 : 1;
+                    }
+                }
+                return 0;
+            };
+
+            while (scratch[count] != 0 || compare(scratch, modulus) >= 0) {
+                uint64_t borrow = 0;
+                for (size_t i = 0; i < count; ++i) {
+                    const uint64_t first = scratch[i] - modulus[i];
+                    const uint64_t borrow1 = scratch[i] < modulus[i];
+                    const uint64_t second = first - borrow;
+                    const uint64_t borrow2 = first < borrow;
+                    scratch[i] = second;
+                    borrow = borrow1 | borrow2;
+                }
+                scratch[count] -= borrow;
+            }
+
+            std::memcpy(out, scratch, count * sizeof(uint64_t));
+        }
+
+        void mulWideChainPortable(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<false>(a, b, modulus, count, n0inv, out, scratch);
+        }
+
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
+        bool hasAdxBmi2Montgomery() {
+            static const bool supported = [] {
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("bmi2") != 0
+                    && __builtin_cpu_supports("adx") != 0;
+            }();
+            return supported;
+        }
+
+        __attribute__((target("bmi2,adx")))
+        void mulWideChainAccelerated(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true>(a, b, modulus, count, n0inv, out, scratch);
+        }
+
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+        bool hasTigerLakeMontgomery() {
+            static const bool supported = [] {
+                __builtin_cpu_init();
+                return __builtin_cpu_is("tigerlake") != 0;
+            }();
+            return supported;
+        }
+
+        __attribute__((target("arch=tigerlake")))
+        void mulWideChainTigerLake(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true>(a, b, modulus, count, n0inv, out, scratch);
+        }
+
+#endif
+#endif
+
+    } // namespace
+#endif
+
     /* Computes -value^-1 mod 2^32 by Newton's iteration. */
     uint32_t CMontgomery::negInverse32(uint32_t value) {
         // --> x_{k+1} = x_k * (2 - value*x_k) doubles the number of correct low bits each step.
@@ -60,6 +185,10 @@ namespace certpp {
     void CMontgomery::mulInternal(
         const uint32_t* a, size_t aLen, const uint32_t* b, size_t bLen, CBigNum& out
     ) const {
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        mulInternal64(a, aLen, b, bLen, out);
+        return;
+#endif
         const size_t s = _count;
         const uint32_t* n = _m._limbs.begin();
 
@@ -140,13 +269,121 @@ namespace certpp {
         store(out, t, s);
     }
 
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+    /* The same integrated CIOS recurrence over 64-bit digits. A 128-bit temporary holds one full
+     * product plus the accumulator digit and carry exactly, cutting an n-limb multiplication from
+     * n^2 32-bit products to ceil(n/2)^2 native products. Product and reduction carries advance in
+     * the same digit loop to avoid a second pass over the accumulator. */
+    void CMontgomery::mulInternal64(
+        const uint32_t* a, size_t aLen, const uint32_t* b, size_t bLen, CBigNum& out
+    ) const {
+        using Wide = unsigned __int128;
+        const size_t s = _wideCount;
+        constexpr size_t STACK_DIGITS = (STACK_LIMBS + 1) / 2;
+        uint64_t aStack[STACK_DIGITS], bStack[STACK_DIGITS];
+        uint64_t tStack[STACK_DIGITS + 2];
+        TArray<uint64_t> heap;
+        uint64_t* a64 = aStack;
+        uint64_t* b64 = bStack;
+        uint64_t* t = tStack;
+        if (s > STACK_DIGITS) {
+            if (!heap.resize(3 * s + 2)) {
+                out = CBigNum();
+                return;
+            }
+            a64 = heap.begin();
+            b64 = a64 + s;
+            t = b64 + s;
+        }
+
+        auto pack = [](const uint32_t* src, size_t len, uint64_t* dst, size_t count) {
+            for (size_t i = 0; i < count; ++i) {
+                const size_t lo = 2 * i;
+                uint64_t value = lo < len ? uint64_t(src[lo]) : 0;
+                if (lo + 1 < len) {
+                    value |= uint64_t(src[lo + 1]) << 32;
+                }
+                dst[i] = value;
+            }
+        };
+        pack(a, aLen, a64, s);
+        pack(b, bLen, b64, s);
+        std::memset(t, 0, (s + 2) * sizeof(uint64_t));
+        const uint64_t* n64 = _modulus64.begin();
+
+        for (size_t i = 0; i < s; ++i) {
+            const uint64_t bi = b64[i];
+            Wide product = Wide(t[0]) + Wide(a64[0]) * bi;
+            uint64_t productDigit = uint64_t(product);
+            Wide productCarry = product >> 64;
+
+            const uint64_t multiplier = productDigit * _n0inv64;
+            Wide reduction = Wide(productDigit) + Wide(multiplier) * n64[0];
+            Wide reductionCarry = reduction >> 64;
+
+            for (size_t j = 1; j < s; ++j) {
+                product = Wide(t[j]) + Wide(a64[j]) * bi + productCarry;
+                productDigit = uint64_t(product);
+                productCarry = product >> 64;
+
+                reduction = Wide(productDigit)
+                    + Wide(multiplier) * n64[j] + reductionCarry;
+                t[j - 1] = uint64_t(reduction);
+                reductionCarry = reduction >> 64;
+            }
+
+            const Wide productTop = Wide(t[s]) + productCarry;
+            const Wide reductionTop = Wide(uint64_t(productTop)) + reductionCarry;
+            t[s - 1] = uint64_t(reductionTop);
+            t[s] = uint64_t(productTop >> 64) + uint64_t(reductionTop >> 64);
+        }
+
+        auto compare = [s](const uint64_t* lhs, const uint64_t* rhs) {
+            for (size_t i = s; i-- > 0; ) {
+                if (lhs[i] != rhs[i]) {
+                    return lhs[i] < rhs[i] ? -1 : 1;
+                }
+            }
+            return 0;
+        };
+        while (t[s] != 0 || compare(t, n64) >= 0) {
+            uint64_t borrow = 0;
+            for (size_t i = 0; i < s; ++i) {
+                const uint64_t first = t[i] - n64[i];
+                const uint64_t borrow1 = t[i] < n64[i];
+                const uint64_t second = first - borrow;
+                const uint64_t borrow2 = first < borrow;
+                t[i] = second;
+                borrow = borrow1 | borrow2;
+            }
+            t[s] -= borrow;
+        }
+
+        uint32_t limbs[STACK_LIMBS + 2];
+        TArray<uint32_t> heapLimbs;
+        uint32_t* result = limbs;
+        if (2 * s > STACK_LIMBS + 2) {
+            if (!heapLimbs.resize(2 * s)) {
+                out = CBigNum();
+                return;
+            }
+            result = heapLimbs.begin();
+        }
+        for (size_t i = 0; i < s; ++i) {
+            result[2 * i] = uint32_t(t[i]);
+            result[2 * i + 1] = uint32_t(t[i] >> 32);
+        }
+        store(out, result, 2 * s);
+    }
+#endif
+
     CMontgomery::CMontgomery()
-        : _count(0), _n0inv(0), _valid(false)
+        : _count(0), _n0inv(0), _wideCount(0), _n0inv64(0), _valid(false)
     {
     }
 
     CMontgomery::CMontgomery(const CBigNum& modulus)
-        : _count(0), _n0inv(0), _valid(false)
+        : _count(0), _n0inv(0), _wideCount(0), _n0inv64(0), _valid(false)
     {
         // --> Montgomery reduction needs R == 2^(32*limbs) to be coprime to m, which for a power of
         // two means exactly "m is odd". An even (or zero) modulus has no n' at all, so there is
@@ -159,6 +396,25 @@ namespace certpp {
         _m = modulus;
         _count = _m._limbs.size();
         _n0inv = negInverse32(_m._limbs[0]);
+        _wideCount = (_count + 1) / 2;
+        if (!_modulus64.resize(_wideCount)) {
+            _m = CBigNum();
+            _count = 0;
+            _wideCount = 0;
+            return;
+        }
+        for (size_t i = 0; i < _wideCount; ++i) {
+            const size_t lo = 2 * i;
+            _modulus64[i] = uint64_t(_m._limbs[lo]);
+            if (lo + 1 < _count) {
+                _modulus64[i] |= uint64_t(_m._limbs[lo + 1]) << 32;
+            }
+        }
+        uint64_t inverse64 = _modulus64[0];
+        for (size_t i = 0; i < 6; ++i) {
+            inverse64 *= uint64_t(2) - _modulus64[0] * inverse64;
+        }
+        _n0inv64 = uint64_t(0) - inverse64;
 
         // --> Sanity check on the Newton iteration rather than trusting it: n' * m[0] must be -1
         // mod 2^32. Cheap, and it runs once per context instead of once per multiply.
@@ -166,17 +422,29 @@ namespace certpp {
             _m = CBigNum();
             _count = 0;
             _n0inv = 0;
+            _modulus64.clear();
+            _wideCount = 0;
+            _n0inv64 = 0;
             return;
         }
 
         // --> R^2 mod m and R mod m are the only two places a long division happens, and they
         // happen once, here -- which is the whole trade this class makes.
         _rr = CBigNum(uint64_t(1));
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const size_t wideCount = (_count + 1) / 2;
+        _rr.shl(128 * wideCount);
+#else
         _rr.shl(64 * _count);
+#endif
         _rr.mod(_m);
 
         _one = CBigNum(uint64_t(1));
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        _one.shl(64 * wideCount);
+#else
         _one.shl(32 * _count);
+#endif
         _one.mod(_m);
 
         _valid = true;
@@ -440,7 +708,7 @@ namespace certpp {
         return acc;
     }
 
-    /* Modular exponentiation via a four-bit sliding window in the Montgomery domain. */
+    /* Modular exponentiation via binary or adaptive sliding-window chains. */
     CBigNum CMontgomery::modExp(const CBigNum& base, const CBigNum& exponent) const {
         if (!_valid) {
             return CBigNum();
@@ -455,31 +723,220 @@ namespace certpp {
         }
 
         const size_t exponentBits = exponent.bitLength();
-        const CBigNum baseMont = toMont(base);
         if (exponentBits <= 64) {
             // Tiny public exponents such as RSA's 65537 have only two set bits. Building a window
             // table costs more multiplications than it can save, so keep the direct binary path.
-            CBigNum result(_one);
-            for (size_t i = exponentBits; i-- > 0; ) {
+            const CBigNum baseMont = toMont(base);
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && \
+    (defined(__x86_64__) || defined(_M_X64))
+            constexpr size_t STACK_DIGITS = (STACK_LIMBS + 1) / 2;
+            uint64_t stack[3 * STACK_DIGITS + STACK_DIGITS + 2];
+            TArray<uint64_t> heap;
+            uint64_t* packed = stack;
+            if (_wideCount > STACK_DIGITS) {
+                if (!heap.resize(4 * _wideCount + 2)) {
+                    return CBigNum();
+                }
+                packed = heap.begin();
+            }
+
+            uint64_t* baseWide = packed;
+            uint64_t* resultWide = baseWide + _wideCount;
+            uint64_t* ordinaryOne = resultWide + _wideCount;
+            uint64_t* scratch = ordinaryOne + _wideCount;
+
+            auto pack = [this](const CBigNum& value, uint64_t* out) {
+                for (size_t i = 0; i < _wideCount; ++i) {
+                    const size_t lo = 2 * i;
+                    uint64_t digit = lo < value._limbs.size() ? uint64_t(value._limbs[lo]) : 0;
+                    if (lo + 1 < value._limbs.size()) {
+                        digit |= uint64_t(value._limbs[lo + 1]) << 32;
+                    }
+                    out[i] = digit;
+                }
+            };
+
+            pack(baseMont, baseWide);
+            std::memcpy(resultWide, baseWide, _wideCount * sizeof(uint64_t));
+            std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
+            ordinaryOne[0] = 1;
+
+            using MulWideChain = void(*)(
+                const uint64_t*, const uint64_t*, const uint64_t*, size_t,
+                uint64_t, uint64_t*, uint64_t*);
+            MulWideChain multiply = mulWideChainPortable;
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
+            if (hasAdxBmi2Montgomery()) {
+                multiply = mulWideChainAccelerated;
+            }
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+            if (hasTigerLakeMontgomery()) {
+                multiply = mulWideChainTigerLake;
+            }
+#endif
+#endif
+
+            // bitLength() guarantees the top exponent bit is one. Seeding with base consumes that
+            // bit directly instead of squaring Montgomery one and multiplying by base first.
+            for (size_t i = exponentBits - 1; i-- > 0; ) {
+                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                    _n0inv64, resultWide, scratch);
+                if (exponent.testBit(i)) {
+                    multiply(resultWide, baseWide, _modulus64.begin(), _wideCount,
+                        _n0inv64, resultWide, scratch);
+                }
+            }
+
+            // One final Montgomery reduction returns to the ordinary domain.
+            multiply(resultWide, ordinaryOne, _modulus64.begin(), _wideCount,
+                _n0inv64, resultWide, scratch);
+
+            CBigNum result;
+            if (!result._limbs.resize(2 * _wideCount)) {
+                return CBigNum();
+            }
+            for (size_t i = 0; i < _wideCount; ++i) {
+                result._limbs[2 * i] = uint32_t(resultWide[i]);
+                result._limbs[2 * i + 1] = uint32_t(resultWide[i] >> 32);
+            }
+            size_t used = result._limbs.size();
+            while (used != 0 && result._limbs[used - 1] == 0) {
+                --used;
+            }
+            result._limbs.resize(used);
+            return result;
+#else
+            CBigNum result(baseMont);
+            for (size_t i = exponentBits - 1; i-- > 0; ) {
                 mul(result, result);
                 if (exponent.testBit(i)) {
                     mul(result, baseMont);
                 }
             }
             return fromMont(result);
+#endif
         }
 
-        constexpr size_t WINDOW = 4;
-        constexpr size_t ODD_POWERS = size_t(1) << (WINDOW - 1);
+        const CBigNum baseMont = toMont(base);
+
+        constexpr size_t MAX_WINDOW = 5;
+        constexpr size_t MAX_ODD_POWERS = size_t(1) << (MAX_WINDOW - 1);
+        const size_t window = exponentBits > 512 ? size_t(5) : size_t(4);
+        const size_t oddPowers = size_t(1) << (window - 1);
+
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && \
+    (defined(__x86_64__) || defined(_M_X64))
+        // Keep every long-exponent intermediate in the 64-bit format consumed by the CIOS
+        // recurrence. Converting each square through CBigNum's 32-bit storage otherwise costs two
+        // complete limb walks per multiplication, more than a thousand times for RSA-2048 CRT.
+        constexpr size_t STACK_DIGITS = (STACK_LIMBS + 1) / 2;
+        uint64_t stack[(MAX_ODD_POWERS + 4) * STACK_DIGITS + 2];
+        TArray<uint64_t> heap;
+        uint64_t* packed = stack;
+        if (_wideCount > STACK_DIGITS) {
+            if (!heap.resize((MAX_ODD_POWERS + 4) * _wideCount + 2)) {
+                return CBigNum();
+            }
+            packed = heap.begin();
+        }
+
+        uint64_t* table = packed;
+        uint64_t* baseSquared = table + MAX_ODD_POWERS * _wideCount;
+        uint64_t* resultWide = baseSquared + _wideCount;
+        uint64_t* ordinaryOne = resultWide + _wideCount;
+        uint64_t* scratch = ordinaryOne + _wideCount;
+
+        auto pack = [this](const CBigNum& value, uint64_t* out) {
+            for (size_t i = 0; i < _wideCount; ++i) {
+                const size_t lo = 2 * i;
+                uint64_t digit = lo < value._limbs.size() ? uint64_t(value._limbs[lo]) : 0;
+                if (lo + 1 < value._limbs.size()) {
+                    digit |= uint64_t(value._limbs[lo + 1]) << 32;
+                }
+                out[i] = digit;
+            }
+        };
+
+        using MulWideChain = void(*)(
+            const uint64_t*, const uint64_t*, const uint64_t*, size_t,
+            uint64_t, uint64_t*, uint64_t*);
+        MulWideChain multiply = mulWideChainPortable;
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD)
+        if (hasAdxBmi2Montgomery()) {
+            multiply = mulWideChainAccelerated;
+        }
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+        if (hasTigerLakeMontgomery()) {
+            multiply = mulWideChainTigerLake;
+        }
+#endif
+#endif
+
+        pack(baseMont, table);
+        multiply(table, table, _modulus64.begin(), _wideCount,
+            _n0inv64, baseSquared, scratch);
+        for (size_t i = 1; i < oddPowers; ++i) {
+            multiply(table + (i - 1) * _wideCount, baseSquared,
+                _modulus64.begin(), _wideCount, _n0inv64,
+                table + i * _wideCount, scratch);
+        }
+
+        pack(_one, resultWide);
+        size_t cursor = exponentBits;
+        while (cursor > 0) {
+            const size_t top = cursor - 1;
+            if (!exponent.testBit(top)) {
+                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                    _n0inv64, resultWide, scratch);
+                --cursor;
+                continue;
+            }
+
+            size_t bottom = cursor > window ? cursor - window : 0;
+            while (!exponent.testBit(bottom)) {
+                ++bottom;
+            }
+
+            size_t value = 0;
+            for (size_t bit = cursor; bit-- > bottom; ) {
+                value = (value << 1) | size_t(exponent.testBit(bit));
+                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                    _n0inv64, resultWide, scratch);
+            }
+            multiply(resultWide, table + (value >> 1) * _wideCount,
+                _modulus64.begin(), _wideCount, _n0inv64, resultWide, scratch);
+            cursor = bottom;
+        }
+
+        std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
+        ordinaryOne[0] = 1;
+        multiply(resultWide, ordinaryOne, _modulus64.begin(), _wideCount,
+            _n0inv64, resultWide, scratch);
+
+        CBigNum result;
+        if (!result._limbs.resize(2 * _wideCount)) {
+            return CBigNum();
+        }
+        for (size_t i = 0; i < _wideCount; ++i) {
+            result._limbs[2 * i] = uint32_t(resultWide[i]);
+            result._limbs[2 * i + 1] = uint32_t(resultWide[i] >> 32);
+        }
+        size_t used = result._limbs.size();
+        while (used != 0 && result._limbs[used - 1] == 0) {
+            --used;
+        }
+        result._limbs.resize(used);
+        return result;
+#else
 
         // table[i] = base^(2*i+1). Sliding windows only end at a set bit, so even powers are
-        // never selected. Eight cached odd powers replace about half of a long exponent's
-        // multiply steps while keeping setup small enough for DSA's 160/256-bit exponents.
-        CBigNum table[ODD_POWERS];
+        // never selected. Long RSA exponents use a five-bit window, while DSA's shorter 160/256-
+        // bit exponents retain the smaller four-bit table.
+        CBigNum table[MAX_ODD_POWERS];
         table[0] = baseMont;
         CBigNum baseSquared(table[0]);
         mul(baseSquared, baseSquared);
-        for (size_t i = 1; i < ODD_POWERS; ++i) {
+        for (size_t i = 1; i < oddPowers; ++i) {
             table[i] = table[i - 1];
             mul(table[i], baseSquared);
         }
@@ -495,7 +952,7 @@ namespace certpp {
                 continue;
             }
 
-            size_t bottom = cursor > WINDOW ? cursor - WINDOW : 0;
+            size_t bottom = cursor > window ? cursor - window : 0;
             while (!exponent.testBit(bottom)) {
                 ++bottom;
             }
@@ -510,6 +967,196 @@ namespace certpp {
         }
 
         return fromMont(result);
+#endif
+    }
+
+    /* Product of two modular exponentiations via one two-bit simultaneous window. */
+    CBigNum CMontgomery::modExpProduct(
+        const CBigNum& firstBase, const CBigNum& firstExponent,
+        const CBigNum& secondBase, const CBigNum& secondExponent
+    ) const {
+        if (!_valid) {
+            return CBigNum();
+        }
+
+        const CBigNum firstMont = toMont(firstBase);
+        const CBigNum secondMont = toMont(secondBase);
+
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && \
+    (defined(__x86_64__) || defined(_M_X64))
+        constexpr size_t WINDOW = 2;
+        constexpr size_t WINDOW_VALUES = size_t(1) << WINDOW;
+        constexpr size_t PRODUCT_COUNT = WINDOW_VALUES * WINDOW_VALUES;
+        constexpr size_t STACK_DIGITS = (STACK_LIMBS + 1) / 2;
+        constexpr size_t BUFFER_COUNT = PRODUCT_COUNT + 2 * WINDOW_VALUES + 3;
+        uint64_t stack[BUFFER_COUNT * STACK_DIGITS + 2];
+        TArray<uint64_t> heap;
+        uint64_t* packed = stack;
+        if (_wideCount > STACK_DIGITS) {
+            if (!heap.resize(BUFFER_COUNT * _wideCount + 2)) {
+                return CBigNum();
+            }
+            packed = heap.begin();
+        }
+
+        uint64_t* table = packed;
+        uint64_t* firstPowers = table + PRODUCT_COUNT * _wideCount;
+        uint64_t* secondPowers = firstPowers + WINDOW_VALUES * _wideCount;
+        uint64_t* resultWide = secondPowers + WINDOW_VALUES * _wideCount;
+        uint64_t* ordinaryOne = resultWide + _wideCount;
+        uint64_t* scratch = ordinaryOne + _wideCount;
+
+        auto pack = [this](const CBigNum& value, uint64_t* out) {
+            for (size_t i = 0; i < _wideCount; ++i) {
+                const size_t lo = 2 * i;
+                uint64_t digit = lo < value._limbs.size() ? uint64_t(value._limbs[lo]) : 0;
+                if (lo + 1 < value._limbs.size()) {
+                    digit |= uint64_t(value._limbs[lo + 1]) << 32;
+                }
+                out[i] = digit;
+            }
+        };
+
+        using MulWideChain = void(*)(
+            const uint64_t*, const uint64_t*, const uint64_t*, size_t,
+            uint64_t, uint64_t*, uint64_t*);
+        MulWideChain multiply = mulWideChainPortable;
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD)
+        if (hasAdxBmi2Montgomery()) {
+            multiply = mulWideChainAccelerated;
+        }
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+        if (hasTigerLakeMontgomery()) {
+            multiply = mulWideChainTigerLake;
+        }
+#endif
+#endif
+
+        pack(_one, firstPowers);
+        std::memcpy(secondPowers, firstPowers, _wideCount * sizeof(uint64_t));
+        pack(firstMont, firstPowers + _wideCount);
+        pack(secondMont, secondPowers + _wideCount);
+        for (size_t i = 2; i < WINDOW_VALUES; ++i) {
+            multiply(firstPowers + (i - 1) * _wideCount, firstPowers + _wideCount,
+                _modulus64.begin(), _wideCount, _n0inv64,
+                firstPowers + i * _wideCount, scratch);
+            multiply(secondPowers + (i - 1) * _wideCount, secondPowers + _wideCount,
+                _modulus64.begin(), _wideCount, _n0inv64,
+                secondPowers + i * _wideCount, scratch);
+        }
+        for (size_t first = 0; first < WINDOW_VALUES; ++first) {
+            for (size_t second = 0; second < WINDOW_VALUES; ++second) {
+                uint64_t* entry = table
+                    + (first * WINDOW_VALUES + second) * _wideCount;
+                if (first == 0) {
+                    std::memcpy(entry, secondPowers + second * _wideCount,
+                        _wideCount * sizeof(uint64_t));
+                } else if (second == 0) {
+                    std::memcpy(entry, firstPowers + first * _wideCount,
+                        _wideCount * sizeof(uint64_t));
+                } else {
+                    multiply(firstPowers + first * _wideCount,
+                        secondPowers + second * _wideCount,
+                        _modulus64.begin(), _wideCount, _n0inv64, entry, scratch);
+                }
+            }
+        }
+        std::memcpy(resultWide, table, _wideCount * sizeof(uint64_t));
+
+        const size_t firstBits = firstExponent.bitLength();
+        const size_t secondBits = secondExponent.bitLength();
+        const size_t bits = firstBits > secondBits ? firstBits : secondBits;
+        size_t cursor = bits;
+        while (cursor != 0) {
+            const size_t width = cursor < WINDOW ? cursor : WINDOW;
+            const size_t bottom = cursor - width;
+            size_t firstValue = 0;
+            size_t secondValue = 0;
+            for (size_t bit = cursor; bit-- > bottom; ) {
+                multiply(resultWide, resultWide, _modulus64.begin(), _wideCount,
+                    _n0inv64, resultWide, scratch);
+                firstValue = (firstValue << 1) | size_t(firstExponent.testBit(bit));
+                secondValue = (secondValue << 1) | size_t(secondExponent.testBit(bit));
+            }
+            const size_t index = firstValue * WINDOW_VALUES + secondValue;
+            if (index != 0) {
+                multiply(resultWide, table + index * _wideCount,
+                    _modulus64.begin(), _wideCount, _n0inv64, resultWide, scratch);
+            }
+            cursor = bottom;
+        }
+
+        std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
+        ordinaryOne[0] = 1;
+        multiply(resultWide, ordinaryOne, _modulus64.begin(), _wideCount,
+            _n0inv64, resultWide, scratch);
+
+        CBigNum result;
+        if (!result._limbs.resize(2 * _wideCount)) {
+            return CBigNum();
+        }
+        for (size_t i = 0; i < _wideCount; ++i) {
+            result._limbs[2 * i] = uint32_t(resultWide[i]);
+            result._limbs[2 * i + 1] = uint32_t(resultWide[i] >> 32);
+        }
+        size_t used = result._limbs.size();
+        while (used != 0 && result._limbs[used - 1] == 0) {
+            --used;
+        }
+        result._limbs.resize(used);
+        return result;
+#else
+        constexpr size_t WINDOW = 2;
+        constexpr size_t WINDOW_VALUES = size_t(1) << WINDOW;
+        CBigNum firstPowers[WINDOW_VALUES];
+        CBigNum secondPowers[WINDOW_VALUES];
+        CBigNum table[WINDOW_VALUES * WINDOW_VALUES];
+        firstPowers[0] = _one;
+        secondPowers[0] = _one;
+        firstPowers[1] = firstMont;
+        secondPowers[1] = secondMont;
+        for (size_t i = 2; i < WINDOW_VALUES; ++i) {
+            firstPowers[i] = firstPowers[i - 1];
+            mul(firstPowers[i], firstPowers[1]);
+            secondPowers[i] = secondPowers[i - 1];
+            mul(secondPowers[i], secondPowers[1]);
+        }
+        for (size_t first = 0; first < WINDOW_VALUES; ++first) {
+            for (size_t second = 0; second < WINDOW_VALUES; ++second) {
+                CBigNum& entry = table[first * WINDOW_VALUES + second];
+                if (first == 0) {
+                    entry = secondPowers[second];
+                } else if (second == 0) {
+                    entry = firstPowers[first];
+                } else {
+                    entry = firstPowers[first];
+                    mul(entry, secondPowers[second]);
+                }
+            }
+        }
+        CBigNum result(_one);
+        const size_t firstBits = firstExponent.bitLength();
+        const size_t secondBits = secondExponent.bitLength();
+        const size_t bits = firstBits > secondBits ? firstBits : secondBits;
+        size_t cursor = bits;
+        while (cursor != 0) {
+            const size_t width = cursor < WINDOW ? cursor : WINDOW;
+            const size_t bottom = cursor - width;
+            size_t firstValue = 0;
+            size_t secondValue = 0;
+            for (size_t bit = cursor; bit-- > bottom; ) {
+                mul(result, result);
+                firstValue = (firstValue << 1) | size_t(firstExponent.testBit(bit));
+                secondValue = (secondValue << 1) | size_t(secondExponent.testBit(bit));
+            }
+            const size_t index = firstValue * WINDOW_VALUES + secondValue;
+            if (index != 0) {
+                mul(result, table[index]);
+            }
+            cursor = bottom;
+        }
+        return fromMont(result);
+#endif
     }
 
 } // namespace certpp

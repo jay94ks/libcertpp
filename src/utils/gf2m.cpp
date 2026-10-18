@@ -21,6 +21,43 @@
 namespace certpp {
 
 #if defined(CERTPP_GF2M_HWACCEL_AVAILABLE)
+        namespace {
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+#define CERTPP_GF2M_PCLMUL_TARGET __attribute__((target("pclmul,sse2")))
+#else
+#define CERTPP_GF2M_PCLMUL_TARGET
+#endif
+
+            template<size_t LIMBS>
+            CERTPP_GF2M_PCLMUL_TARGET
+            void wideProductFixed(uint64_t* wide, const uint64_t* a, const uint64_t* b) {
+                for (size_t i = 0; i < LIMBS; ++i) {
+                    const __m128i va = _mm_cvtsi64_si128(static_cast<long long>(a[i]));
+                    for (size_t j = 0; j < LIMBS; ++j) {
+                        const __m128i vb = _mm_cvtsi64_si128(static_cast<long long>(b[j]));
+                        const __m128i product = _mm_clmulepi64_si128(va, vb, 0x00);
+                        wide[i + j] ^= static_cast<uint64_t>(_mm_cvtsi128_si64(product));
+                        wide[i + j + 1] ^= static_cast<uint64_t>(
+                            _mm_cvtsi128_si64(_mm_srli_si128(product, 8)));
+                    }
+                }
+            }
+
+            template<size_t LIMBS>
+            CERTPP_GF2M_PCLMUL_TARGET
+            void wideSquareFixed(uint64_t* wide, const uint64_t* value) {
+                for (size_t i = 0; i < LIMBS; ++i) {
+                    const __m128i lane = _mm_cvtsi64_si128(static_cast<long long>(value[i]));
+                    const __m128i square = _mm_clmulepi64_si128(lane, lane, 0x00);
+                    wide[2 * i] = static_cast<uint64_t>(_mm_cvtsi128_si64(square));
+                    wide[2 * i + 1] = static_cast<uint64_t>(
+                        _mm_cvtsi128_si64(_mm_srli_si128(square, 8)));
+                }
+            }
+
+        } // namespace
+
         /* Whether this CPU actually has PCLMULQDQ -- it's an optional x86-64 feature, not
          * guaranteed just because the binary was built for the architecture, so this must be
          * checked at runtime (CPUID.1:ECX.PCLMULQDQ, bit 1) before ever emitting the
@@ -56,19 +93,22 @@ namespace certpp {
 #if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("pclmul,sse2")))
 #endif
-        void CGf2m::wideProductAccelerated(uint64_t* wide, const uint64_t* a, const uint64_t* b) {
-            for (size_t i = 0; i < LIMB_COUNT; ++i) {
-                if (a[i] == 0) {
-                    continue;
-                }
+        void CGf2m::wideProductAccelerated(
+            uint64_t* wide, const uint64_t* a, const uint64_t* b, size_t limbCount
+        ) {
+            switch (limbCount) {
+                case 3: wideProductFixed<3>(wide, a, b); return;
+                case 4: wideProductFixed<4>(wide, a, b); return;
+                case 5: wideProductFixed<5>(wide, a, b); return;
+                case 7: wideProductFixed<7>(wide, a, b); return;
+                case 9: wideProductFixed<9>(wide, a, b); return;
+                default: break;
+            }
 
+            for (size_t i = 0; i < limbCount; ++i) {
                 __m128i va = _mm_cvtsi64_si128(static_cast<long long>(a[i]));
 
-                for (size_t j = 0; j < LIMB_COUNT; ++j) {
-                    if (b[j] == 0) {
-                        continue;
-                    }
-
+                for (size_t j = 0; j < limbCount; ++j) {
                     __m128i vb = _mm_cvtsi64_si128(static_cast<long long>(b[j]));
                     __m128i prod = _mm_clmulepi64_si128(va, vb, 0x00);
 
@@ -80,6 +120,34 @@ namespace certpp {
                 }
             }
         }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("pclmul,sse2")))
+#endif
+        void CGf2m::wideSquareAccelerated(
+            uint64_t* wide, const uint64_t* value, size_t limbCount
+        ) {
+            // In characteristic two every cross term appears twice and cancels. Squaring an
+            // n-limb polynomial therefore needs n self-products rather than n*n products.
+            switch (limbCount) {
+                case 3: wideSquareFixed<3>(wide, value); return;
+                case 4: wideSquareFixed<4>(wide, value); return;
+                case 5: wideSquareFixed<5>(wide, value); return;
+                case 7: wideSquareFixed<7>(wide, value); return;
+                case 9: wideSquareFixed<9>(wide, value); return;
+                default: break;
+            }
+
+            for (size_t i = 0; i < limbCount; ++i) {
+                const __m128i lane = _mm_cvtsi64_si128(static_cast<long long>(value[i]));
+                const __m128i square = _mm_clmulepi64_si128(lane, lane, 0x00);
+                wide[2 * i] = static_cast<uint64_t>(_mm_cvtsi128_si64(square));
+                wide[2 * i + 1] = static_cast<uint64_t>(
+                    _mm_cvtsi128_si64(_mm_srli_si128(square, 8)));
+            }
+        }
+
+#undef CERTPP_GF2M_PCLMUL_TARGET
 #endif
 
         bool CGf2m::testBitIn(const uint64_t* limbs, size_t nLimbs, size_t bit) {
@@ -150,82 +218,46 @@ namespace certpp {
             return true;
         }
 
-        /* dst = src >> shift. */
-        void CGf2m::shiftRightInto(uint64_t* dst, const uint64_t* src, size_t nLimbs, size_t shift) {
-            const size_t limbShift = shift / 64;
-            const size_t bitShift = shift % 64;
-
-            for (size_t i = 0; i < nLimbs; ++i) {
-                const size_t from = i + limbShift;
-                uint64_t value = from < nLimbs ? src[from] : 0;
-
-                if (bitShift != 0) {
-                    value >>= bitShift;
-
-                    if ((from + 1) < nLimbs) {
-                        value |= uint64_t(src[from + 1] << (64 - bitShift));
-                    }
-                }
-
-                dst[i] = value;
-            }
-        }
-
-        /* Truncates to a polynomial of degree < bit. */
-        void CGf2m::clearBitsFrom(uint64_t* limbs, size_t nLimbs, size_t bit) {
-            const size_t limbIndex = bit / 64;
-            const size_t bitIndex = bit % 64;
-
-            if (limbIndex >= nLimbs) {
-                return;
-            }
-
-            limbs[limbIndex] &= bitIndex != 0 ? ((uint64_t(1) << bitIndex) - 1) : uint64_t(0);
-
-            for (size_t i = limbIndex + 1; i < nLimbs; ++i) {
-                limbs[i] = 0;
-            }
-        }
-
         /* Reduces a WIDE_LIMBS-limb product (degree up to 2*field.m - 2) modulo field's
          * reduction polynomial in place, leaving the result in wide's low LIMB_COUNT limbs (its high
          * limbs end up zero) -- see Hankerson/Menezes/Vanstone "Guide to Elliptic Curve
          * Cryptography" 2.35 for the general method.
          *
-         * Word-level rather than bit-serial. The identity is x^m == x^terms[0] + ... + 1, so every
-         * bit at position p >= m moves down to p-m and to p-m+terms[t]; crucially, that is the
-         * *same* displacement for every such bit, so the whole excess can be folded at once:
-         * take hi = wide >> m, clear everything from bit m up, then XOR hi back in at 0 and at
-         * each term offset. The previous implementation walked one bit at a time from 2m-2 down to
-         * m, toggling 1+termCount bits (each with its own divide and modulo) per set bit -- for
-         * B-571 that is ~570 iterations and thousands of toggles where this does two folds. The
-         * reduction had been measured at 95-98% of a multiplication's cost, which meant the
-         * PCLMULQDQ-accelerated product above was buying almost nothing; this is what lets that
-         * acceleration actually show up in binary-curve ECDSA.
-         *
-         * Folding can leave bits at or above m again (p-m+terms[t] >= m whenever p >= 2m-terms[t]),
-         * so it loops. For all five fields this library ships the loop runs exactly twice -- the
-         * second fold always lands strictly below m -- but it is written as a loop rather than two
-         * unrolled passes so it stays correct for any reduction polynomial. */
+         * Word-level rather than bit-serial. The identity is x^m == x^terms[0] + ... + 1. Each
+         * complete word above m is removed from high to low and XORed back at those offsets, so
+         * any overflow it creates is consumed by a later lower-word iteration. The final partial
+         * word is folded after retaining its in-field low bits. */
         void CGf2m::reduceWide(uint64_t* wide, const SGf2mField& field) {
             const size_t m = field.m;
+            const size_t top = m / 64;
+            const size_t topBits = m % 64;
+            const size_t usedWideLimbs = 2 * ((m + 63) / 64);
 
-            while (true) {
-                const size_t degree = degreeOf(wide, WIDE_LIMBS);
-                if (degree == SIZE_MAX || degree < m) {
-                    return;
+            const auto xorWordAt = [wide](uint64_t value, size_t shift) {
+                const size_t limb = shift / 64;
+                const size_t bits = shift % 64;
+                wide[limb] ^= value << bits;
+                if (bits != 0) {
+                    wide[limb + 1] ^= value >> (64 - bits);
                 }
+            };
 
-                uint64_t hi[WIDE_LIMBS] = {};
-                shiftRightInto(hi, wide, WIDE_LIMBS, m);
-
-                clearBitsFrom(wide, WIDE_LIMBS, m);
-
-                xorShiftedInto(wide, WIDE_LIMBS, hi, WIDE_LIMBS, 0); // the "+1" term
+            const auto fold = [&](uint64_t value, size_t base) {
+                xorWordAt(value, base);
                 for (size_t t = 0; t < field.termCount; ++t) {
-                    xorShiftedInto(wide, WIDE_LIMBS, hi, WIDE_LIMBS, field.terms[t]);
+                    xorWordAt(value, base + field.terms[t]);
                 }
+            };
+
+            for (size_t i = usedWideLimbs; i-- > top + 1; ) {
+                const uint64_t value = wide[i];
+                wide[i] = 0;
+                fold(value, i * 64 - m);
             }
+
+            const uint64_t excess = wide[top] >> topBits;
+            wide[top] &= (uint64_t(1) << topBits) - 1;
+            fold(excess, 0);
         }
 
         /* NIST-recommended reduction polynomials for the binary fields this library's B-x/K-x
@@ -384,7 +416,8 @@ namespace certpp {
 
 #if defined(CERTPP_GF2M_HWACCEL_AVAILABLE)
         if (hasPclmul()) {
-            wideProductAccelerated(wide, _limbs, other._limbs);
+            wideProductAccelerated(
+                wide, _limbs, other._limbs, (_field->m + 63) / 64);
         } else
 #endif
         {
@@ -401,12 +434,16 @@ namespace certpp {
         return *this;
     }
 
-    /* Implemented as mul(self) rather than a dedicated bit-spread fast path: correct and much
-     * simpler, at the cost of doing a full multiply's work for what could be a cheaper
-     * operation -- consistent with this module's/CBigNum's/CEcCurve's existing correctness-and-
-     * simplicity-over-performance stance. A dedicated fast path is a valid later optimization,
-     * not a correctness gap. */
     CGf2m& CGf2m::square() {
+#if defined(CERTPP_GF2M_HWACCEL_AVAILABLE)
+        if (hasPclmul()) {
+            uint64_t wide[WIDE_LIMBS] = {};
+            wideSquareAccelerated(wide, _limbs, (_field->m + 63) / 64);
+            reduceWide(wide, *_field);
+            std::memcpy(_limbs, wide, LIMB_COUNT * sizeof(uint64_t));
+            return *this;
+        }
+#endif
         return mul(*this);
     }
 

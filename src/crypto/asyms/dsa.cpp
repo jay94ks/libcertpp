@@ -98,7 +98,6 @@ namespace crypto {
         private:
             CBigNum _p, _q, _g, _y;
             CMontgomery _montgomery;
-            CBigNum _gMont, _yMont, _gyMont;
 
         public:
             DsaPublicKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y)
@@ -106,12 +105,6 @@ namespace crypto {
                   _montgomery(_p)
             {
                 algorithm(EASYM_DSA);
-                if (_montgomery.isValid()) {
-                    _gMont = _montgomery.toMont(_g);
-                    _yMont = _montgomery.toMont(_y);
-                    _gyMont = _gMont;
-                    _montgomery.mul(_gyMont, _yMont);
-                }
             }
 
             SKeySize keySize() const override {
@@ -169,22 +162,7 @@ namespace crypto {
                     return result;
                 }
 
-                const size_t bits = u1.bitLength() > u2.bitLength()
-                    ? u1.bitLength() : u2.bitLength();
-                CBigNum result(_montgomery.one());
-                for (size_t i = bits; i-- > 0; ) {
-                    _montgomery.mul(result, result);
-                    const bool bit1 = u1.testBit(i);
-                    const bool bit2 = u2.testBit(i);
-                    if (bit1 && bit2) {
-                        _montgomery.mul(result, _gyMont);
-                    } else if (bit1) {
-                        _montgomery.mul(result, _gMont);
-                    } else if (bit2) {
-                        _montgomery.mul(result, _yMont);
-                    }
-                }
-                return _montgomery.fromMont(result);
+                return _montgomery.modExpProduct(_g, u1, _y, u2);
             }
         };
 

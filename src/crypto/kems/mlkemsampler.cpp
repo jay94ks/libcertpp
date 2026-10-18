@@ -32,24 +32,37 @@ namespace crypto {
         // safeguard, so the loop runs until 256 coefficients are accepted.
         size_t accepted = 0;
         while (accepted < SMlKemPoly::COEFFICIENTS) {
-            uint8_t chunk[3];
+            // SHAKE128's 168-byte rate is divisible by three. Reading one complete rate block
+            // keeps exactly the same candidate order while replacing roughly 160 three-byte
+            // virtual calls per polynomial with the three sponge-block reads the sampler
+            // actually needs.
+            uint8_t chunk[168];
             if (!xof.squeeze(SByteSpan(chunk, sizeof(chunk)))) {
                 return false;
             }
 
-            const uint32_t d1 = uint32_t(chunk[0]) | (uint32_t(chunk[1] & 0x0Fu) << 8);
-            const uint32_t d2 = (uint32_t(chunk[1]) >> 4) | (uint32_t(chunk[2]) << 4);
+            for (size_t offset = 0;
+                 offset < sizeof(chunk) && accepted < SMlKemPoly::COEFFICIENTS;
+                 offset += 3)
+            {
+                const uint32_t d1 = uint32_t(chunk[offset])
+                    | (uint32_t(chunk[offset + 1] & 0x0Fu) << 8);
+                const uint32_t d2 = (uint32_t(chunk[offset + 1]) >> 4)
+                    | (uint32_t(chunk[offset + 2]) << 4);
 
-            // Order matters: d1 is offered before d2, and skipping a rejected d1 must not skip
-            // the d2 that shares its three bytes.
-            if (d1 < uint32_t(SMlKemPoly::MODULUS)) {
-                out.coeffs[accepted] = int16_t(d1);
-                ++accepted;
-            }
+                // Order matters: d1 is offered before d2, and skipping a rejected d1 must not
+                // skip the d2 that shares its three bytes.
+                if (d1 < uint32_t(SMlKemPoly::MODULUS)) {
+                    out.coeffs[accepted] = int16_t(d1);
+                    ++accepted;
+                }
 
-            if (d2 < uint32_t(SMlKemPoly::MODULUS) && accepted < SMlKemPoly::COEFFICIENTS) {
-                out.coeffs[accepted] = int16_t(d2);
-                ++accepted;
+                if (d2 < uint32_t(SMlKemPoly::MODULUS)
+                    && accepted < SMlKemPoly::COEFFICIENTS)
+                {
+                    out.coeffs[accepted] = int16_t(d2);
+                    ++accepted;
+                }
             }
         }
 
@@ -71,25 +84,53 @@ namespace crypto {
 
         const uint8_t* src = prfOutput.data;
 
-        // --> Bits are read little-endian within each byte, the same convention ByteEncode uses.
-        // Coefficient i consumes bits [2*i*eta, 2*i*eta + 2*eta): the first eta are summed into x,
-        // the next eta into y, and the coefficient is x - y -- so it lies in [-eta, eta] and is
-        // centered on zero, which is the whole point of the distribution.
-        for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS; ++i) {
-            const size_t base = 2 * i * eta;
+        // Bits are little-endian within each byte. The masks add each eta-bit lane in parallel,
+        // then each output extracts the two adjacent population counts. This is the same CBD
+        // mapping as the bit-by-bit definition, with fixed work and no general modular division.
+        if (eta == 2) {
+            for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS / 8; ++i) {
+                const uint32_t t = uint32_t(src[4 * i])
+                    | (uint32_t(src[4 * i + 1]) << 8)
+                    | (uint32_t(src[4 * i + 2]) << 16)
+                    | (uint32_t(src[4 * i + 3]) << 24);
+                uint32_t lanes = t & 0x55555555u;
+                lanes += (t >> 1) & 0x55555555u;
 
-            int32_t x = 0;
-            int32_t y = 0;
-
-            for (size_t j = 0; j < eta; ++j) {
-                const size_t xBit = base + j;
-                const size_t yBit = base + eta + j;
-
-                x += int32_t((src[xBit >> 3] >> (xBit & 7u)) & 1u);
-                y += int32_t((src[yBit >> 3] >> (yBit & 7u)) & 1u);
+                for (size_t j = 0; j < 8; ++j) {
+                    const int32_t difference = int32_t((lanes >> (4 * j)) & 0x3u)
+                        - int32_t((lanes >> (4 * j + 2)) & 0x3u);
+                    out.coeffs[8 * i + j] = int16_t(
+                        difference + int32_t(uint32_t(difference) >> 31) * MlKemRing::Q);
+                }
             }
+        }
+        else if (eta == 3) {
+            for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS / 4; ++i) {
+                const uint32_t t = uint32_t(src[3 * i])
+                    | (uint32_t(src[3 * i + 1]) << 8)
+                    | (uint32_t(src[3 * i + 2]) << 16);
+                uint32_t lanes = t & 0x00249249u;
+                lanes += (t >> 1) & 0x00249249u;
+                lanes += (t >> 2) & 0x00249249u;
 
-            out.coeffs[i] = MlKemRing::reduce(x - y);
+                for (size_t j = 0; j < 4; ++j) {
+                    const int32_t difference = int32_t((lanes >> (6 * j)) & 0x7u)
+                        - int32_t((lanes >> (6 * j + 3)) & 0x7u);
+                    out.coeffs[4 * i + j] = int16_t(
+                        difference + int32_t(uint32_t(difference) >> 31) * MlKemRing::Q);
+                }
+            }
+        }
+        else {
+            for (size_t i = 0; i < SMlKemPoly::COEFFICIENTS / 4; ++i) {
+                const uint32_t t = src[i];
+                for (size_t j = 0; j < 4; ++j) {
+                    const int32_t difference = int32_t((t >> (2 * j)) & 1u)
+                        - int32_t((t >> (2 * j + 1)) & 1u);
+                    out.coeffs[4 * i + j] = int16_t(
+                        difference + int32_t(uint32_t(difference) >> 31) * MlKemRing::Q);
+                }
+            }
         }
 
         return true;

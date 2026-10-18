@@ -6,17 +6,14 @@
 #include <certpp/arch.hpp>
 
 // --> Radix 2^51 needs a native 64x64->128, and certpp/arch.hpp says whether this target has one.
-// Measured, that accumulation is 4.6--4.9x cheaper than the 2^25.5 one it replaces, and
-// `Fe25519::mul` is 75.8% of Ed25519 signing -- so it is most of that algorithm's 4.5x gap.
+// The five-limb path is the default on 64-bit GCC/Clang targets. The ten-limb fallback remains
+// the default where the compiler cannot express one native 64x64->128 product.
 //
 // The decision lives here rather than in fe25519.cpp because this header is what chooses LIMBS
 // and the limb type; putting it in the .cpp would mean two files each deciding it.
 //
-// It is a gate rather than a second implementation for a measured reason: MSVC has no __int128 on
-// x86-64 either, and a 64x64->128 assembled from `_umul128` measures 6.5--7.0x the native one --
-// 66--69 ns against the 43--45 ns of the 2^25.5 layout it would replace. One 2^51 implementation
-// everywhere would therefore make MSVC slower than it is today, which is also what P4's recorded
-// "22% for the radix change" turns out to have been measuring.
+// MSVC has no __int128 on x86-64, so it stays on the portable layout rather than emulating every
+// wide product from intrinsics.
 #if defined(CERTPP_ENABLE_FE25519_RADIX51)
     #if !defined(CERTPP_ARCH_NATIVE_64x64_TO_128)
         #error "CERTPP_ENABLE_FE25519_RADIX51 needs a target with a native 64x64->128; see certpp/arch.hpp"
@@ -28,8 +25,9 @@ namespace certpp {
 namespace crypto {
 
     /**
-     * An element of GF(2^255 - 19), in ten signed limbs at radix 2^25.5, with every operation
-     * free of data-dependent branches, memory indices and divisions. Private to `src/`, and
+     * An element of GF(2^255 - 19), in five unsigned radix-2^51 limbs or ten signed radix-2^25.5
+     * limbs, with every operation free of data-dependent branches, memory indices and divisions.
+     * Private to `src/`, and
      * shared by `x25519.cpp` (Curve25519's Montgomery ladder) and `ed25519.cpp` (edwards25519's
      * point coordinates) -- the two curves are different shapes over the same field.
      *
@@ -46,18 +44,16 @@ namespace crypto {
      * Every add, multiply and reduction over it leaks something about its operands through
      * timing. For an offline operation like certificate verification that is tolerable; for an
      * online handshake with ephemeral keys, which is what a downstream consumer is using X25519
-     * for, it is a live side channel. Here the limb count is fixed at ten regardless of the
+     * for, it is a live side channel. Here the limb count is fixed by the build rather than the
      * value, so the work is identical for every input.
      *
-     * **Which radix, and why 2^25.5 is the default.** Two layouts are here, selected at compile
+     * **Which radix.** Two layouts are here, selected at compile
      * time, and they are not interchangeable:
      *
-     * - **Radix 2^51, five limbs, opt-in via `CERTPP_ENABLE_FE25519_RADIX51` and OFF by
-     *   default.** A 5x5 multiply is 25 products, each a 64x64->128 that is one `mulq` on
-     *   x86-64, and measured against the 2^25.5 layout's 100 products the product accumulation
-     *   *in isolation* is **4.6--4.9x cheaper**. It is still not faster here, end to end: see
-     *   below, and `docs/history/08-curve25519-and-performance.md`. It is kept because it is correct and because it is the
-     *   thing that has to be re-measured before anyone concludes the layout is the problem.
+     * - **Radix 2^51, five limbs.** This is enabled by default on 64-bit GCC/Clang targets and
+     *   can be selected explicitly with `CERTPP_ENABLE_FE25519_RADIX51`. A 5x5 multiply needs
+     *   25 native 64x64->128 products. Unsigned loose subtraction adds a fixed multiple of p,
+     *   preserving the same branch-free schedule as the signed fallback.
      * - **Radix 2^25.5, ten limbs, everywhere else.** Alternating 26- and 25-bit limbs, so every
      *   product fits in `int64_t`: the worst-case accumulator is 10 * (2^26-1)^2 * 38 = 2^60,
      *   three bits of headroom, verified rather than estimated. This is ref10's 32-bit layout.
@@ -71,21 +67,17 @@ namespace crypto {
      *
      * Both paths are the same class with the same public API and the same algorithms; only the
      * representation and the four operations that touch limbs directly differ. The rest --
-     * `invert()`, `squareRoot()`, `neg()`, `isZero()`, `isEqual()`, `isOdd()` -- compose from
-     * those and are written once.
+     * `invert()`, `squareRoot()`, `squareRootRatio()`, `neg()`, `isZero()`, `isEqual()`, and
+     * `isOdd()` -- compose from those and are written once.
      *
-     * **Limbs are signed, and that is load-bearing, on both paths.** It means `sub()` needs no
-     * borrow handling: a limb simply goes negative and the next carry pass propagates it
-     * through an arithmetic shift. Making them unsigned would require either adding a multiple
-     * of p before every subtraction or branching on the sign, and the second is exactly what
-     * this class exists to avoid. The 2^51 multiply uses signed `__int128` products for the
-     * same reason: an unsigned multiply of a negative limb would be wrong.
+     * The 2^25.5 fallback uses signed limbs so subtraction can feed an arithmetic carry pass.
+     * The radix-51 path uses unsigned limbs and adds a fixed multiple of p before subtraction;
+     * this avoids both underflow and a data-dependent borrow branch.
      *
-     * Every entry point leaves limbs carry-reduced, so a product of two of them stays inside
-     * the bound above. That costs a carry pass on `add()`/`sub()` that a bounds-tracking
-     * implementation could skip, and buys an invariant that holds at every boundary instead of
-     * one that has to be re-argued per call site -- the right trade for this library, which
-     * states correctness and simplicity over performance as its priority.
+     * Normal entry points leave limbs carry-reduced, so a product of two of them stays inside
+     * the bound above. `addLoose()` and `subLoose()` are narrow exceptions for point formulas:
+     * they permit one doubled-range result and require an immediate multiply or square. Their
+     * bound is documented at the call boundary and tested against exact arithmetic.
      */
     class Fe25519 {
     public:
@@ -116,7 +108,7 @@ namespace crypto {
         /** The type one limb is stored in. */
         using Limb =
 #if defined(CERTPP_FE25519_RADIX51)
-            int64_t;
+            uint64_t;
 #else
             int32_t;
 #endif
@@ -172,6 +164,40 @@ namespace crypto {
          * @param b Subtrahend.
          */
         static void sub(Fe25519& out, const Fe25519& a, const Fe25519& b);
+
+        /**
+         * Adds without a carry pass for an immediate multiply or square in point formulas.
+         *
+         * Both field layouts have enough headroom for this single doubled-range result. Do not
+         * expose or chain a loose result as a general field element.
+         */
+        static inline void addLoose(
+            Fe25519& out, const Fe25519& a, const Fe25519& b
+        ) {
+            for (size_t i = 0; i < LIMBS; ++i) {
+                out.limbs[i] = a.limbs[i] + b.limbs[i];
+            }
+        }
+
+        /**
+         * Subtracts without a carry pass for an immediate multiply or square in point formulas.
+         * The same bounds as addLoose() apply.
+         */
+        static inline void subLoose(
+            Fe25519& out, const Fe25519& a, const Fe25519& b
+        ) {
+#if defined(CERTPP_FE25519_RADIX51)
+            constexpr uint64_t B = uint64_t(1) << 51;
+            out.limbs[0] = a.limbs[0] + (2 * B - 38) - b.limbs[0];
+            for (size_t i = 1; i < LIMBS; ++i) {
+                out.limbs[i] = a.limbs[i] + (2 * B - 2) - b.limbs[i];
+            }
+#else
+            for (size_t i = 0; i < LIMBS; ++i) {
+                out.limbs[i] = a.limbs[i] - b.limbs[i];
+            }
+#endif
+        }
 
         /**
          * out = a * b.
@@ -240,6 +266,25 @@ namespace crypto {
          * @return true if a is a quadratic residue mod p.
          */
         static bool squareRoot(Fe25519& out, const Fe25519& a);
+
+        /**
+         * Sets out to a square root of u / v when the ratio is square and v is nonzero.
+         *
+         * This combines inversion and square-root extraction into the RFC 8032/ref10
+         * `u*v^3*(u*v^7)^((p-5)/8)` chain. Point decoding therefore pays for one fixed
+         * exponentiation instead of computing `v^-1` and then exponentiating `u/v` again.
+         * As with squareRoot(), the success branches depend only on public point-encoding data.
+         * @param out Receives a square root of u / v and is untouched on failure.
+         * @param u Ratio numerator.
+         * @param v Nonzero ratio denominator.
+         * @return true if u / v is a quadratic residue, otherwise false.
+         */
+        static bool squareRootRatio(
+            Fe25519& out, const Fe25519& u, const Fe25519& v);
+
+        /** Runs the fixed-schedule RFC 7748 Montgomery ladder on a clamped scalar. */
+        static void x25519Ladder(
+            const uint8_t scalar[BYTES], const uint8_t u[BYTES], uint8_t out[BYTES]);
 
         /**
          * Swaps a and b if mask is all ones, leaves them if it is zero -- without branching.

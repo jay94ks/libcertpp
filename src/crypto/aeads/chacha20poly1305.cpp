@@ -157,14 +157,27 @@ namespace crypto {
         }
 
         uint8_t oneTimeKey[CPoly1305::KEY_BYTES];
-        if (!deriveOneTimeKey(nonce, SByteSpan(oneTimeKey, sizeof(oneTimeKey)))) {
-            return false;
-        }
+        if (in.size != 0 && in.size <= ChaCha20Core::BLOCK_BYTES) {
+            ChaCha20Core::SState state;
+            uint8_t blocks[2 * ChaCha20Core::BLOCK_BYTES];
+            ChaCha20Core::initState(state, _key, nonce.data);
+            ChaCha20Core::blockPair(state, 0, blocks);
+            std::memcpy(oneTimeKey, blocks, sizeof(oneTimeKey));
+            for (size_t i = 0; i < in.size; ++i) {
+                out.data[i] = uint8_t(in.data[i] ^ blocks[ChaCha20Core::BLOCK_BYTES + i]);
+            }
+            CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(&state), sizeof(state)));
+            CSecure::zero(SByteSpan(blocks, sizeof(blocks)));
+        } else {
+            if (!deriveOneTimeKey(nonce, SByteSpan(oneTimeKey, sizeof(oneTimeKey)))) {
+                return false;
+            }
 
-        // Encrypt first, then MAC the ciphertext -- encrypt-then-MAC, which is what RFC 8439
-        // specifies and what makes open() able to reject before touching the plaintext.
-        if (in.size != 0) {
-            applyKeystream(_key, nonce.data, in.data, out.data, in.size);
+            // Encrypt first, then MAC the ciphertext -- encrypt-then-MAC, which is what RFC 8439
+            // specifies and what makes open() able to reject before touching the plaintext.
+            if (in.size != 0) {
+                applyKeystream(_key, nonce.data, in.data, out.data, in.size);
+            }
         }
 
         const bool ok = computeTag(oneTimeKey, aad, out.data, out.size, tag);

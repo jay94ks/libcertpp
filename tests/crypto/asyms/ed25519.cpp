@@ -256,6 +256,42 @@ TEST_CASE("Ed25519: verify rejects a signature whose R is the identity point, ev
     ) != ERET_OK);
 }
 
+TEST_CASE("Ed25519: verify rejects a non-subgroup R through the exact equation") {
+    IAsymmetricPtr ed = IAsymmetric::builtIn(EASYM_ED25519);
+    const SKeyPair& pair = sharedTestKeyPair();
+    REQUIRE(pair);
+
+    IAsymmetricContextPtr ctx = ed->createContext();
+    ctx->keyPair(pair);
+
+    const uint8_t message[] = "non-subgroup R";
+    const SReadOnlyByteSpan messageSpan(message, sizeof(message) - 1);
+
+    TArray<uint8_t> signature;
+    signature.resize(ctx->sizeOfSign());
+    SByteSpan signatureSpan(signature.begin(), signature.size());
+    REQUIRE(ctx->sign(messageSpan, signatureSpan) == ERET_OK);
+    REQUIRE(signatureSpan.size == 64);
+
+    // (x=0, y=-1) has order two. Its canonical compressed encoding is p-1: 0xec, then
+    // thirty 0xff bytes, then 0x7f. Verification deliberately avoids a second L*R subgroup
+    // multiplication, so this proves the exact uncofactored equation still rejects such an R.
+    signature[0] = 0xec;
+    for (size_t i = 1; i < 31; ++i) {
+        signature[i] = 0xff;
+    }
+    signature[31] = 0x7f;
+
+    CHECK(ctx->verify(messageSpan,
+        SReadOnlyByteSpan(signature.begin(), signatureSpan.size)) != ERET_OK);
+
+    uint8_t orderTwo[32];
+    for (size_t i = 0; i < 32; ++i) {
+        orderTwo[i] = signature[i];
+    }
+    CHECK_FALSE(ed->createPublicKey(SReadOnlyByteSpan(orderTwo, sizeof(orderTwo))));
+}
+
 TEST_CASE("Ed25519: verify rejects a signature produced by a different key pair") {
     IAsymmetricPtr ed = IAsymmetric::builtIn(EASYM_ED25519);
     const SKeyPair& pair = sharedTestKeyPair();

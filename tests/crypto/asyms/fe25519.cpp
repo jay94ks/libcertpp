@@ -561,3 +561,77 @@ TEST_CASE("Fe25519: squareRoot agrees with CBigNum's Legendre symbol") {
         REQUIRE(back.isEqual(squared));
     }
 }
+
+TEST_CASE("Fe25519: loose sums and differences are exact when consumed immediately") {
+    Lcg rng(0x1005E);
+    const CBigNum& p = fieldPrime();
+
+    for (int trial = 0; trial < 1000; ++trial) {
+        CBigNum bigA, bigB, bigC;
+        Fe25519 a, b, c;
+        randomElement(rng, bigA, a);
+        randomElement(rng, bigB, b);
+        randomElement(rng, bigC, c);
+
+        Fe25519 loose, actual;
+        Fe25519::addLoose(loose, a, b);
+        Fe25519::mul(actual, loose, c);
+
+        CBigNum expected(bigA);
+        expected.add(bigB).mulMod(bigC, p);
+        REQUIRE(toBig(actual) == expected);
+
+        Fe25519::subLoose(loose, a, b);
+        Fe25519::mul(actual, loose, c);
+
+        expected = bigA;
+        expected.modSub(bigB, p).mulMod(bigC, p);
+        REQUIRE(toBig(actual) == expected);
+    }
+}
+
+TEST_CASE("Fe25519: squareRootRatio agrees with exact division") {
+    Lcg rng(0x5A7E);
+    const CBigNum& p = fieldPrime();
+
+    CBigNum halfExp(p);
+    halfExp.sub(CBigNum(uint64_t(1))).shr(1);
+
+    int residues = 0;
+    int nonResidues = 0;
+    for (int trial = 0; trial < 400; ++trial) {
+        CBigNum bigU, bigV;
+        Fe25519 u, v;
+        randomElement(rng, bigU, u);
+        do {
+            randomElement(rng, bigV, v);
+        } while (bigV.isZero());
+
+        CBigNum inverseV;
+        REQUIRE(CBigNum::modInverse(bigV, p, inverseV));
+        CBigNum quotient(bigU);
+        quotient.mulMod(inverseV, p);
+
+        const CBigNum legendre = CBigNum::modExp(quotient, halfExp, p);
+        const bool isResidue = quotient.isZero()
+            || legendre == CBigNum(uint64_t(1));
+
+        Fe25519 root;
+        const bool ok = Fe25519::squareRootRatio(root, u, v);
+        REQUIRE(ok == isResidue);
+
+        if (ok) {
+            ++residues;
+            Fe25519 check;
+            Fe25519::square(check, root);
+            Fe25519::mul(check, check, v);
+            REQUIRE(check.isEqual(u));
+        }
+        else {
+            ++nonResidues;
+        }
+    }
+
+    CHECK(residues > 0);
+    CHECK(nonResidues > 0);
+}

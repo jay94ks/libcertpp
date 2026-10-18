@@ -31,6 +31,7 @@
 #include "crypto/asyms/fe25519.hpp"
 
 #include <cstdio>
+#include <set>
 #include <random>
 #include <string>
 #include <vector>
@@ -175,6 +176,30 @@ namespace {
         return true;
     }
 
+    std::pair<int, int> factorScales(int factor) {
+        switch (factor) {
+        case 1:  return { 1, 1 };
+        case 2:  return { 2, 1 };
+        case 4:  return { 2, 2 };
+        case 19: return { 1, 19 };
+        case 38: return { 2, 19 };
+        case 76: return { 2, 38 };
+        default: return { 0, 0 };
+        }
+    }
+
+    bool verifyFactorScales() {
+        for (const Term& term : merged()) {
+            const std::pair<int, int> scales = factorScales(term.factor);
+            if (scales.first == 0 || scales.first * scales.second != term.factor) {
+                std::printf("FAIL unsupported factor split: %d\n", term.factor);
+                return false;
+            }
+        }
+        std::printf("  ok: every merged factor splits into reusable operand scales\n");
+        return true;
+    }
+
     std::string emit() {
         const std::vector<Term> terms = merged();
         std::string s;
@@ -183,14 +208,34 @@ namespace {
         s += "        const int64_t s3 = a.limbs[3], s4 = a.limbs[4], s5 = a.limbs[5];\n";
         s += "        const int64_t s6 = a.limbs[6], s7 = a.limbs[7], s8 = a.limbs[8];\n";
         s += "        const int64_t s9 = a.limbs[9];\n\n";
+
+        std::set<std::pair<size_t, int>> scaled;
+        for (const Term& term : terms) {
+            const std::pair<int, int> scales = factorScales(term.factor);
+            if (scales.first != 1) scaled.insert({ term.i, scales.first });
+            if (scales.second != 1) scaled.insert({ term.j, scales.second });
+        }
+        for (const std::pair<size_t, int>& operand : scaled) {
+            std::snprintf(buf, sizeof(buf),
+                          "        const int64_t s%zu_%d = s%zu * %d;\n",
+                          operand.first, operand.second, operand.first, operand.second);
+            s += buf;
+        }
+        s += "\n";
+
         for (size_t k = 0; k < L; ++k) {
             std::snprintf(buf, sizeof(buf), "        int64_t t%zu =", k);
             s += buf;
             bool first = true;
             for (const Term& t : terms) {
                 if (t.out != k) continue;
-                std::snprintf(buf, sizeof(buf), "%s %d*s%zu*s%zu",
-                              first ? "" : " +", t.factor, t.i, t.j);
+                const std::pair<int, int> scales = factorScales(t.factor);
+                const std::string lhs = "s" + std::to_string(t.i)
+                    + (scales.first == 1 ? "" : "_" + std::to_string(scales.first));
+                const std::string rhs = "s" + std::to_string(t.j)
+                    + (scales.second == 1 ? "" : "_" + std::to_string(scales.second));
+                std::snprintf(buf, sizeof(buf), "%s %s*%s",
+                              first ? "" : " +", lhs.c_str(), rhs.c_str());
                 s += buf;
                 first = false;
             }
@@ -205,6 +250,7 @@ int main() {
     std::printf("Fe25519 squaring factor generator\n");
     if (!ruleMatchesMul(rng)) return 1;
     if (!verifyMerged(rng)) return 1;
+    if (!verifyFactorScales()) return 1;
     std::printf("\n--- the ten limb sums to paste into Fe25519::square ---\n\n");
     std::printf("%s", emit().c_str());
     return 0;

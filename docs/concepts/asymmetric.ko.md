@@ -201,12 +201,14 @@
   전체(연산, 유도된 상수, clamping, 그리고 서명 알고리즘 자체)를 훨씬 강하게
   검증합니다.
 
-  `pointAdd()`(아핀)은 단일 연산 경우의 참조 구현으로 남습니다. 스칼라 곱은
-  내부적으로 확장 투영 좌표(`EdPointProj`: Hisil/Wong/Carter/Dawson의 `X/Z,
-  Y/Z, T=XY/Z`, "Twisted Edwards Curves Revisited")에서 작동하고 경계에서 한 번만
-  아핀으로 변환합니다. 서로 다른 점에는 완전한 `pointAddProj()` 법칙을 쓰고,
-  반복되는 같은 점에는 전용 `pointDoubleProj()` 공식을 씁니다. 전용 공식은
-  통합 덧셈의 필드 곱셈 9회 대신 곱셈 4회와 제곱 4회를 사용합니다.
+  스칼라 곱은 내부적으로 확장 투영 좌표(`EdPointProj`:
+  Hisil/Wong/Carter/Dawson의 `X/Z, Y/Z, T=XY/Z`, "Twisted Edwards Curves
+  Revisited")에서 작동하고 인코딩이나 키 경계에서만 아핀으로 변환합니다. cached 및
+  affine-precomputed 점은 혼합 덧셈 비용을 줄이고, 공개 이중 스칼라 곱은 completed
+  `P1P1`과 `P2` 형태도 유지해 배가마다 필드 곱셈 하나를 피합니다.
+  `Fe25519::addLoose()`와 `subLoose()`는 결과를 곱셈이나 제곱이 즉시 소비할 때만 carry
+  pass를 생략합니다. 전용 `square()` kernel은 `tools/fe_square_gen.cpp`가 생성하고
+  `mul()`에 대조해 기계적으로 검사합니다.
 
   비밀 고정 기저 곱 `scalarMulBase()`(`B*r`과 `B*s`에 사용)는 스칼라를 부호 있는
   radix-16 숫자 64개로 재부호화합니다. 프로세스 전체 표의 32개 행에는
@@ -214,11 +216,16 @@
   스캔하고, 0인 숫자도 덧셈을 수행합니다. 홀수 위치를 합하고 네 번 배가한 뒤
   짝수 위치를 합하므로, 한 연산의 점 배가가 256회에서 4회로 줄면서 비밀 인덱스
   조회도 생기지 않습니다. 임의 점 곱은 비밀 스칼라를 위해 분기 없는 256비트
-  ladder를 유지합니다. 검증은 점과 스칼라가 모두 공개인 경우에만 4비트 window를
-  추가로 씁니다. 고정된 부분군 위수 검사와
-  `k = SHA-512(R || A || M) mod L`인 `k*A`가 그 경우입니다.
-  선택형 radix-51 필드 배치는 임의 점에 통합 덧셈 ladder를 유지하며, 고정 기저
-  signed-radix-16 경로는 그대로 활성화합니다.
+  ladder를 유지합니다. 검증은 공개 sliding-window 숫자로 `k = SHA-512(R || A || M)
+  mod L`일 때 `S*B - k*A`를 하나의 공유 배가 사슬에서 계산합니다. 각 `EdPublicKey`는
+  `A`의 홀수 배수 8개를 준비해 보유하므로 반복 검증마다 가변 기저 표를 다시 만들지
+  않습니다. 가져온 공개키는 전체 `L*A` 부분군 검사를 계속 통과해야 합니다. 서명의
+  `R` 디코딩은 정규성, 곡선 위 점, 항등원 검사를 유지하지만 별도 `L*R`은 생략합니다.
+  `A`가 이미 부분군에 있으므로 정확한 uncofactored 방정식은 같은 부분군의 `R`만
+  받아들일 수 있으며, 2차수 `R` 음성 테스트가 그 추론을 검사합니다. 64비트 GCC/Clang
+  빌드의 기본 radix-51 필드 배치는 unsigned limb 다섯 개와 네이티브 64-by-64-to-128
+  product를 사용합니다. 이 product가 없는 대상은 signed 10-limb radix-2^25.5 fallback을
+  유지합니다. 두 배치 모두 같은 고정 기저 signed-radix-16 경로를 사용합니다.
 - **`crypto/asyms/ed448.hpp` / `src/crypto/asyms/ed448.cpp`**는
   `Ed448`(edwards448/"Ed448-Goldilocks" 위의 EdDSA, RFC 8032)을 정의합니다 —
   구조적으로 `Ed25519`의 쌍둥이이고, 자기만의 체/점 연산(다른 소수이고,
@@ -239,26 +246,28 @@
   키/서명은 RFC 8032의 원시 바이트 인코딩(57/57/114바이트)으로 직렬화됩니다.
   `Ed25519`와 같은 이유로 RFC 8032 자신의 TEST 1 벡터에 대해 검증했습니다.
 
-  `scalarMul()`/`scalarMulBase()`는 자체 분기 없는 ladder와 고정 기저 표를 둔
-  확장 투영 좌표를 사용하며 Ed25519의 새 signed-radix-16 표는 공유하지 않습니다.
-  모든 배가에는 `a = 1` 전용 공식을 사용합니다. 검증은 공개된 부분군 위수 검사에
-  4비트 window를 사용하고, 공개 스칼라용 Straus loop 하나로 공유 배가 체인에서
-  `S*B - k*A`를 계산합니다. 비밀 스칼라 경로는 계속 ladder를 사용합니다.
-  Edwards448은 *untwisted*이므로(`a = 1`. edwards25519의
+  필드 연산은 `src/crypto/asyms/fe448.hpp/.cpp`에 있습니다. 네이티브
+  64×64→128 곱셈 대상은 radix-2^56 limb 8개를 사용하고, portable fallback은
+  곱이 `uint64_t` 안에 들도록 radix-2^28 limb 16개를 사용합니다. 고정 지수 체인은
+  일반 큰 수 나눗셈 없이 역원과 점 복구를 수행합니다. Edwards448은
+  *untwisted*이므로(`a = 1`. edwards25519의
   `a = -1`에 대해) 여기의 `pointAddProj()`는 `Ed25519`의 `a = -1` 특화
   법칙이 아니라 일반 `a` 파라미터화 덧셈 법칙을 씁니다 — 이 모양에 대한
   널리 알려진 이름 붙은 공식이 `a = -1`에 특화되어 있으므로, 참조에서 옮겨
   적지 않고 아핀 덧셈 법칙에서 직접 유도했습니다(`ed448.cpp`의 이 함수
-  자체 주석 참고). `EdPointProj`의 네 좌표는 `CEcCurve`의 `ECPointJac`이
-  그런 것과 같은 이유로 **Montgomery 형태**로 보유되며
-  (`CMontgomery`. 위의 `utils/montgomery.hpp` 참고),
-  `toProjective()`/`toAffine()`이 변환 경계입니다. `CEcCurve`와 달리 여기의
-  컨텍스트는 `fieldPrime()` 옆의 최초 사용 시 생성 싱글턴인데, edwards448에는
-  체 소수가 정확히 하나이고 그것이 가변 공개 필드가 아니기 때문입니다. `d`는
-  그 옆에 Montgomery 형태로 캐시되고(`curveDMont()`), `fieldSqrt()`의
-  `x2^((p+1)/4)`는 `CMontgomery::modExp()`를 거칩니다 — 디코드된 점마다, 즉
-  `verify()`마다 한 번씩, 전에는 각각 뒤에 긴 나눗셈이 따라붙던 약 446회
-  제곱과 약 223회 곱셈입니다.
+  자체 주석 참고). 확장 투영 좌표, `a = 1` 전용 배가 공식, 아핀/투영 혼합
+  덧셈으로 스칼라 loop에서 역원을 없앴습니다.
+
+  개인키는 확장된 RFC 8032 스칼라와 prefix를 캐시합니다. 프로세스 전체의 10열
+  comb 표가 기준점 곱을 가속하고, 각 공개키는 반복 검증용 동일 형태의 표를
+  보관합니다. 표 생성은 1,024개 항목을 역원 하나로 일괄 정규화합니다. 검증은
+  공유 배가 45회와 혼합 덧셈 최대 90회로 `S*B - k*A`를 계산합니다. 가져온
+  공개키는 계속 `L*A == 0`을 통과해야 합니다. 서명 `R` 디코딩은 정규 인코딩,
+  곡선 위 점, 항등원 검사를 유지하지만 별도 `L*R`은 생략합니다. `A`가 이미
+  부분군에 있을 때 정확한 uncofactored 방정식은 같은 부분군의 `R`만 받아들일
+  수 있고, 2차수 `R` 음성 테스트가 이 경계를 검사합니다. Comb index는 스칼라에
+  따라 달라지고 군 위수 스칼라 산술은 여전히 `CBigNum`을 사용하므로 Ed448
+  서명에 constant-time을 주장하지 않습니다.
 - **`crypto/asyms/x25519.hpp` / `src/crypto/asyms/x25519.cpp`**는
   `X25519`(Curve25519 위의 Diffie-Hellman 키 합의, RFC 7748)를 정의합니다 —
   `Ed25519`와 같은 체 소수(`2^255 - 19`)이고, 사실 같은 체 *구현*
@@ -267,10 +276,11 @@
   u 좌표 Montgomery ladder(RFC 7748 5)만 필요하기 때문입니다.
   `sign()`/`verify()`는 `IAsymmetricContext`의 `ERET_NOTSUP` 기본값으로
   남아 있습니다(서명 연산이 존재하지 않습니다). `deriveSharedSecret()`만
-  override됩니다. 개인키의 원시 32바이트는 clamp되지 않은 채로 저장되고
-  각 스칼라 곱 호출 지점에서 clamp됩니다(RFC 7748 5 자신이 권장하는 책임
-  분할). 그래서 `serialize()`/`createPrivateKey()`가 항상 호출자의 원래
-  바이트를 정확히 왕복합니다. `deriveSharedSecret()`은 계산된 비밀이 전부
+  override됩니다. 개인키는 호출자의 원시 32바이트와 clamp된 작업용 사본을
+  함께 보관합니다. 그래서 `serialize()`/`createPrivateKey()`는 원래 바이트를
+  정확히 왕복하면서 반복 스칼라 곱은 clamp와 보안 사본 작업을 되풀이하지
+  않습니다. context도 바인딩 개인키와 현재 상대 키의 concrete type 검사를
+  성공한 뒤 그 결과를 cache합니다. `deriveSharedSecret()`은 계산된 비밀이 전부
   0이면 예측 가능한 출력을 반환하는 대신 거부합니다(RFC 7748 6.1 — 낮은
   위수의 상대 점, 예컨대 `u = 0`). 키는 DER 없이 RFC 7748의 원시 32바이트
   u 좌표/스칼라 인코딩으로 직렬화됩니다. RFC 7748 5.2의 Diffie-Hellman과

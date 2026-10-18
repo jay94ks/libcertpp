@@ -29,12 +29,29 @@ Poly1305의 AVX-512 벡터 인자 ABI 경계를 없앴습니다. 검토 장비�
 2953 MiB/s로 높였습니다. 이어 OpenSSL 목록을 소수체 ECDSA/ECDH 곡선 20개와 이진
 ECDSA 곡선 10개 모두로 확장했습니다. 공개 스칼라 동시 곱은 대표 소수 곡선 ECDSA 검증을 약
 2.3배, 이진 곡선 검증을 약 1.9--2.0배 줄였고 같은 소수체 경로가 GOST 검증도
-가속합니다. 이어 RSA와 DSA 상호운용 비교를 추가했습니다. Montgomery 기반 소수
+가속합니다. 이어 스택 상주 고정 폭 Montgomery 체, 전체 스캔 private window, 공개 검증용
+signed window, 고정 기저 comb 표가 소수체 키 생성·서명·검증·ECDH 80개 행 중 72개를
+먼저 OpenSSL의 0.90배 이상으로 높였습니다. 이어 고정 count 체 kernel과 키 바인딩 폭 6
+affine 검증 표가 P-256 이외의 모든 행을 문턱 위로 높여 현재 80개 중 76개가 통과합니다.
+이어 고정 count PCLMUL 곱·제곱 kernel과 높은 word부터 접는 축약이 공유 GF(2^m)
+병목을 제거했습니다. 혼합 Lopez-Dahab 덧셈과 방금 생성한 키의 중복 검증 제거까지
+적용해 이진 곡선 키 생성/서명/검증 30개 행 모두 OpenSSL 문턱을 넘었고, 단일 코어 고정
+5회 중앙값은 1.12--1.83배입니다. 이어 RSA와 DSA 상호운용 비교를 추가했습니다. Montgomery 기반 소수
 판정, sliding-window 지수승, 결합 DSA 검증은 첫 직접 측정 대비 RSA 키 생성/서명을
 약 5.7배/1.3배, DSA 키 생성/서명/검증을 약 3.7배/3.4배/5.5배 줄였습니다. 시험한
-OpenSSL provider는 GOST 서명을 제공하지 않습니다. 이어 edwards448 전용 배가,
-공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 비밀 스칼라 ladder를
-유지하면서 Ed448 검증 중앙 지연시간을 11.454에서 6.055 ms로 줄였습니다. X25519
+OpenSSL provider는 GOST 서명을 제공하지 않습니다. 이어 각 RSA 키의 공개 modulus context를
+캐시하고 짧은 공개 지수를 하나의 packed 64비트 Montgomery 체인에 유지해, Windows에서
+한 코어에 고정한 RSA 검증을 OpenSSL의 0.11배에서 0.54배로 높였습니다. 이어 긴 지수승과
+두 밑수 DSA 검증을 packed 64비트 형식에 유지하고 홀수 모듈러스에 binary 모듈러 역원을
+적용해 나머지 연산을 크게 높였습니다. 개인 CRT `p`, `q`의 Montgomery context도 캐시해
+서명마다 발생하던 context 설정 나눗셈을 제거했습니다. 이어 통합 CIOS 곱셈과 2비트 동시 DSA window로
+새 단일 코어 고정 비율이 키 생성/서명/검증 기준 RSA 0.36/0.27/0.61배, DSA
+0.61/0.65/0.48배가 됐으며 CRT fault 검사와 portable fallback을 보존했습니다. 이어 edwards448 전용 배가,
+공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
+먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로
+동일 조건 WSL 비교의 서명/검증을 0.139/0.191 ms까지 줄여 OpenSSL의
+1.48/0.99배에 도달했고, portable 16-limb fallback도 MSVC에서 같은 필드·RFC 테스트를
+통과했습니다. X25519
 키 생성의 중복 유도점 cofactor ladder도 제거해 중앙값을 0.270에서 0.139 ms로
 줄였습니다. 테스트 프로세스는 이제 Windows 오류 대화상자 없이 assertion과 충돌을
 콘솔 진단으로 보냅니다. 자동 CI와 플랫폼 매트릭스는 의도적으로
@@ -62,6 +79,26 @@ staging 복사와 빈 buffer 할당을 제거했습니다. OpenSSL 대비 7회 �
 이어 ARIA는 바이트 단위 substitution과 diffusion을 확장 32비트 S-box, word diffusion,
 inline CBC bulk loop로 바꿨습니다. 128/192/256비트의 OpenSSL 대비 7회 중앙값은 약
 0.31배에서 1.04/1.03/1.03배로 높아졌고 RFC 5794 벡터 결과는 그대로 유지됐습니다.
+이어 생성된 Fe25519 제곱, 혼합 precomputed 점 덧셈, 단일 지수승 점 복구, 결합 공개
+검증, 공개키별 홀수 배수 표가 Ed25519 서명/검증의 11회 중앙값을 0.94/0.97배로
+높였으며 RFC 8032와 저차수 점 검사를 유지했습니다. 이어 5-limb radix-51 경로를 64비트
+GCC/Clang 기본값으로 삼고 unsigned loose 범위를 명시적으로 유지하며 X25519 ladder를
+flatten하여 동일 조건 WSL 비교에서 Ed25519를 OpenSSL의 1.53/1.28배로, X25519
+키 생성/유도를 0.24/0.21배에서 0.77/0.62배로 높였습니다. portable 10-limb 경로는
+MSVC 및 네이티브 wide product가 없는 대상의 fallback으로 남아 있습니다. 이후
+radix-51 개선은 두 독립 carry chain, 전용 10-product 제곱, 더 짧은 ladder live range,
+런타임 AVX2/BMI2/ADX 및 정확한 Tiger Lake tuning, 바인딩 키 cache를 적용했습니다.
+논리 processor 하나에 고정한 동일 조건 Windows 실행 15회의 X25519 키 생성/유도 중앙
+비율은 OpenSSL 3.6.4 대비 1.035/0.909배였습니다.
+이어 ML-KEM은 비트 단위 codec과 CBD 샘플링을 word 단위 경로로 바꾸고, NTT에 제한 범위
+Barrett reduction을 사용하며, context에 키를 바인딩할 때 디코드·확장한 키 재료를
+준비했습니다. 동일 조건 Windows 비교 7회에서 ML-KEM 키 생성/캡슐화/디캡슐화 9개 행의
+중앙값은 OpenSSL 3.6.4의 1.07--1.25배에 도달했고 NIST ACVP와 교차 구현 검사는 같은
+결과를 유지했습니다.
+이어 ML-DSA는 NTT의 계수별 modular 나눗셈을 고정 modulus Montgomery 곱으로 바꾸고,
+비트 패킹을 reservoir로 옮기며, SHAKE 거부 스트림을 rate block 단위로 소비했습니다.
+동일 조건 Windows 비교 7회에서 서명/검증 6개 행의 중앙값은 모두 OpenSSL 3.6.4의
+1.17--1.38배에 도달했고 공식 서명·검증 벡터와 산술 참조 검사는 같은 결과를 유지했습니다.
 
 ## 장별 기록
 

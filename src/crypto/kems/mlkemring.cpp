@@ -3,6 +3,35 @@
 namespace certpp {
 namespace crypto {
 
+    namespace {
+
+        // Rounded reciprocal for q over 26 fractional bits. All hot-path inputs are bounded by
+        // 2*q*q (under 2^25), where this returns the exact residue with one correction.
+        constexpr int32_t BARRETT_MULTIPLIER = 20159;
+        constexpr int32_t BARRETT_ROUND = int32_t(1) << 25;
+
+        inline int16_t reduceBounded(int32_t value) {
+            const int32_t quotient = int32_t(
+                (int64_t(BARRETT_MULTIPLIER) * value + BARRETT_ROUND) >> 26);
+            int32_t residue = value - quotient * MlKemRing::Q;
+            residue += int32_t(uint32_t(residue) >> 31) * MlKemRing::Q;
+            return int16_t(residue);
+        }
+
+        inline int16_t addReduced(int16_t a, int16_t b) {
+            int32_t sum = int32_t(a) + int32_t(b) - MlKemRing::Q;
+            sum += int32_t(uint32_t(sum) >> 31) * MlKemRing::Q;
+            return int16_t(sum);
+        }
+
+        inline int16_t subReduced(int16_t a, int16_t b) {
+            int32_t difference = int32_t(a) - int32_t(b);
+            difference += int32_t(uint32_t(difference) >> 31) * MlKemRing::Q;
+            return int16_t(difference);
+        }
+
+    } // namespace
+
     /* Reverses the low 7 bits of index. */
     size_t MlKemRing::bitRev7(size_t index) {
         size_t out = 0;
@@ -82,14 +111,14 @@ namespace crypto {
     /* out = a + b. */
     void MlKemRing::add(Poly& out, const Poly& a, const Poly& b) {
         for (size_t i = 0; i < N; ++i) {
-            out.coeffs[i] = reduce(int32_t(a.coeffs[i]) + int32_t(b.coeffs[i]));
+            out.coeffs[i] = addReduced(a.coeffs[i], b.coeffs[i]);
         }
     }
 
     /* out = a - b. */
     void MlKemRing::sub(Poly& out, const Poly& a, const Poly& b) {
         for (size_t i = 0; i < N; ++i) {
-            out.coeffs[i] = reduce(int32_t(a.coeffs[i]) - int32_t(b.coeffs[i]));
+            out.coeffs[i] = subReduced(a.coeffs[i], b.coeffs[i]);
         }
     }
 
@@ -111,10 +140,10 @@ namespace crypto {
                 ++k;
 
                 for (size_t j = start; j < start + length; ++j) {
-                    const int32_t t = (zeta * int32_t(f[j + length])) % Q;
-
-                    f[j + length] = reduce(int32_t(f[j]) - t);
-                    f[j] = reduce(int32_t(f[j]) + t);
+                    const int16_t t = reduceBounded(zeta * int32_t(f[j + length]));
+                    const int16_t current = f[j];
+                    f[j + length] = subReduced(current, t);
+                    f[j] = addReduced(current, t);
                 }
             }
         }
@@ -134,10 +163,12 @@ namespace crypto {
                 --k;
 
                 for (size_t j = start; j < start + length; ++j) {
-                    const int32_t t = int32_t(f[j]);
+                    const int16_t first = f[j];
+                    const int16_t second = f[j + length];
 
-                    f[j] = reduce(t + int32_t(f[j + length]));
-                    f[j + length] = reduce(zeta * (int32_t(f[j + length]) - t));
+                    f[j] = addReduced(first, second);
+                    f[j + length] = reduceBounded(
+                        zeta * (int32_t(second) - int32_t(first)));
                 }
             }
         }
@@ -147,7 +178,7 @@ namespace crypto {
         constexpr int32_t INV_128 = 3303;
 
         for (size_t i = 0; i < N; ++i) {
-            f[i] = reduce(int32_t(f[i]) * INV_128);
+            f[i] = reduceBounded(int32_t(f[i]) * INV_128);
         }
     }
 
@@ -167,11 +198,12 @@ namespace crypto {
             const int32_t b1 = int32_t(b.coeffs[2 * i + 1]);
             const int32_t gamma = int32_t(g[i]);
 
-            const int32_t c0 = (a0 * b0 + ((a1 * b1) % Q) * gamma) % Q;
-            const int32_t c1 = (a0 * b1 + a1 * b0) % Q;
+            const int32_t a1b1 = int32_t(reduceBounded(a1 * b1));
+            const int32_t c0 = a0 * b0 + a1b1 * gamma;
+            const int32_t c1 = a0 * b1 + a1 * b0;
 
-            out.coeffs[2 * i] = reduce(c0);
-            out.coeffs[2 * i + 1] = reduce(c1);
+            out.coeffs[2 * i] = reduceBounded(c0);
+            out.coeffs[2 * i + 1] = reduceBounded(c1);
         }
     }
 

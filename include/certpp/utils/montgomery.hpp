@@ -45,6 +45,9 @@ namespace certpp {
         CBigNum _one;    // R mod m -- the Montgomery form of 1.
         size_t _count;   // the number of limbs in _m; R == 2^(32*_count).
         uint32_t _n0inv; // -m^-1 mod 2^32.
+        TArray<uint64_t> _modulus64; // the same modulus packed for the 64-bit CIOS path.
+        size_t _wideCount;
+        uint64_t _n0inv64;
         bool _valid;     // whether the modulus was usable (non-zero and odd) at all.
 
     private:
@@ -100,6 +103,13 @@ namespace certpp {
             const uint32_t* a, size_t aLen, const uint32_t* b, size_t bLen, CBigNum& out
         ) const;
 
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        /** 64-bit-limb CIOS path used where the compiler provides a 128-bit accumulator. */
+        void mulInternal64(
+            const uint32_t* a, size_t aLen, const uint32_t* b, size_t bLen, CBigNum& out
+        ) const;
+#endif
+
     public:
         /**
          * Default constructor; an invalid, unusable context (isValid() returns false). Only
@@ -124,7 +134,8 @@ namespace certpp {
          * @return true if this context was built from a non-zero, odd modulus and every
          * operation below will behave; false otherwise, in which case every operation below is a
          * no-op (leaving its operand untouched, returning its argument unchanged, or returning
-         * zero from modExp()) and the caller should be using CBigNum::mod()/mulMod() instead.
+         * zero from modExp()/modExpProduct()) and the caller should be using
+         * CBigNum::mod()/mulMod() instead.
          */
         bool isValid() const;
 
@@ -208,7 +219,7 @@ namespace certpp {
 
     public:
         /**
-         * Modular exponentiation via a sliding window in the Montgomery domain -- the
+         * Modular exponentiation via an adaptive sliding window in the Montgomery domain -- the
          * division-free equivalent of CBigNum::modExp(base, exponent, modulus()), which pays for
          * a long division per squaring. Exponent-bit-dependent control flow makes this unsuitable
          * as a constant-time primitive; CBigNum itself has the same documented limitation.
@@ -218,6 +229,24 @@ namespace certpp {
          * 0^0, matching CBigNum::modExp()).
          */
         CBigNum modExp(const CBigNum& base, const CBigNum& exponent) const;
+
+        /**
+         * Computes the product of two modular exponentiations with one shared squaring chain:
+         * (firstBase^firstExponent * secondBase^secondExponent) mod modulus(). A two-bit
+         * simultaneous window precomputes the 16 products selected by each pair of exponent
+         * digits, and is useful for signature verification equations such as DSA's g^u1*y^u2.
+         * Exponent-bit-dependent control flow makes it variable-time under the same documented
+         * limitation as modExp().
+         * @param firstBase The first base, in ordinary form.
+         * @param firstExponent The first exponent.
+         * @param secondBase The second base, in ordinary form.
+         * @param secondExponent The second exponent.
+         * @return The product modulo modulus(), in ordinary form.
+         */
+        CBigNum modExpProduct(
+            const CBigNum& firstBase, const CBigNum& firstExponent,
+            const CBigNum& secondBase, const CBigNum& secondExponent
+        ) const;
     };
 
 } // namespace certpp

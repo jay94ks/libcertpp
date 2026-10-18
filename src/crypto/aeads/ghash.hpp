@@ -69,23 +69,31 @@ namespace crypto {
          * product are on data that genuinely changes and stay where they are. */
         uint8_t _hReflected[BLOCK_BYTES];
 
-        /* H^2, H^3 and H^4 in the same ordinary basis, used to fold four recurrence steps into
-         * independent carry-less products and one reduction. */
-        uint8_t _hPowersReflected[3][BLOCK_BYTES];
+        /* H^16 down to H in the same ordinary basis. The descending layout lets the AVX-512
+         * path load the powers for sixteen recurrence steps as four consecutive 512-bit vectors;
+         * the four-block path uses the lower half of the same table. */
+        uint8_t _hPowersReflected[16][BLOCK_BYTES];
+        const uint8_t (*_externalPowers)[BLOCK_BYTES];
 
         /* Which multiply absorb() should call, decided once per message rather than twice per
          * block. Both of these are CPUID-guarded statics, and a guarded static costs a load and
          * a test on every read -- harmless once, not once per 16 bytes of payload. */
         bool _accelerated;   // --> whether this CPU and build have PCLMULQDQ at all.
         bool _useGfni;       // --> whether it also has GFNI, to reflect in one instruction.
-        bool _powersReady;   // --> whether the four-block path's H^2..H^4 were prepared.
+        bool _wide;          // --> whether 512-bit GFNI and VPCLMULQDQ are safe to execute.
+        bool _smallPowersReady; // --> whether H^4..H occupy table slots 12..15.
+        bool _powersReady;   // --> whether the full H^16..H table was prepared.
 
         void absorb(const uint8_t* block);
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        void prepareSmallPowers();
         void preparePowers();
         void absorb4(const uint8_t* blocks);
+        void absorb8(const uint8_t* blocks);
+        void absorb16(const uint8_t* blocks);
 #endif
         void reflectSubkey();
+        const uint8_t (*powerTable() const)[BLOCK_BYTES];
 
     public:
         /**
@@ -110,6 +118,14 @@ namespace crypto {
         void reset(const uint8_t h[BLOCK_BYTES]);
 
         /**
+         * Keys this accumulator and reuses an immutable H^16..H table prepared by its owner.
+         * The table must outlive this accumulator. A null table is equivalent to reset(h).
+         */
+        void reset(
+            const uint8_t h[BLOCK_BYTES],
+            const uint8_t preparedPowers[16][BLOCK_BYTES]);
+
+        /**
          * Absorbs more input, buffering whatever does not complete a block.
          * @param data The bytes to absorb; ignored if null.
          * @param length How many bytes to absorb.
@@ -129,6 +145,16 @@ namespace crypto {
          * @param out Receives BLOCK_BYTES.
          */
         void finish(uint8_t out[BLOCK_BYTES]);
+
+        /**
+         * Copies the aligned accumulator and H^16..H table needed by AES-GCM's fused x86
+         * kernel. Returns false unless that kernel is supported or input remains buffered.
+         */
+        bool exportWideState(
+            uint8_t accumulator[BLOCK_BYTES], uint8_t powers[16][BLOCK_BYTES]);
+
+        /** Replaces the aligned accumulator after AES-GCM's fused kernel has advanced it. */
+        void replaceAccumulator(const uint8_t accumulator[BLOCK_BYTES]);
 
     public:
         /**

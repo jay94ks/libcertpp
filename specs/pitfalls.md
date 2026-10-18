@@ -149,12 +149,13 @@ original — this is the single most common way to corrupt a computation here.
 
 **`CBigNum` is not constant-time**, by its own documentation: it trims leading
 zero limbs and uses variable-size arithmetic, so operation cost depends on its
-operands. `condSwap()` now exchanges existing limbs with a mask, prime-curve
-scalar multiplication uses a fixed group-width ladder, and fixed-base
-multiplication no longer performs secret-indexed table lookups. Those local
-changes do not make the variable-width backend constant-time, so prime-curve
-ECDSA and ECDH still carry timing risk. Prefer X25519, whose ladder uses the
-fixed-width `Fe25519` backend, where the protocol permits it.
+operands. Native 64-by-64-to-128 builds keep prime-curve coordinates in a
+fixed-width Montgomery field and scan every entry in private-scalar window
+tables; the fallback uses masked `CBigNum` swaps. Neither path uses a private
+scalar as a table index. Exceptional point cases still have data-dependent
+control flow, and the fallback retains variable-width arithmetic, so
+prime-curve ECDSA and ECDH still carry timing risk. Prefer X25519, whose ladder
+uses the fixed-width `Fe25519` backend, where the protocol permits it.
 
 **`CEcCurve::linearCombination()` and `CEc2Curve::linearCombination()` accept
 public scalars only.** They branch on scalar bits to accelerate signature
@@ -172,7 +173,9 @@ signatures that verify only against themselves.
 otherwise, with every operation becoming a no-op. Check it, or use
 `CBigNum::mod()`, which handles any modulus — adding `CMontgomery` left
 `CBigNum::mod()`, `mulMod()` and `divMod()` byte-for-byte as they were, so the
-general path is still there and still correct.
+general path is still there and still correct. `modExp()` and
+`modExpProduct()` branch on exponent bits and inherit `CBigNum`'s variable-time
+limit; do not treat either as a constant-time private-exponent primitive.
 
 ## Distinguished names
 

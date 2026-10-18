@@ -123,6 +123,7 @@ namespace crypto {
         static SEc2Point toAffineFromLD(const EC2PointLD& pt);
         static EC2PointLD doublePointLD(const EC2PointLD& pt, const CGf2m& a, const CGf2m& b);
         static EC2PointLD addLD(const EC2PointLD& p1, const EC2PointLD& p2, const CGf2m& a, const CGf2m& b);
+        static EC2PointLD addMixedLD(const EC2PointLD& p1, const SEc2Point& p2, const CGf2m& a, const CGf2m& b);
         static void condSwapLD(bool doSwap, EC2PointLD& a, EC2PointLD& b);
 
     public:

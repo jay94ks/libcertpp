@@ -20,9 +20,12 @@ namespace crypto {
         private:
             CBigNum _n;
             CBigNum _e;
+            CMontgomery _montgomery;
 
         public:
-            RsaPublicKey(CBigNum n, CBigNum e) : _n(std::move(n)), _e(std::move(e)) {
+            RsaPublicKey(CBigNum n, CBigNum e)
+                : _n(std::move(n)), _e(std::move(e)), _montgomery(_n)
+            {
                 algorithm(EASYM_RSA);
             }
 
@@ -62,11 +65,13 @@ namespace crypto {
 
             const CBigNum& n() const { return _n; }
             const CBigNum& e() const { return _e; }
+            const CMontgomery& montgomery() const { return _montgomery; }
         };
 
         class RsaPrivateKey : public IPrivateKey {
         private:
             CBigNum _n, _e, _d, _p, _q, _dp, _dq, _qInv;
+            CMontgomery _montgomeryN, _montgomeryP, _montgomeryQ;
             IPublicKeyPtr _publicKey;
 
         public:
@@ -76,6 +81,7 @@ namespace crypto {
             )
                 : _n(std::move(n)), _e(std::move(e)), _d(std::move(d)), _p(std::move(p)),
                   _q(std::move(q)), _dp(std::move(dp)), _dq(std::move(dq)), _qInv(std::move(qInv)),
+                  _montgomeryN(_n), _montgomeryP(_p), _montgomeryQ(_q),
                   _publicKey(std::move(publicKey))
             {
                 algorithm(EASYM_RSA);
@@ -137,6 +143,9 @@ namespace crypto {
             const CBigNum& dp() const { return _dp; }
             const CBigNum& dq() const { return _dq; }
             const CBigNum& qInv() const { return _qInv; }
+            const CMontgomery& montgomeryN() const { return _montgomeryN; }
+            const CMontgomery& montgomeryP() const { return _montgomeryP; }
+            const CMontgomery& montgomeryQ() const { return _montgomeryQ; }
         };
 
         class RsaContext : public IAsymmetricContext, public std::enable_shared_from_this<RsaContext> {
@@ -410,24 +419,16 @@ namespace crypto {
                 return true;
             }
 
-            /* x^exponent mod modulus, through Montgomery wherever the modulus allows it.
-             *
-             * --> CBigNum::modExp() pays a full Knuth-D long division per squaring, because its
-             * mulMod() is mul() then mod(). For RSA that was most of the cost: a perf profile put
-             * 36.7% of all cycles in CBigNum::divMod(), reached from exactly this call. Building
-             * a CMontgomery instead costs two long divisions, once, in its constructor -- which
-             * an exponentiation of any useful length repays many times over.
-             *
-             * RSA's p, q and n are all odd, so the Montgomery path is the one taken in practice.
-             * The fallback is not decoration: CMontgomery requires an odd modulus and turns
-             * invalid into a no-op returning zero, so an even or zero modulus still has to reach
-             * CBigNum::modExp() to stay correct rather than silently wrong. */
-            static CBigNum modExpMod(
-                const CBigNum& base, const CBigNum& exponent, const CBigNum& modulus
+            /* Uses a key's cached Montgomery context when its modulus was valid at import or
+             * generation time. Keeping R and R^2 beside the immutable key removes their Knuth-D
+             * divisions from repeated exponentiations. Imported invalid/even moduli retain the
+             * generic fallback and its prior behavior. */
+            static CBigNum modExpCached(
+                const CBigNum& base, const CBigNum& exponent, const CBigNum& modulus,
+                const CMontgomery& montgomery
             ) {
-                const CMontgomery mont(modulus);
-                if (mont.isValid()) {
-                    return mont.modExp(base, exponent);
+                if (montgomery.isValid()) {
+                    return montgomery.modExp(base, exponent);
                 }
 
                 return CBigNum::modExp(base, exponent, modulus);
@@ -454,8 +455,8 @@ namespace crypto {
                 const CBigNum& qInv = priv.qInv();
 
                 if (!p.isZero() && !q.isZero() && !dp.isZero() && !dq.isZero() && !qInv.isZero()) {
-                    CBigNum m1 = modExpMod(x, dp, p);
-                    CBigNum m2 = modExpMod(x, dq, q);
+                    CBigNum m1 = modExpCached(x, dp, p, priv.montgomeryP());
+                    CBigNum m2 = modExpCached(x, dq, q, priv.montgomeryQ());
 
                     CBigNum h(m1);
                     h.modSub(m2, p);
@@ -465,7 +466,8 @@ namespace crypto {
                     m.mul(q);
                     m.add(m2);
 
-                    const bool consistent = (modExpMod(m, priv.e(), priv.n()) == x);
+                    const bool consistent =
+                        (modExpCached(m, priv.e(), priv.n(), priv.montgomeryN()) == x);
 
                     // --> Each CRT intermediate hands over the factorization, not merely a hint
                     // of it: m1 is m mod p, so m - m1 is a multiple of p and gcd(m - m1, n) is p
@@ -484,7 +486,7 @@ namespace crypto {
                     m.secureClear();
                 }
 
-                return modExpMod(x, priv.d(), priv.n());
+                return modExpCached(x, priv.d(), priv.n(), priv.montgomeryN());
             }
 
         public:
@@ -539,7 +541,7 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
-                CBigNum m = modExpMod(s, pub->e(), pub->n());
+                CBigNum m = modExpCached(s, pub->e(), pub->n(), pub->montgomery());
 
                 CBuffer em(keyBytes);
                 if (!m.toBigEndian(em.toSpan())) {
@@ -648,7 +650,7 @@ namespace crypto {
                     return ERET_BADREQ;
                 }
 
-                CBigNum m = modExpMod(s, pub->e(), pub->n());
+                CBigNum m = modExpCached(s, pub->e(), pub->n(), pub->montgomery());
 
                 size_t emBits = modBits - 1;
                 size_t emLen = (emBits + 7) / 8;
@@ -698,7 +700,7 @@ namespace crypto {
                 std::memcpy(emPtr + 3 + padLen, message.data, message.size);
 
                 CBigNum m = CBigNum::fromBigEndian(em.toSpan());
-                CBigNum c = modExpMod(m, pub->e(), pub->n());
+                CBigNum c = modExpCached(m, pub->e(), pub->n(), pub->montgomery());
 
                 if (!c.toBigEndian(SByteSpan(output.data, keyBytes))) {
                     return ERET_UNKNOWN;

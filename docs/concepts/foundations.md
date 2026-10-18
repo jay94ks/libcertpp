@@ -188,6 +188,13 @@
   test suite from 1243s to 140s, with the asymmetric algorithms individually
   7-14x faster.
 
+  `modInverse()` reduces its input once, then uses binary extended GCD for an
+  odd modulus: coefficient updates stay reduced modulo `m`, and every loop is
+  shifts, comparisons, additions, or subtractions instead of a quotient-sized
+  multiplication and division. Even moduli retain the general extended-
+  Euclidean path. Both are variable-time, matching `CBigNum`'s documented
+  boundary.
+
   Algorithm D's correctness hinges on two things that ordinary use never
   exercises, so both are tested deliberately in `tests/utils/divmod.cpp`:
   the estimate-correction loop, and the add-back branch, which fires on the
@@ -273,7 +280,13 @@
   exhaustively over `[0, 2m+2]^2` for single-limb moduli, the hand-picked
   `0`/`1`/`m-1`/`m`/`m+1`/`m^2-1`/`m^2+m` operand classes per modulus, and
   200-step chained sequences that would expose an error that only accumulates
-  (`tests/utils/montgomery.cpp`, ~915k assertions). Dropping the conditional
+  (`tests/utils/montgomery.cpp`, ~915k assertions). `modExp()` keeps both short
+  binary chains and longer sliding-window chains in packed 64-bit storage on
+  native Clang x86-64 builds. Product accumulation and Montgomery reduction
+  advance together in one integrated CIOS digit pass. `modExpProduct()` uses a
+  two-bit simultaneous window for two bases with one shared squaring chain and
+  the same packed representation.
+  Dropping the conditional
   subtraction, perturbing `n'`, or omitting one `fromMont()` each fail it.
 - **`utils/gf2m.hpp` / `src/utils/gf2m.cpp`** define `CGf2m`, a binary
   field GF(2^m) element (polynomial basis) -- the field arithmetic

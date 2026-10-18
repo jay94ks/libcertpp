@@ -75,6 +75,16 @@ namespace crypto {
         static void block(const SState& state, uint32_t counter, uint8_t out[BLOCK_BYTES]);
 
         /**
+         * Produces two consecutive keystream blocks from a prepared state.
+         * @param state The prepared state.
+         * @param counter Counter of the first block; the second uses counter + 1.
+         * @param out Receives 2 * BLOCK_BYTES bytes.
+         */
+        static void blockPair(
+            const SState& state, uint32_t counter, uint8_t out[2 * BLOCK_BYTES]
+        );
+
+        /**
          * XORs `length` bytes of keystream, starting at `initialCounter`, over the input.
          *
          * Whole blocks are combined 32 bits at a time rather than byte by byte, which is the

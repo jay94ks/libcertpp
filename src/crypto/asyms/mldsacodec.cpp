@@ -6,31 +6,42 @@ namespace crypto {
 
     namespace {
 
-        /* Writes `width` bits of `value` at `bitOffset`, little-endian within each byte -- the
-         * same convention BitsToBytes (FIPS 204 Algorithm 12) defines. */
-        void writeBits(uint8_t* out, size_t bitOffset, uint32_t value, size_t width) {
-            for (size_t bit = 0; bit < width; ++bit) {
-                const size_t position = bitOffset + bit;
+        /* Packs 256 little-endian bit fields through a reservoir. ML-DSA's widest field is 20
+         * bits, so a 64-bit reservoir always has room for one more field after the byte flush. */
+        void packFields(const uint32_t* fields, size_t width, uint8_t* out) {
+            uint64_t reservoir = 0;
+            size_t bits = 0;
+            size_t offset = 0;
 
-                if ((value >> bit) & 1u) {
-                    out[position >> 3] = uint8_t(out[position >> 3] | (1u << (position & 7u)));
+            for (size_t i = 0; i < MlDsaRing::N; ++i) {
+                reservoir |= uint64_t(fields[i]) << bits;
+                bits += width;
+
+                while (bits >= 8) {
+                    out[offset++] = uint8_t(reservoir);
+                    reservoir >>= 8;
+                    bits -= 8;
                 }
             }
         }
 
-        /* Reads `width` bits from `bitOffset`, matching writeBits. */
-        uint32_t readBits(const uint8_t* in, size_t bitOffset, size_t width) {
-            uint32_t value = 0;
+        /* Inverse of packFields(), preserving FIPS 204's little-endian BitsToBytes order. */
+        void unpackFields(const uint8_t* in, size_t width, uint32_t* fields) {
+            const uint64_t mask = (uint64_t(1) << width) - 1u;
+            uint64_t reservoir = 0;
+            size_t bits = 0;
+            size_t offset = 0;
 
-            for (size_t bit = 0; bit < width; ++bit) {
-                const size_t position = bitOffset + bit;
-
-                if ((in[position >> 3] >> (position & 7u)) & 1u) {
-                    value |= uint32_t(1) << bit;
+            for (size_t i = 0; i < MlDsaRing::N; ++i) {
+                while (bits < width) {
+                    reservoir |= uint64_t(in[offset++]) << bits;
+                    bits += 8;
                 }
-            }
 
-            return value;
+                fields[i] = uint32_t(reservoir & mask);
+                reservoir >>= width;
+                bits -= width;
+            }
         }
 
     } // namespace
@@ -62,11 +73,11 @@ namespace crypto {
             }
         }
 
-        std::memset(out.data, 0, needed);
-
+        uint32_t fields[MlDsaRing::N];
         for (size_t i = 0; i < MlDsaRing::N; ++i) {
-            writeBits(out.data, i * width, uint32_t(poly.coeffs[i]), width);
+            fields[i] = uint32_t(poly.coeffs[i]);
         }
+        packFields(fields, width, out.data);
 
         return true;
     }
@@ -82,8 +93,10 @@ namespace crypto {
         // --> No range check here, deliberately: FIPS 204 defines this as a pure bit-field read,
         // and for b = 43 it genuinely can produce 63. The caller decides whether that matters,
         // because for t1 (b = 2^10 - 1) it cannot happen at all. See the class doc comment.
+        uint32_t fields[MlDsaRing::N];
+        unpackFields(in.data, width, fields);
         for (size_t i = 0; i < MlDsaRing::N; ++i) {
-            out.coeffs[i] = int32_t(readBits(in.data, i * width, width));
+            out.coeffs[i] = int32_t(fields[i]);
         }
 
         return true;
@@ -104,16 +117,15 @@ namespace crypto {
             }
         }
 
-        std::memset(out.data, 0, needed);
-
         // --> b - w_i, which maps [-a, b] onto [0, a + b] and is what lets an unsigned bit field
         // carry a signed range. Note the direction: the encoding is *descending* in w_i, so a
         // decoder that forgets the subtraction produces a mirrored polynomial that still packs
         // and unpacks consistently with itself.
+        uint32_t fields[MlDsaRing::N];
         for (size_t i = 0; i < MlDsaRing::N; ++i) {
-            const uint32_t shifted = uint32_t(int64_t(b) - int64_t(poly.coeffs[i]));
-            writeBits(out.data, i * width, shifted, width);
+            fields[i] = uint32_t(int64_t(b) - int64_t(poly.coeffs[i]));
         }
+        packFields(fields, width, out.data);
 
         return true;
     }
@@ -128,9 +140,10 @@ namespace crypto {
             return false;
         }
 
+        uint32_t fields[MlDsaRing::N];
+        unpackFields(in.data, width, fields);
         for (size_t i = 0; i < MlDsaRing::N; ++i) {
-            const uint32_t field = readBits(in.data, i * width, width);
-            out.coeffs[i] = int32_t(int64_t(b) - int64_t(field));
+            out.coeffs[i] = int32_t(int64_t(b) - int64_t(fields[i]));
         }
 
         return true;

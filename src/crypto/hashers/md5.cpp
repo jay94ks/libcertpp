@@ -7,8 +7,8 @@
 #include <immintrin.h>
 #endif
 
-#if defined(CERTPP_ARCH_HAS_ANDN) && \
-    (defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER)))
+#if defined(CERTPP_ARCH_HAS_ANDN) && !defined(_MSC_VER) && \
+    (defined(__clang__) || defined(__GNUC__))
 #define CERTPP_MD5_BMI1 1
 #endif
 
@@ -49,82 +49,147 @@ namespace crypto {
             return supported;
         }
 
-        /* The scalar form keeps the working state in general-purpose registers. Writing all
-         * steps explicitly exposes every rotate count and message index to the compiler. BMI1
-         * then folds each complemented AND into ANDN, while destructive ROL updates the working
-         * word in place; RORX was measured slower for this dependency pattern. */
+        /* Keep the four working words in the natural x86 accumulator registers and read message
+         * words directly from L1. Clang's otherwise equivalent C expansion keeps all sixteen
+         * words live for later rounds and spills them under the Windows x64 register set. The
+         * explicit schedule also lets LEA combine the round constant with the Boolean value. */
         __attribute__((target("bmi,no-bmi2")))
         void transformMd5Bmi1Blocks(uint32_t* __restrict state,
                                     const uint8_t* __restrict block,
                                     size_t blocks) {
-            while (blocks-- != 0) {
             uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
-            size_t stepIndex = 0;
+            while (blocks-- != 0) {
+                uint32_t word, temp, oldA, oldB, oldC, oldD;
 
-#define CERTPP_MD5_SCALAR_STEP(x, booleanValue, addend, index, shift) do { \
-            const uint32_t rotateValue = (x) + (booleanValue) \
-                + loadMd5Le32(block + (index) * 4) + MD5_K[stepIndex]; \
-            (x) = (addend) + ((rotateValue << (shift)) \
-                | (rotateValue >> (32 - (shift)))); \
-            ++stepIndex; \
-        } while (false)
-#define CERTPP_MD5_F(x, p, q, r, addend, index, shift) \
-        CERTPP_MD5_SCALAR_STEP(x, ((p) & (q)) | (~(p) & (r)), addend, index, shift)
-#define CERTPP_MD5_G(x, p, q, r, addend, index, shift) \
-        CERTPP_MD5_SCALAR_STEP(x, ((p) & (q)) | (~(p) & (r)), addend, index, shift)
-#define CERTPP_MD5_H(x, p, q, r, addend, index, shift) \
-        CERTPP_MD5_SCALAR_STEP(x, (p) ^ (q) ^ (r), addend, index, shift)
-#define CERTPP_MD5_I(x, p, q, r, addend, index, shift) \
-        CERTPP_MD5_SCALAR_STEP(x, (q) ^ ((p) | ~(r)), addend, index, shift)
+#define CERTPP_MD5_ASM_F(dst, p, q, r, addend, next, constant, shift) \
+        "xorl %[" #q "], %[temp]\n\t" \
+        "leal " #constant "(%[" #dst "],%[word]), %[" #dst "]\n\t" \
+        "andl %[" #p "], %[temp]\n\t" \
+        "movl " #next "*4(%[data]), %[word]\n\t" \
+        "xorl %[" #r "], %[temp]\n\t" \
+        "addl %[temp], %[" #dst "]\n\t" \
+        "roll $" #shift ", %[" #dst "]\n\t" \
+        "movl %[" #q "], %[temp]\n\t" \
+        "addl %[" #addend "], %[" #dst "]\n\t"
+#define CERTPP_MD5_ASM_H(dst, p, q, r, addend, next, constant, shift) \
+        "leal " #constant "(%[" #dst "],%[word]), %[" #dst "]\n\t" \
+        "xorl %[" #r "], %[temp]\n\t" \
+        "movl " #next "*4(%[data]), %[word]\n\t" \
+        "xorl %[" #p "], %[temp]\n\t" \
+        "addl %[temp], %[" #dst "]\n\t" \
+        "movl %[" #p "], %[temp]\n\t" \
+        "roll $" #shift ", %[" #dst "]\n\t" \
+        "addl %[" #addend "], %[" #dst "]\n\t"
+#define CERTPP_MD5_ASM_I(dst, p, q, r, addend, next, constant, shift) \
+        "leal " #constant "(%[" #dst "],%[word]), %[" #dst "]\n\t" \
+        "orl %[" #p "], %[temp]\n\t" \
+        "movl " #next "*4(%[data]), %[word]\n\t" \
+        "xorl %[" #q "], %[temp]\n\t" \
+        "addl %[temp], %[" #dst "]\n\t" \
+        "movl $-1, %[temp]\n\t" \
+        "roll $" #shift ", %[" #dst "]\n\t" \
+        "xorl %[" #q "], %[temp]\n\t" \
+        "addl %[" #addend "], %[" #dst "]\n\t"
 
-            CERTPP_MD5_F(a, b, c, d, b,  0,  7); CERTPP_MD5_F(d, a, b, c, a,  1, 12);
-            CERTPP_MD5_F(c, d, a, b, d,  2, 17); CERTPP_MD5_F(b, c, d, a, c,  3, 22);
-            CERTPP_MD5_F(a, b, c, d, b,  4,  7); CERTPP_MD5_F(d, a, b, c, a,  5, 12);
-            CERTPP_MD5_F(c, d, a, b, d,  6, 17); CERTPP_MD5_F(b, c, d, a, c,  7, 22);
-            CERTPP_MD5_F(a, b, c, d, b,  8,  7); CERTPP_MD5_F(d, a, b, c, a,  9, 12);
-            CERTPP_MD5_F(c, d, a, b, d, 10, 17); CERTPP_MD5_F(b, c, d, a, c, 11, 22);
-            CERTPP_MD5_F(a, b, c, d, b, 12,  7); CERTPP_MD5_F(d, a, b, c, a, 13, 12);
-            CERTPP_MD5_F(c, d, a, b, d, 14, 17); CERTPP_MD5_F(b, c, d, a, c, 15, 22);
+                __asm__ volatile(
+                    "movl %[a], %[oldA]\n\t"
+                    "movl %[b], %[oldB]\n\t"
+                    "movl %[c], %[oldC]\n\t"
+                    "movl %[d], %[oldD]\n\t"
+                    "movl 0(%[data]), %[word]\n\t"
+                    "movl %[d], %[temp]\n\t"
+                    CERTPP_MD5_ASM_F(a, b, c, d, b,  1, 0xd76aa478,  7)
+                    CERTPP_MD5_ASM_F(d, a, b, c, a,  2, 0xe8c7b756, 12)
+                    CERTPP_MD5_ASM_F(c, d, a, b, d,  3, 0x242070db, 17)
+                    CERTPP_MD5_ASM_F(b, c, d, a, c,  4, 0xc1bdceee, 22)
+                    CERTPP_MD5_ASM_F(a, b, c, d, b,  5, 0xf57c0faf,  7)
+                    CERTPP_MD5_ASM_F(d, a, b, c, a,  6, 0x4787c62a, 12)
+                    CERTPP_MD5_ASM_F(c, d, a, b, d,  7, 0xa8304613, 17)
+                    CERTPP_MD5_ASM_F(b, c, d, a, c,  8, 0xfd469501, 22)
+                    CERTPP_MD5_ASM_F(a, b, c, d, b,  9, 0x698098d8,  7)
+                    CERTPP_MD5_ASM_F(d, a, b, c, a, 10, 0x8b44f7af, 12)
+                    CERTPP_MD5_ASM_F(c, d, a, b, d, 11, 0xffff5bb1, 17)
+                    CERTPP_MD5_ASM_F(b, c, d, a, c, 12, 0x895cd7be, 22)
+                    CERTPP_MD5_ASM_F(a, b, c, d, b, 13, 0x6b901122,  7)
+                    CERTPP_MD5_ASM_F(d, a, b, c, a, 14, 0xfd987193, 12)
+                    CERTPP_MD5_ASM_F(c, d, a, b, d, 15, 0xa679438e, 17)
+                    CERTPP_MD5_ASM_F(b, c, d, a, c,  1, 0x49b40821, 22)
 
-            CERTPP_MD5_G(a, d, b, c, b,  1,  5); CERTPP_MD5_G(d, c, a, b, a,  6,  9);
-            CERTPP_MD5_G(c, b, d, a, d, 11, 14); CERTPP_MD5_G(b, a, c, d, c,  0, 20);
-            CERTPP_MD5_G(a, d, b, c, b,  5,  5); CERTPP_MD5_G(d, c, a, b, a, 10,  9);
-            CERTPP_MD5_G(c, b, d, a, d, 15, 14); CERTPP_MD5_G(b, a, c, d, c,  4, 20);
-            CERTPP_MD5_G(a, d, b, c, b,  9,  5); CERTPP_MD5_G(d, c, a, b, a, 14,  9);
-            CERTPP_MD5_G(c, b, d, a, d,  3, 14); CERTPP_MD5_G(b, a, c, d, c,  8, 20);
-            CERTPP_MD5_G(a, d, b, c, b, 13,  5); CERTPP_MD5_G(d, c, a, b, a,  2,  9);
-            CERTPP_MD5_G(c, b, d, a, d,  7, 14); CERTPP_MD5_G(b, a, c, d, c, 12, 20);
+                    "movl %[c], %[temp]\n\t"
+                    CERTPP_MD5_ASM_F(a, d, b, c, b,  6, 0xf61e2562,  5)
+                    CERTPP_MD5_ASM_F(d, c, a, b, a, 11, 0xc040b340,  9)
+                    CERTPP_MD5_ASM_F(c, b, d, a, d,  0, 0x265e5a51, 14)
+                    CERTPP_MD5_ASM_F(b, a, c, d, c,  5, 0xe9b6c7aa, 20)
+                    CERTPP_MD5_ASM_F(a, d, b, c, b, 10, 0xd62f105d,  5)
+                    CERTPP_MD5_ASM_F(d, c, a, b, a, 15, 0x02441453,  9)
+                    CERTPP_MD5_ASM_F(c, b, d, a, d,  4, 0xd8a1e681, 14)
+                    CERTPP_MD5_ASM_F(b, a, c, d, c,  9, 0xe7d3fbc8, 20)
+                    CERTPP_MD5_ASM_F(a, d, b, c, b, 14, 0x21e1cde6,  5)
+                    CERTPP_MD5_ASM_F(d, c, a, b, a,  3, 0xc33707d6,  9)
+                    CERTPP_MD5_ASM_F(c, b, d, a, d,  8, 0xf4d50d87, 14)
+                    CERTPP_MD5_ASM_F(b, a, c, d, c, 13, 0x455a14ed, 20)
+                    CERTPP_MD5_ASM_F(a, d, b, c, b,  2, 0xa9e3e905,  5)
+                    CERTPP_MD5_ASM_F(d, c, a, b, a,  7, 0xfcefa3f8,  9)
+                    CERTPP_MD5_ASM_F(c, b, d, a, d, 12, 0x676f02d9, 14)
+                    CERTPP_MD5_ASM_F(b, a, c, d, c,  5, 0x8d2a4c8a, 20)
 
-            CERTPP_MD5_H(a, b, c, d, b,  5,  4); CERTPP_MD5_H(d, a, b, c, a,  8, 11);
-            CERTPP_MD5_H(c, d, a, b, d, 11, 16); CERTPP_MD5_H(b, c, d, a, c, 14, 23);
-            CERTPP_MD5_H(a, b, c, d, b,  1,  4); CERTPP_MD5_H(d, a, b, c, a,  4, 11);
-            CERTPP_MD5_H(c, d, a, b, d,  7, 16); CERTPP_MD5_H(b, c, d, a, c, 10, 23);
-            CERTPP_MD5_H(a, b, c, d, b, 13,  4); CERTPP_MD5_H(d, a, b, c, a,  0, 11);
-            CERTPP_MD5_H(c, d, a, b, d,  3, 16); CERTPP_MD5_H(b, c, d, a, c,  6, 23);
-            CERTPP_MD5_H(a, b, c, d, b,  9,  4); CERTPP_MD5_H(d, a, b, c, a, 12, 11);
-            CERTPP_MD5_H(c, d, a, b, d, 15, 16); CERTPP_MD5_H(b, c, d, a, c,  2, 23);
+                    CERTPP_MD5_ASM_H(a, b, c, d, b,  8, 0xfffa3942,  4)
+                    CERTPP_MD5_ASM_H(d, a, b, c, a, 11, 0x8771f681, 11)
+                    CERTPP_MD5_ASM_H(c, d, a, b, d, 14, 0x6d9d6122, 16)
+                    CERTPP_MD5_ASM_H(b, c, d, a, c,  1, 0xfde5380c, 23)
+                    CERTPP_MD5_ASM_H(a, b, c, d, b,  4, 0xa4beea44,  4)
+                    CERTPP_MD5_ASM_H(d, a, b, c, a,  7, 0x4bdecfa9, 11)
+                    CERTPP_MD5_ASM_H(c, d, a, b, d, 10, 0xf6bb4b60, 16)
+                    CERTPP_MD5_ASM_H(b, c, d, a, c, 13, 0xbebfbc70, 23)
+                    CERTPP_MD5_ASM_H(a, b, c, d, b,  0, 0x289b7ec6,  4)
+                    CERTPP_MD5_ASM_H(d, a, b, c, a,  3, 0xeaa127fa, 11)
+                    CERTPP_MD5_ASM_H(c, d, a, b, d,  6, 0xd4ef3085, 16)
+                    CERTPP_MD5_ASM_H(b, c, d, a, c,  9, 0x04881d05, 23)
+                    CERTPP_MD5_ASM_H(a, b, c, d, b, 12, 0xd9d4d039,  4)
+                    CERTPP_MD5_ASM_H(d, a, b, c, a, 15, 0xe6db99e5, 11)
+                    CERTPP_MD5_ASM_H(c, d, a, b, d,  2, 0x1fa27cf8, 16)
+                    CERTPP_MD5_ASM_H(b, c, d, a, c,  0, 0xc4ac5665, 23)
 
-            CERTPP_MD5_I(a, b, c, d, b,  0,  6); CERTPP_MD5_I(d, a, b, c, a,  7, 10);
-            CERTPP_MD5_I(c, d, a, b, d, 14, 15); CERTPP_MD5_I(b, c, d, a, c,  5, 21);
-            CERTPP_MD5_I(a, b, c, d, b, 12,  6); CERTPP_MD5_I(d, a, b, c, a,  3, 10);
-            CERTPP_MD5_I(c, d, a, b, d, 10, 15); CERTPP_MD5_I(b, c, d, a, c,  1, 21);
-            CERTPP_MD5_I(a, b, c, d, b,  8,  6); CERTPP_MD5_I(d, a, b, c, a, 15, 10);
-            CERTPP_MD5_I(c, d, a, b, d,  6, 15); CERTPP_MD5_I(b, c, d, a, c, 13, 21);
-            CERTPP_MD5_I(a, b, c, d, b,  4,  6); CERTPP_MD5_I(d, a, b, c, a, 11, 10);
-            CERTPP_MD5_I(c, d, a, b, d,  2, 15); CERTPP_MD5_I(b, c, d, a, c,  9, 21);
+                    "movl $-1, %[temp]\n\t"
+                    "xorl %[d], %[temp]\n\t"
+                    CERTPP_MD5_ASM_I(a, b, c, d, b,  7, 0xf4292244,  6)
+                    CERTPP_MD5_ASM_I(d, a, b, c, a, 14, 0x432aff97, 10)
+                    CERTPP_MD5_ASM_I(c, d, a, b, d,  5, 0xab9423a7, 15)
+                    CERTPP_MD5_ASM_I(b, c, d, a, c, 12, 0xfc93a039, 21)
+                    CERTPP_MD5_ASM_I(a, b, c, d, b,  3, 0x655b59c3,  6)
+                    CERTPP_MD5_ASM_I(d, a, b, c, a, 10, 0x8f0ccc92, 10)
+                    CERTPP_MD5_ASM_I(c, d, a, b, d,  1, 0xffeff47d, 15)
+                    CERTPP_MD5_ASM_I(b, c, d, a, c,  8, 0x85845dd1, 21)
+                    CERTPP_MD5_ASM_I(a, b, c, d, b, 15, 0x6fa87e4f,  6)
+                    CERTPP_MD5_ASM_I(d, a, b, c, a,  6, 0xfe2ce6e0, 10)
+                    CERTPP_MD5_ASM_I(c, d, a, b, d, 13, 0xa3014314, 15)
+                    CERTPP_MD5_ASM_I(b, c, d, a, c,  4, 0x4e0811a1, 21)
+                    CERTPP_MD5_ASM_I(a, b, c, d, b, 11, 0xf7537e82,  6)
+                    CERTPP_MD5_ASM_I(d, a, b, c, a,  2, 0xbd3af235, 10)
+                    CERTPP_MD5_ASM_I(c, d, a, b, d,  9, 0x2ad7d2bb, 15)
+                    CERTPP_MD5_ASM_I(b, c, d, a, c,  0, 0xeb86d391, 21)
+                    "addl %[oldA], %[a]\n\t"
+                    "addl %[oldB], %[b]\n\t"
+                    "addl %[oldC], %[c]\n\t"
+                    "addl %[oldD], %[d]\n\t"
+                    : [a] "+&a"(a), [b] "+&b"(b), [c] "+&c"(c), [d] "+&d"(d),
+                      [word] "=&r"(word), [temp] "=&r"(temp),
+                      [oldA] "=&r"(oldA), [oldB] "=&r"(oldB),
+                      [oldC] "=&r"(oldC), [oldD] "=&r"(oldD)
+                    : [data] "r"(block)
+                    : "cc", "memory"
+                );
 
-#undef CERTPP_MD5_I
-#undef CERTPP_MD5_H
-#undef CERTPP_MD5_G
-#undef CERTPP_MD5_F
-#undef CERTPP_MD5_SCALAR_STEP
+#undef CERTPP_MD5_ASM_I
+#undef CERTPP_MD5_ASM_H
+#undef CERTPP_MD5_ASM_F
 
-            state[0] += a;
-            state[1] += b;
-            state[2] += c;
-            state[3] += d;
-            block += 64;
+                block += 64;
             }
+            state[0] = a;
+            state[1] = b;
+            state[2] = c;
+            state[3] = d;
         }
 #endif
 

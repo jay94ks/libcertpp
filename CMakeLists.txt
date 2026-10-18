@@ -21,7 +21,14 @@ endif()
 option(CERTPP_BUILD_SHARED "Build certpp as a shared library" ON)
 option(CERTPP_WITHOUT_JSON "Exclude the JSON utility from the library" OFF)
 option(CERTPP_RNG_FALLBACK "Allow crypto::CRng to fall back to std::random_device if the OS CSPRNG is unavailable" OFF)
-option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255-19) instead of the default 2^25.5 ten-limb one. Correct but measured no faster on x86-64 GCC, so it is off; see docs/HISTORY.md for the measurements" OFF)
+set(_CERTPP_FE25519_RADIX51_DEFAULT OFF)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|riscv64)$")
+    set(_CERTPP_FE25519_RADIX51_DEFAULT ON)
+endif()
+option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255-19) when the compiler provides native 64x64-to-128 products" ${_CERTPP_FE25519_RADIX51_DEFAULT})
+unset(_CERTPP_FE25519_RADIX51_DEFAULT)
 option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU acceleration (ADX/BMI2, PCLMULQDQ/GFNI, SSE2/AVX2/AVX-512F, BMI1 ANDN, BMI2 RORX, and AVX512-IFMA), always using portable implementations instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512F ChaCha20 and AVX512-IFMA Poly1305 acceleration while retaining narrower SIMD paths" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
@@ -73,6 +80,13 @@ target_compile_definitions(certpp
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_SHA}>:CERTPP_DISABLE_HWACCEL_SHA=1>
         $<$<BOOL:${CERTPP_DISABLE_HWACCEL_AES}>:CERTPP_DISABLE_HWACCEL_AES=1>
 )
+
+# Internal C++ calls in the shared object are not supported interposition points. Let GCC bind
+# them locally so hot compositions such as X25519's field ladder can inline across their source
+# unit instead of routing every field operation through the ELF PLT.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(certpp PRIVATE -fno-semantic-interposition)
+endif()
 
 set_target_properties(certpp PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -270,6 +284,18 @@ if(CERTPP_BUILD_TESTS)
         if(CERTPP_TEST_REL STREQUAL "crypto/asyms/fe25519")
             list(APPEND CERTPP_TEST_PRIVATE_SOURCES
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/fe25519.cpp
+            )
+            # This test compiles the private implementation into its own executable, so it does
+            # not inherit certpp's PRIVATE representation switch. Keep the exact-oracle tests on
+            # the same radix as the library selected for this configuration.
+            target_compile_definitions(certpp_test_${CERTPP_TEST_NAME} PRIVATE
+                $<$<BOOL:${CERTPP_ENABLE_FE25519_RADIX51}>:CERTPP_ENABLE_FE25519_RADIX51=1>
+            )
+        endif()
+
+        if(CERTPP_TEST_REL STREQUAL "crypto/asyms/fe448")
+            list(APPEND CERTPP_TEST_PRIVATE_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/asyms/fe448.cpp
             )
         endif()
 

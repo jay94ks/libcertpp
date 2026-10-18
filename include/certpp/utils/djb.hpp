@@ -14,6 +14,7 @@ namespace certpp {
     /**
      * Djb hash function utility class.
      * Provides a static method to compute the Djb hash for a given span of bytes or characters.
+     * And, it also provides an instance-based interface for incremental hash computation.
      */
     class CERTPP_API CDjb {
     public:
@@ -95,6 +96,66 @@ namespace certpp {
             return computeAsLower(SEED, span);
         }
 
+    private:
+        SDjbValue _cur;
+
+    public:
+        CDjb() : _cur(SEED) {}
+
+    public:
+        /**
+         * Resets the current hash value to the initial seed.
+         */
+        inline void reset() {
+            _cur = SEED;
+        }
+
+        /**
+         * Returns the current hash value.
+         *
+         * @return The current Djb hash value.
+         */
+        inline SDjbValue current() const {
+            return _cur;
+        }
+
+        /**
+         * Pushes a byte into the current hash computation.
+         *
+         * @param byte The byte to push.
+         */
+        inline void push(uint8_t byte) {
+            _cur = ((_cur << 5) + _cur) + SDjbValue(byte);
+        }
+
+        /**
+         * Pushes a span of bytes into the current hash computation.
+         *
+         * @param span The span of bytes to push.
+         */
+        inline void push(const TReadOnlySpan<uint8_t>& span) {
+            _cur = compute(_cur, span);
+        }
+
+        /**
+         * Pushes a span of characters into the current hash computation in a case-insensitive manner
+         * by converting them to uppercase.
+         *
+         * @param span The span of characters to push.
+         */
+        inline void pushAsUpper(const TReadOnlySpan<char>& span) {
+            _cur = computeAsUpper(_cur, span);
+        }
+
+        /**
+         * Pushes a span of characters into the current hash computation in a case-insensitive manner
+         * by converting them to lowercase.
+         *
+         * @param span The span of characters to push.
+         */
+        inline void pushAsLower(const TReadOnlySpan<char>& span) {
+            _cur = computeAsLower(_cur, span);
+        }
     };
 } // namespace certpp
 

@@ -58,6 +58,16 @@
   imported key whose CRT parameters were never independently validated via
   `checkPrivateKey()`.
 
+  RSA key objects cache Montgomery contexts for the public modulus `n` and the private CRT moduli
+  `p` and `q`. Repeated public operations, private CRT exponentiations, and the private-operation
+  fault check therefore reuse `R`, `R^2`, and packed moduli instead of rebuilding them with two
+  long divisions per call. Exponents up to 64 bits remain in fixed-width
+  64-bit Montgomery storage for the complete square-and-multiply chain. Longer exponents use a
+  four-bit sliding window, widened to five bits above 512 bits, and keep the accumulator and odd
+  powers packed for the whole chain. BMI2/ADX and an exact Tiger Lake tuning target are selected
+  only after cached runtime feature checks. These paths do not change `CBigNum`'s documented
+  variable-time boundary.
+
   `decryptBlock()`'s EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2) scans the
   decrypted block for its `0x00`/`0x02` lead bytes and `0x00` separator in
   constant time: the separator search always runs the full `keyBytes - 2`
@@ -89,13 +99,17 @@
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279).
 
   `sign()`'s `g^k mod p` term uses a Montgomery context cached with the private
-  key and `CMontgomery::modExp()`'s four-bit sliding window. Verification keeps
-  cached Montgomery forms of `g`, `y`, and `g*y`, then computes
-  `g^u1*y^u2 mod p` with one shared squaring chain. The verification exponents
-  are public; the exponent-bit branches are therefore acceptable there. The
-  signing path is also variable-time because `CBigNum` has variable-length
-  storage and is not a constant-time primitive, as documented in the public
-  header and caller pitfalls.
+  key and `CMontgomery::modExp()`'s four-bit sliding window. Verification calls
+  `CMontgomery::modExpProduct()` to compute `g^u1*y^u2 mod p` with one shared
+  squaring chain and a 16-entry two-bit product table; native Clang x86-64
+  builds keep that table and every intermediate packed until the final
+  conversion. `CBigNum::modInverse()`
+  uses binary extended GCD for the odd subgroup order, avoiding quotient-sized
+  multiplication and division in signing and verification. The verification
+  exponents are public; the exponent-bit branches are therefore acceptable
+  there. The signing path is also variable-time because `CBigNum` has
+  variable-length storage and is not a constant-time primitive, as documented
+  in the public header and caller pitfalls.
 - **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`** define `CEcCurve`/
   `SEcPoint`, a short-Weierstrass elliptic curve (`y^2 = x^3 + a*x + b mod
   p`) in affine coordinates. Public rather than a `src/`-only implementation
@@ -107,27 +121,31 @@
   curve self-checks build on. `scalarMul()` (an arbitrary point times an
   arbitrary scalar) and `scalarMulBase()` (`g` times a scalar, e.g. every
   sign()/verify() call's `k*g`/`u1*g` term) instead work internally in
-  Jacobian coordinates (`ECPointJac`, `eccurve.cpp`'s anonymous namespace --
-  `X/Z^2, Y/Z^3`, `Z == 0` for infinity): a branch-free R0/R1 ladder
-  (`condSwapJac()` swaps which register holds which value based on the
-  scalar's bit, rather than branching on whether to add at all) that pays
-  for exactly one modular inversion at the very end
-  (`toAffineFromJac()`), not one per bit, and holds its coordinates in
-  **Montgomery form** (`CMontgomery`, see `utils/montgomery.hpp` above) so
-  that the thousands of field multiplications a scalar multiplication performs
-  cost limb-wise multiply-accumulate passes rather than a long division each.
+  Jacobian coordinates (`X/Z^2, Y/Z^3`, `Z == 0` for infinity). On x86-64
+  Clang/GCC builds with native 64-by-64-to-128 multiplication, coordinates
+  stay in stack-resident, fixed-width 64-bit Montgomery limbs. The field selects a fixed-count
+  multiplication kernel for each supported limb width, letting the compiler unroll product and
+  reduction loops. Four-bit
+  private-scalar windows scan all 16 candidates and select with masks; the
+  exact standard P-256 parameters additionally use a process-wide 64-row, four-bit comb
+  table of batch-normalized affine points that removes per-call point doublings and permits mixed
+  additions. P-256 uses its sparse
+  modulus during Montgomery reduction and the `a == -3` doubling formula.
+  Other builds retain the masked R0/R1 `CBigNum` Montgomery ladder. Both paths
+  pay for one final inversion rather than one per scalar bit.
   The per-modulus context is built at the top of `scalarMul()`/
   `scalarMulBase()` and passed down, rather than cached on the `CEcCurve`
   instance: `p`/`a`/`b` are public mutable fields, so a cached context would
   need invalidating whenever a caller wrote to one, and its two divisions are
   unmeasurable next to the scalar multiplication they precede.
-  `toJacobian()`/`toAffineFromJac()` are the conversion boundary in both
-  directions, so no Montgomery-form value escapes those five functions; the
+  The fixed-width path converts at the scalar-multiplication boundary; the
+  fallback uses `toJacobian()`/`toAffineFromJac()`. No Montgomery-form value
+  escapes either path. The
   affine `add()`/`doublePoint()`/`isOnCurve()` deliberately stay on
   `CBigNum`'s general path, since a single group operation is dominated by its
   one modular inversion and there is nothing to amortize a context over.
-  `scalarMulBase()` uses the same fixed-width ladder as an arbitrary base,
-  avoiding the former secret-indexed fixed-base table. `doublePointJac()`/`addJac()`
+  `scalarMulBase()` avoids secret-indexed fixed-base lookups: both its comb and
+  per-call window paths scan every candidate. `doublePointJac()`/`addJac()`
   (Bernstein/Lange `dbl-2007-bl`/`add-2007-bl`, general `a`) and the
   Lopez-Dahab equivalents in `ec2curve.cpp` are written to mutate a
   `CBigNum`/`CGf2m` operand in place whenever that operand's current value
@@ -135,15 +153,16 @@
   variable first (each such spot has a comment naming which read is that
   operand's last) -- same in-place-over-copy discipline `CBigNum`/`CGf2m`'s
   own methods follow (see their own doc comments above), just carried
-  through to these free functions' local variables too. The ladder processes
-  the full group-order width and its register exchange uses masked limb swaps,
-  but `CBigNum` still allocates and trims variable-width values and its general
-  arithmetic is not constant-time. The prime-curve stack therefore makes no
-  complete side-channel-resistance claim.
-  Verification uses `linearCombination(k1, p1, k2, p2)` to share one Jacobian
-  accumulator and one final inversion between the two public scalar products.
-  That method branches on scalar bits and is expressly limited to public
-  verification values; private scalars continue through `scalarMul()` or
+  through to these free functions' local variables too. Neither implementation
+  makes a complete side-channel-resistance claim: exceptional point cases have
+  data-dependent control flow, and the fallback also allocates and trims
+  variable-width `CBigNum` values. A verification context batch-normalizes width-six affine
+  odd-multiple tables for the generator and bound public key once when the key is bound. Repeated
+  verification reuses those tables with mixed additions, one Jacobian accumulator, and one final
+  inversion. Direct `linearCombination(k1, p1, k2, p2)` callers use width-five signed-window NAF.
+  Both paths branch
+  and index tables on those public values and are expressly limited to public
+  verification scalars; private scalars continue through `scalarMul()` or
   `scalarMulBase()`.
   `EEcKnownCurves` (`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, plus 14 `ECURVE_BPOOLxxxR1`/
@@ -199,7 +218,13 @@
   trials plus edge cases, and an end-to-end ladder run) via a standalone
   Python GF(2^163) implementation before being hardcoded here, per this
   module's established constant-verification discipline (see `_knownCurves`
-  below). `linearCombination()` provides the same public-verification
+  below). Fixed-base multiplication and public linear combinations specialize
+  the second operand as affine and use `addMixedLD()`; general private-scalar
+  multiplication retains the complete projective formula. `CGf2m` dispatches
+  the five supported widths to fixed-count PCLMUL product and square kernels,
+  then reduces high words directly through the field polynomial; its portable
+  path uses the same reducer after the shift-and-XOR product.
+  `linearCombination()` provides the same public-verification
   optimization in Lopez-Dahab coordinates and has the same public-scalar-only
   restriction. `field` is a
   non-owning `const SGf2mField*` rather than an owned value, mirroring

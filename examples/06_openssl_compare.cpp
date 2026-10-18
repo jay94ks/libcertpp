@@ -20,8 +20,13 @@
 //   4. Every figure is the fastest of OUTER batches, the same methodology the README uses,
 //      and both toolchains are measured in the same session.
 //
-// Pass --hashes or --block-ciphers to run only that bulk inventory while tuning a primitive, or
-// --classic-signatures to run only RSA/DSA/GOST. With no option the complete inventory runs.
+// Pass --hashes or --block-ciphers to run only that bulk inventory while tuning a primitive,
+// --classic-signatures to run only RSA/DSA/GOST, --rsa or --dsa to isolate either one while tuning,
+// --prime-curves to run only the prime-field ECDSA/ECDH inventory,
+// --binary-curves to run only the binary-field ECDSA inventory,
+// --ed25519 to run only Ed25519 sign/verify,
+// or --ed448 to run only Ed448 sign/verify.
+// With no option the complete inventory runs.
 #include <certpp.hpp>
 
 #include <openssl/core_names.h>
@@ -107,7 +112,7 @@ namespace {
                const std::function<void()>& ossl, int iters) {
         const double a = fastestNs(iters, certpp);
         const double b = fastestNs(iters, ossl);
-        std::printf("  %-24s %8.3f ms      %8.3f ms      %6.2fx\n",
+        std::printf("  %-24s %8.3f ms      %8.3f ms      %7.3fx\n",
             name, a / 1e6, b / 1e6, b / a);
     }
 
@@ -362,11 +367,19 @@ namespace {
         EVP_PKEY_free(importedKey);
     }
 
-    void benchClassicSignatures() {
+    void benchRsa() {
         benchTraditionalSignature("RSA-2048", EASYM_RSA, 2048,
             [] { return generateOpenSslRsaKey(2048); }, 50, 2);
+    }
+
+    void benchDsa() {
         benchTraditionalSignature("DSA-2048", EASYM_DSA, 2048,
             [] { return generateOpenSslDsaKey(2048); }, 20, 1);
+    }
+
+    void benchClassicSignatures() {
+        benchRsa();
+        benchDsa();
 
         const char* gostNames[] = {
             "GOST2012_256", "GOST2012_512", "gost2012_256", "gost2012_512"
@@ -559,6 +572,52 @@ namespace {
         EVP_PKEY_free(certppPublic);
         EVP_PKEY_free(osslPair);
     }
+
+    void benchPrimeCurves() {
+        const EcCurveSpec curves[] = {
+            { "P-192", EASYM_P192, 192, "prime192v1", 20, true },
+            { "P-224", EASYM_P224, 224, "secp224r1", 20, true },
+            { "P-256", EASYM_P256, 256, "prime256v1", 20, true },
+            { "P-384", EASYM_P384, 384, "secp384r1", 10, true },
+            { "P-521", EASYM_P521, 521, "secp521r1", 4, true },
+            { "secp256k1", EASYM_SECP256K1, 256, "secp256k1", 20, true },
+            { "brainpoolP160r1", EASYM_BPOOL160R1, 160, "brainpoolP160r1", 20, true },
+            { "brainpoolP192r1", EASYM_BPOOL192R1, 192, "brainpoolP192r1", 20, true },
+            { "brainpoolP224r1", EASYM_BPOOL224R1, 224, "brainpoolP224r1", 20, true },
+            { "brainpoolP256r1", EASYM_BPOOL256R1, 256, "brainpoolP256r1", 20, true },
+            { "brainpoolP320r1", EASYM_BPOOL320R1, 320, "brainpoolP320r1", 10, true },
+            { "brainpoolP384r1", EASYM_BPOOL384R1, 384, "brainpoolP384r1", 10, true },
+            { "brainpoolP512r1", EASYM_BPOOL512R1, 512, "brainpoolP512r1", 4, true },
+            { "brainpoolP160t1", EASYM_BPOOL160T1, 160, "brainpoolP160t1", 20, true },
+            { "brainpoolP192t1", EASYM_BPOOL192T1, 192, "brainpoolP192t1", 20, true },
+            { "brainpoolP224t1", EASYM_BPOOL224T1, 224, "brainpoolP224t1", 20, true },
+            { "brainpoolP256t1", EASYM_BPOOL256T1, 256, "brainpoolP256t1", 20, true },
+            { "brainpoolP320t1", EASYM_BPOOL320T1, 320, "brainpoolP320t1", 10, true },
+            { "brainpoolP384t1", EASYM_BPOOL384T1, 384, "brainpoolP384t1", 10, true },
+            { "brainpoolP512t1", EASYM_BPOOL512T1, 512, "brainpoolP512t1", 4, true },
+        };
+        for (const EcCurveSpec& curve : curves) {
+            benchEcCurve(curve);
+        }
+    }
+
+    void benchBinaryCurves() {
+        const EcCurveSpec curves[] = {
+            { "B-163", EASYM_B163, 163, "sect163r2", 20, false },
+            { "K-163", EASYM_K163, 163, "sect163k1", 20, false },
+            { "B-233", EASYM_B233, 233, "sect233r1", 20, false },
+            { "K-233", EASYM_K233, 233, "sect233k1", 20, false },
+            { "B-283", EASYM_B283, 283, "sect283r1", 10, false },
+            { "K-283", EASYM_K283, 283, "sect283k1", 10, false },
+            { "B-409", EASYM_B409, 409, "sect409r1", 4, false },
+            { "K-409", EASYM_K409, 409, "sect409k1", 4, false },
+            { "B-571", EASYM_B571, 571, "sect571r1", 2, false },
+            { "K-571", EASYM_K571, 571, "sect571k1", 2, false },
+        };
+        for (const EcCurveSpec& curve : curves) {
+            benchEcCurve(curve);
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -583,15 +642,84 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (argc == 2 && std::strcmp(argv[1], "--rsa") == 0) {
+        std::printf("-- RSA signature --\n");
+        benchRsa();
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
+    if (argc == 2 && std::strcmp(argv[1], "--dsa") == 0) {
+        std::printf("-- DSA signature --\n");
+        benchDsa();
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
+    if (argc == 2 && std::strcmp(argv[1], "--p256") == 0) {
+        std::printf("-- Prime-curve signatures and agreement --\n");
+        benchEcCurve({ "P-256", EASYM_P256, 256, "prime256v1", 20, true });
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
+    if (argc == 2 && std::strcmp(argv[1], "--prime-curves") == 0) {
+        std::printf("-- Prime-curve signatures and agreement --\n");
+        benchPrimeCurves();
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
+    if (argc == 2 && std::strcmp(argv[1], "--binary-curves") == 0) {
+        std::printf("-- Binary-curve signatures (ECDH unsupported by certpp) --\n");
+        benchBinaryCurves();
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
     const bool hashesOnly = argc == 2 && std::strcmp(argv[1], "--hashes") == 0;
     const bool blockCiphersOnly =
         argc == 2 && std::strcmp(argv[1], "--block-ciphers") == 0;
+    const bool aeadOnly = argc == 2 && std::strcmp(argv[1], "--aead") == 0;
+    const bool ed25519Only = argc == 2 && std::strcmp(argv[1], "--ed25519") == 0;
+    const bool ed448Only = argc == 2 && std::strcmp(argv[1], "--ed448") == 0;
+    const bool x25519Only = argc == 2 && std::strcmp(argv[1], "--x25519") == 0;
+    const bool mlkemOnly = argc == 2 && std::strcmp(argv[1], "--mlkem") == 0;
+    const bool mldsaOnly = argc == 2 && std::strcmp(argv[1], "--mldsa") == 0;
+    const bool signatureFocus = ed25519Only || ed448Only || mldsaOnly;
 
-    // ------------------------------------------------------------------- hashing
-    if (!blockCiphersOnly) {
-        std::printf("-- Hashing, 64 KiB --\n");
-        const std::vector<uint8_t> data = randomBytes(64 * 1024);
-        const SReadOnlyByteSpan dataSpan(data.data(), data.size());
+    if (!signatureFocus) {
+        if (!x25519Only && !mlkemOnly) {
+        // --------------------------------------------------------------- hashing
+        if (!blockCiphersOnly && !aeadOnly) {
+            std::printf("-- Hashing, 64 KiB --\n");
+            const std::vector<uint8_t> data = randomBytes(64 * 1024);
+            const SReadOnlyByteSpan dataSpan(data.data(), data.size());
 
         struct H {
             const char* name;
@@ -679,7 +807,7 @@ int main(int argc, char** argv) {
             EVP_MD_CTX_free(ctx);
             EVP_MD_free(md);
         }
-    }
+        }
 
     if (hashesOnly) {
         if (legacyProvider) {
@@ -691,6 +819,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (!aeadOnly) {
     // ------------------------------------------------------------- block ciphers
     std::printf("\n-- Block cipher, 64 KiB --\n");
     {
@@ -783,6 +912,7 @@ int main(int argc, char** argv) {
             EVP_CIPHER_free(const_cast<EVP_CIPHER*>(evp));
         }
     }
+    }
 
     if (blockCiphersOnly) {
         if (legacyProvider) {
@@ -793,7 +923,9 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
+        }
 
+    if (!ed25519Only && !ed448Only && !x25519Only && !mlkemOnly) {
     // ------------------------------------------------------------------------- AEAD
     auto benchAeadSection = [&](size_t bytes, bool latency) {
         const std::vector<uint8_t> key(32, 0x01);
@@ -877,8 +1009,20 @@ int main(int argc, char** argv) {
     benchAeadSection(64 * 1024, false);
     std::printf("\n-- AEAD seal, 64-byte record --\n");
     benchAeadSection(64, true);
+    }
+
+    if (aeadOnly) {
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
 
     // --------------------------------------------------------------- key agreement
+    if (!ed25519Only && !ed448Only && !mlkemOnly) {
     std::printf("\n-- Key agreement --\n");
     {
         IAsymmetricPtr algorithm = IAsymmetric::builtIn(EASYM_X25519);
@@ -942,53 +1086,24 @@ int main(int argc, char** argv) {
         EVP_PKEY_free(osslPeer);
         EVP_PKEY_free(osslMine);
     }
-
-    std::printf("\n-- Prime-curve signatures and agreement --\n");
-    {
-        const EcCurveSpec curves[] = {
-            { "P-192", EASYM_P192, 192, "prime192v1", 20, true },
-            { "P-224", EASYM_P224, 224, "secp224r1", 20, true },
-            { "P-256", EASYM_P256, 256, "prime256v1", 20, true },
-            { "P-384", EASYM_P384, 384, "secp384r1", 10, true },
-            { "P-521", EASYM_P521, 521, "secp521r1", 4, true },
-            { "secp256k1", EASYM_SECP256K1, 256, "secp256k1", 20, true },
-            { "brainpoolP160r1", EASYM_BPOOL160R1, 160, "brainpoolP160r1", 20, true },
-            { "brainpoolP192r1", EASYM_BPOOL192R1, 192, "brainpoolP192r1", 20, true },
-            { "brainpoolP224r1", EASYM_BPOOL224R1, 224, "brainpoolP224r1", 20, true },
-            { "brainpoolP256r1", EASYM_BPOOL256R1, 256, "brainpoolP256r1", 20, true },
-            { "brainpoolP320r1", EASYM_BPOOL320R1, 320, "brainpoolP320r1", 10, true },
-            { "brainpoolP384r1", EASYM_BPOOL384R1, 384, "brainpoolP384r1", 10, true },
-            { "brainpoolP512r1", EASYM_BPOOL512R1, 512, "brainpoolP512r1", 4, true },
-            { "brainpoolP160t1", EASYM_BPOOL160T1, 160, "brainpoolP160t1", 20, true },
-            { "brainpoolP192t1", EASYM_BPOOL192T1, 192, "brainpoolP192t1", 20, true },
-            { "brainpoolP224t1", EASYM_BPOOL224T1, 224, "brainpoolP224t1", 20, true },
-            { "brainpoolP256t1", EASYM_BPOOL256T1, 256, "brainpoolP256t1", 20, true },
-            { "brainpoolP320t1", EASYM_BPOOL320T1, 320, "brainpoolP320t1", 10, true },
-            { "brainpoolP384t1", EASYM_BPOOL384T1, 384, "brainpoolP384t1", 10, true },
-            { "brainpoolP512t1", EASYM_BPOOL512T1, 512, "brainpoolP512t1", 4, true },
-        };
-        for (const EcCurveSpec& curve : curves) {
-            benchEcCurve(curve);
-        }
     }
 
-    std::printf("\n-- Binary-curve signatures (ECDH unsupported by certpp) --\n");
-    {
-        const EcCurveSpec curves[] = {
-            { "B-163", EASYM_B163, 163, "sect163r2", 20, false },
-            { "K-163", EASYM_K163, 163, "sect163k1", 20, false },
-            { "B-233", EASYM_B233, 233, "sect233r1", 20, false },
-            { "K-233", EASYM_K233, 233, "sect233k1", 20, false },
-            { "B-283", EASYM_B283, 283, "sect283r1", 10, false },
-            { "K-283", EASYM_K283, 283, "sect283k1", 10, false },
-            { "B-409", EASYM_B409, 409, "sect409r1", 4, false },
-            { "K-409", EASYM_K409, 409, "sect409k1", 4, false },
-            { "B-571", EASYM_B571, 571, "sect571r1", 2, false },
-            { "K-571", EASYM_K571, 571, "sect571k1", 2, false },
-        };
-        for (const EcCurveSpec& curve : curves) {
-            benchEcCurve(curve);
+    if (x25519Only) {
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
         }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
+    if (!mlkemOnly) {
+    std::printf("\n-- Prime-curve signatures and agreement --\n");
+    benchPrimeCurves();
+
+    std::printf("\n-- Binary-curve signatures (ECDH unsupported by certpp) --\n");
+    benchBinaryCurves();
     }
 
     // -------------------------------------------------------------------------- KEM
@@ -1117,10 +1232,8 @@ int main(int argc, char** argv) {
                 std::snprintf(label, sizeof(label), "%s encapsulate", s.name);
                 rowMs(label,
                     [&] {
-                        std::vector<uint8_t> ct(certppEncap->sizeOfCiphertext());
-                        std::vector<uint8_t> ss(certppEncap->sizeOfSharedSecret());
-                        SByteSpan ctSpan(ct.data(), ct.size());
-                        SByteSpan ssSpan(ss.data(), ss.size());
+                        SByteSpan ctSpan(certppCt.data(), certppCt.size());
+                        SByteSpan ssSpan(certppSs.data(), certppSs.size());
                         certppEncap->encapsulate(ctSpan, ssSpan);
                     },
                     [&] {
@@ -1151,9 +1264,23 @@ int main(int argc, char** argv) {
         }
     }
 
+    }
+
+    if (mlkemOnly) {
+        if (legacyProvider) {
+            OSSL_PROVIDER_unload(legacyProvider);
+        }
+        if (defaultProvider) {
+            OSSL_PROVIDER_unload(defaultProvider);
+        }
+        return 0;
+    }
+
     // --------------------------------------------------------------- signatures
     std::printf("\n-- Signatures --\n");
-    benchClassicSignatures();
+    if (!signatureFocus) {
+        benchClassicSignatures();
+    }
     {
         struct S {
             const char* name;
@@ -1171,6 +1298,12 @@ int main(int argc, char** argv) {
         };
 
         for (const S& s : sigs) {
+            if ((ed25519Only && s.algo != EASYM_ED25519)
+                || (ed448Only && s.algo != EASYM_ED448)
+                || (mldsaOnly && s.algo != EASYM_MLDSA44
+                    && s.algo != EASYM_MLDSA65 && s.algo != EASYM_MLDSA87)) {
+                continue;
+            }
             IAsymmetricPtr alg = IAsymmetric::builtIn(s.algo);
             if (!alg) {
                 std::printf("  %-24s certpp unavailable\n", s.name);
@@ -1217,9 +1350,9 @@ int main(int argc, char** argv) {
                 std::printf("  %-24s OpenSSL sign setup failed\n", s.name);
             } else {
                 char label[96];
+                std::vector<uint8_t> certppBenchSig(ctx->sizeOfSign());
                 const double a = fastestNs(s.iters, [&] {
-                    std::vector<uint8_t> o(ctx->sizeOfSign());
-                    SByteSpan sp(o.data(), o.size());
+                    SByteSpan sp(certppBenchSig.data(), certppBenchSig.size());
                     ctx->sign(msgSpan, sp);
                 });
                 const double b = fastestNs(s.iters, [&] {

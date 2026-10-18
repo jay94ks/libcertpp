@@ -78,7 +78,14 @@ namespace certpp {
 #if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("pclmul,sse2")))
 #endif
-        static void wideProductAccelerated(uint64_t* wide, const uint64_t* a, const uint64_t* b);
+        static void wideProductAccelerated(
+            uint64_t* wide, const uint64_t* a, const uint64_t* b, size_t limbCount);
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("pclmul,sse2")))
+#endif
+        static void wideSquareAccelerated(
+            uint64_t* wide, const uint64_t* value, size_t limbCount);
 #endif
 
         static bool testBitIn(const uint64_t* limbs, size_t nLimbs, size_t bit);
@@ -87,12 +94,6 @@ namespace certpp {
         /* dst ^= (src << shift), where dst has dstLimbs limbs and src has srcLimbs limbs. Bits
          * shifted beyond dst's capacity are silently dropped. */
         static void xorShiftedInto(uint64_t* dst, size_t dstLimbs, const uint64_t* src, size_t srcLimbs, size_t shift);
-
-        /* dst = src >> shift, over nLimbs limbs each (dst and src must not overlap). */
-        static void shiftRightInto(uint64_t* dst, const uint64_t* src, size_t nLimbs, size_t shift);
-
-        /* Zeroes every bit at index >= bit, i.e. truncates to a polynomial of degree < bit. */
-        static void clearBitsFrom(uint64_t* limbs, size_t nLimbs, size_t bit);
 
         /* Highest set bit index of a polynomial, or SIZE_MAX if it's zero. */
         static size_t degreeOf(const uint64_t* limbs, size_t nLimbs);

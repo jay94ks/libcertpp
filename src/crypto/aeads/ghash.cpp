@@ -92,6 +92,38 @@ namespace crypto {
             return supported;
         }
 
+        /* The eight-block fold uses 512-bit GFNI plus VPCLMULQDQ. Check both the instruction
+         * bits and the OS-managed ZMM state: advertising AVX-512 while XCR0 lacks the opmask or
+         * high-ZMM bits still makes the first instruction fault. */
+        bool hasWideGhash() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+                __cpuidex(info, 1, 0);
+                if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0 ||
+                    (_xgetbv(0) & 0xE6) != 0xE6) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 16)) != 0 &&  // AVX512F
+                       (info[1] & (1 << 30)) != 0 &&  // AVX512BW
+                       (info[2] & (1 << 8)) != 0 &&   // GFNI
+                       (info[2] & (1 << 10)) != 0;    // VPCLMULQDQ
+#else
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f") != 0 &&
+                       __builtin_cpu_supports("avx512bw") != 0 &&
+                       __builtin_cpu_supports("gfni") != 0 &&
+                       __builtin_cpu_supports("vpclmulqdq") != 0;
+#endif
+            }();
+            return supported;
+        }
+
         /* Reverses the bits within each byte of a vector, leaving the bytes themselves where they
          * are -- the three masked swap steps (adjacent bits, adjacent pairs, nibbles) of the
          * classic bit-reversal, stopped before the byte/word steps that would reverse the whole
@@ -280,11 +312,12 @@ namespace crypto {
 
     /* Constructs an unkeyed accumulator. */
     Ghash::Ghash()
-        : _buffered(0), _accelerated(false), _useGfni(false), _powersReady(false) {
+        : _buffered(0), _externalPowers(nullptr), _accelerated(false),
+          _useGfni(false), _wide(false),
+          _smallPowersReady(false), _powersReady(false) {
         std::memset(_h, 0, sizeof(_h));
         std::memset(_y, 0, sizeof(_y));
         std::memset(_block, 0, sizeof(_block));
-        std::memset(_hPowersReflected, 0, sizeof(_hPowersReflected));
         reflectSubkey();
     }
 
@@ -292,8 +325,11 @@ namespace crypto {
     Ghash::~Ghash() {
         CSecure::zero(SByteSpan(_h, sizeof(_h)));
         CSecure::zero(SByteSpan(_hReflected, sizeof(_hReflected)));
-        CSecure::zero(SByteSpan(
-            reinterpret_cast<uint8_t*>(_hPowersReflected), sizeof(_hPowersReflected)));
+        if (!_externalPowers && (_smallPowersReady || _powersReady)) {
+            CSecure::zero(SByteSpan(
+                reinterpret_cast<uint8_t*>(_hPowersReflected),
+                sizeof(_hPowersReflected)));
+        }
         CSecure::zero(SByteSpan(_y, sizeof(_y)));
         CSecure::zero(SByteSpan(_block, sizeof(_block)));
     }
@@ -322,23 +358,44 @@ namespace crypto {
     }
 
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
-    /* Precomputes only when a push is large enough to use the four-block path. Small records avoid
-     * paying three field multiplications merely to authenticate one or two blocks. */
+    /* Prepares just H^4..H for a four-block record. Computing the remaining twelve powers would
+     * cost more than the payload itself at this size. */
+    void Ghash::prepareSmallPowers() {
+        if (_smallPowersReady) {
+            return;
+        }
+        std::memcpy(_hPowersReflected[15], _hReflected, BLOCK_BYTES);
+        uint8_t power[BLOCK_BYTES];
+        std::memcpy(power, _h, BLOCK_BYTES);
+        for (size_t exponent = 2; exponent <= 4; ++exponent) {
+            multiplyAccelerated(power, _h);
+            const __m128i reflected = reverseBitsInBytes(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(power)));
+            _mm_storeu_si128(
+                reinterpret_cast<__m128i*>(_hPowersReflected[16 - exponent]), reflected);
+        }
+        CSecure::zero(SByteSpan(power, sizeof(power)));
+        _smallPowersReady = true;
+    }
+
+    /* Precomputes the full H^16..H table only for a long input. */
     void Ghash::preparePowers() {
         if (_powersReady) {
             return;
         }
 
+        std::memcpy(_hPowersReflected[15], _hReflected, BLOCK_BYTES); // H^1
         uint8_t power[BLOCK_BYTES];
         std::memcpy(power, _h, BLOCK_BYTES);
-        for (size_t i = 0; i < 3; ++i) {
+        for (size_t exponent = 2; exponent <= 16; ++exponent) {
             multiplyAccelerated(power, _h);
             const __m128i reflected = reverseBitsInBytes(
                 _mm_loadu_si128(reinterpret_cast<const __m128i*>(power)));
             _mm_storeu_si128(
-                reinterpret_cast<__m128i*>(_hPowersReflected[i]), reflected);
+                reinterpret_cast<__m128i*>(_hPowersReflected[16 - exponent]), reflected);
         }
         CSecure::zero(SByteSpan(power, sizeof(power)));
+        _smallPowersReady = true;
         _powersReady = true;
     }
 
@@ -364,9 +421,10 @@ namespace crypto {
                 ? reverseBitsInBytesGfni(values[i]) : reverseBitsInBytes(values[i]);
         }
 
+        const auto powersTable = powerTable();
         const uint8_t* powers[4] = {
-            _hPowersReflected[2], _hPowersReflected[1],
-            _hPowersReflected[0], _hReflected
+            powersTable[12], powersTable[13],
+            powersTable[14], powersTable[15]
         };
         __m128i p00 = _mm_setzero_si128();
         __m128i p11 = _mm_setzero_si128();
@@ -395,12 +453,155 @@ namespace crypto {
         _mm_storeu_si128(reinterpret_cast<__m128i*>(_y),
             _useGfni ? reverseBitsInBytesGfni(lo) : reverseBitsInBytes(lo));
     }
+
+    /* Eight recurrence steps with two groups of four independent field products. VPCLMULQDQ
+     * performs one carry-less multiply in each 128-bit lane, so Karatsuba needs six vector
+     * multiplies for all eight blocks. The lane products are XOR-folded before the one shared
+     * reduction; the ordinary four-block path needs sixteen scalar PCLMUL products and a
+     * reduction for each group. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+    __attribute__((target("avx512f,avx512bw,gfni,vpclmulqdq")))
+#endif
+    void Ghash::absorb8(const uint8_t* blocks) {
+        const __m512i matrix = _mm512_set1_epi64(
+            static_cast<long long>(0x8040201008040201ULL));
+
+        __m512i a0 = _mm512_loadu_si512(blocks);
+        __m512i a1 = _mm512_loadu_si512(blocks + 4 * BLOCK_BYTES);
+        const __m128i y = _mm_loadu_si128(reinterpret_cast<const __m128i*>(_y));
+        const __m512i y0 = _mm512_maskz_mov_epi64(
+            0x03, _mm512_castsi128_si512(y));
+        a0 = _mm512_xor_si512(a0, y0);
+        a0 = _mm512_gf2p8affine_epi64_epi8(a0, matrix, 0);
+        a1 = _mm512_gf2p8affine_epi64_epi8(a1, matrix, 0);
+
+        const auto powers = powerTable();
+        const __m512i b0 = _mm512_loadu_si512(powers + 8);
+        const __m512i b1 = _mm512_loadu_si512(powers + 12);
+
+        __m512i lo = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(a0, b0, 0x00),
+            _mm512_clmulepi64_epi128(a1, b1, 0x00));
+        __m512i hi = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(a0, b0, 0x11),
+            _mm512_clmulepi64_epi128(a1, b1, 0x11));
+
+        const __m512i a0Mixed = _mm512_xor_si512(
+            a0, _mm512_shuffle_epi32(a0, 0x4e));
+        const __m512i a1Mixed = _mm512_xor_si512(
+            a1, _mm512_shuffle_epi32(a1, 0x4e));
+        const __m512i b0Mixed = _mm512_xor_si512(
+            b0, _mm512_shuffle_epi32(b0, 0x4e));
+        const __m512i b1Mixed = _mm512_xor_si512(
+            b1, _mm512_shuffle_epi32(b1, 0x4e));
+        __m512i mid = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(a0Mixed, b0Mixed, 0x00),
+            _mm512_clmulepi64_epi128(a1Mixed, b1Mixed, 0x00));
+        mid = _mm512_xor_si512(mid, _mm512_xor_si512(lo, hi));
+
+        // XOR the four 128-bit lane products into one product before reducing.
+        __m256i lo256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(lo), _mm512_extracti64x4_epi64(lo, 1));
+        __m256i hi256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(hi), _mm512_extracti64x4_epi64(hi, 1));
+        __m256i mid256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(mid), _mm512_extracti64x4_epi64(mid, 1));
+        __m128i lo128 = _mm_xor_si128(
+            _mm256_castsi256_si128(lo256), _mm256_extracti128_si256(lo256, 1));
+        __m128i hi128 = _mm_xor_si128(
+            _mm256_castsi256_si128(hi256), _mm256_extracti128_si256(hi256, 1));
+        const __m128i mid128 = _mm_xor_si128(
+            _mm256_castsi256_si128(mid256), _mm256_extracti128_si256(mid256, 1));
+
+        lo128 = _mm_xor_si128(lo128, _mm_slli_si128(mid128, 8));
+        hi128 = _mm_xor_si128(hi128, _mm_srli_si128(mid128, 8));
+
+        const __m128i poly = _mm_cvtsi64_si128(0x87);
+        const __m128i f0 = _mm_clmulepi64_si128(hi128, poly, 0x00);
+        const __m128i f1 = _mm_clmulepi64_si128(hi128, poly, 0x01);
+        lo128 = _mm_xor_si128(lo128, f0);
+        lo128 = _mm_xor_si128(lo128, _mm_slli_si128(f1, 8));
+        lo128 = _mm_xor_si128(lo128, _mm_clmulepi64_si128(
+            _mm_srli_si128(f1, 8), poly, 0x00));
+
+        const __m128i matrix128 = _mm_set1_epi64x(
+            static_cast<long long>(0x8040201008040201ULL));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(_y),
+            _mm_gf2p8affine_epi64_epi8(lo128, matrix128, 0));
+    }
+
+    /* Sixteen-step version of absorb8(). Four independent 512-bit groups amortise the final
+     * reduction and the accumulator dependency over a full 256 bytes. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+    __attribute__((target("avx512f,avx512bw,gfni,vpclmulqdq")))
+#endif
+    void Ghash::absorb16(const uint8_t* blocks) {
+        const __m512i matrix = _mm512_set1_epi64(
+            static_cast<long long>(0x8040201008040201ULL));
+        const __m128i y = _mm_loadu_si128(reinterpret_cast<const __m128i*>(_y));
+        const __m512i y0 = _mm512_maskz_mov_epi64(
+            0x03, _mm512_castsi128_si512(y));
+
+        const auto powers = powerTable();
+        __m512i lo = _mm512_setzero_si512();
+        __m512i hi = _mm512_setzero_si512();
+        __m512i mid = _mm512_setzero_si512();
+        for (size_t group = 0; group < 4; ++group) {
+            __m512i a = _mm512_loadu_si512(blocks + group * 4 * BLOCK_BYTES);
+            if (group == 0) {
+                a = _mm512_xor_si512(a, y0);
+            }
+            a = _mm512_gf2p8affine_epi64_epi8(a, matrix, 0);
+            const __m512i b = _mm512_loadu_si512(powers + group * 4);
+
+            const __m512i partLo = _mm512_clmulepi64_epi128(a, b, 0x00);
+            const __m512i partHi = _mm512_clmulepi64_epi128(a, b, 0x11);
+            const __m512i aMixed = _mm512_xor_si512(
+                a, _mm512_shuffle_epi32(a, 0x4e));
+            const __m512i bMixed = _mm512_xor_si512(
+                b, _mm512_shuffle_epi32(b, 0x4e));
+            __m512i partMid = _mm512_clmulepi64_epi128(aMixed, bMixed, 0x00);
+            partMid = _mm512_xor_si512(partMid, _mm512_xor_si512(partLo, partHi));
+
+            lo = _mm512_xor_si512(lo, partLo);
+            hi = _mm512_xor_si512(hi, partHi);
+            mid = _mm512_xor_si512(mid, partMid);
+        }
+
+        __m256i lo256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(lo), _mm512_extracti64x4_epi64(lo, 1));
+        __m256i hi256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(hi), _mm512_extracti64x4_epi64(hi, 1));
+        __m256i mid256 = _mm256_xor_si256(
+            _mm512_castsi512_si256(mid), _mm512_extracti64x4_epi64(mid, 1));
+        __m128i lo128 = _mm_xor_si128(
+            _mm256_castsi256_si128(lo256), _mm256_extracti128_si256(lo256, 1));
+        __m128i hi128 = _mm_xor_si128(
+            _mm256_castsi256_si128(hi256), _mm256_extracti128_si256(hi256, 1));
+        const __m128i mid128 = _mm_xor_si128(
+            _mm256_castsi256_si128(mid256), _mm256_extracti128_si256(mid256, 1));
+        lo128 = _mm_xor_si128(lo128, _mm_slli_si128(mid128, 8));
+        hi128 = _mm_xor_si128(hi128, _mm_srli_si128(mid128, 8));
+
+        const __m128i poly = _mm_cvtsi64_si128(0x87);
+        const __m128i f0 = _mm_clmulepi64_si128(hi128, poly, 0x00);
+        const __m128i f1 = _mm_clmulepi64_si128(hi128, poly, 0x01);
+        lo128 = _mm_xor_si128(lo128, f0);
+        lo128 = _mm_xor_si128(lo128, _mm_slli_si128(f1, 8));
+        lo128 = _mm_xor_si128(lo128, _mm_clmulepi64_si128(
+            _mm_srli_si128(f1, 8), poly, 0x00));
+
+        const __m128i matrix128 = _mm_set1_epi64x(
+            static_cast<long long>(0x8040201008040201ULL));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(_y),
+            _mm_gf2p8affine_epi64_epi8(lo128, matrix128, 0));
+    }
 #endif
 
     /* Converts the subkey into the basis the accelerated multiply wants, once per message. */
     void Ghash::reflectSubkey() {
         std::memset(_hReflected, 0, sizeof(_hReflected));
-        std::memset(_hPowersReflected, 0, sizeof(_hPowersReflected));
+        _externalPowers = nullptr;
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
         _mm_storeu_si128(reinterpret_cast<__m128i*>(_hReflected),
                          reverseBitsInBytes(_mm_loadu_si128(reinterpret_cast<const __m128i*>(_h))));
@@ -408,21 +609,52 @@ namespace crypto {
         // --> Read once here so absorb() does not read a guarded static per block.
         _accelerated = hasPclmul();
         _useGfni = _accelerated && hasGfni();
+        _wide = _accelerated && hasWideGhash();
+        _smallPowersReady = false;
         _powersReady = false;
 #else
         _accelerated = false;
         _useGfni = false;
+        _wide = false;
+        _smallPowersReady = false;
         _powersReady = false;
 #endif
     }
 
     /* Keys this accumulator and clears its state. */
     void Ghash::reset(const uint8_t h[BLOCK_BYTES]) {
+        if (!_externalPowers && (_smallPowersReady || _powersReady)) {
+            CSecure::zero(SByteSpan(
+                reinterpret_cast<uint8_t*>(_hPowersReflected),
+                sizeof(_hPowersReflected)));
+        }
         std::memcpy(_h, h, BLOCK_BYTES);
         std::memset(_y, 0, sizeof(_y));
         std::memset(_block, 0, sizeof(_block));
         _buffered = 0;
         reflectSubkey();
+    }
+
+    /* Keys this accumulator while borrowing a prepared immutable power table. */
+    void Ghash::reset(
+        const uint8_t h[BLOCK_BYTES],
+        const uint8_t preparedPowers[16][BLOCK_BYTES]
+    ) {
+        reset(h);
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        if (preparedPowers && _wide) {
+            _externalPowers = preparedPowers;
+            _smallPowersReady = true;
+            _powersReady = true;
+        }
+#else
+        (void)preparedPowers;
+#endif
+    }
+
+    /* Selects the borrowed table when a keyed owner has already prepared it. */
+    const uint8_t (*Ghash::powerTable() const)[BLOCK_BYTES] {
+        return _externalPowers ? _externalPowers : _hPowersReflected;
     }
 
     /* Absorbs more input. */
@@ -450,8 +682,19 @@ namespace crypto {
         }
 
 #if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
-        if (_accelerated && length - offset >= 8 * BLOCK_BYTES) {
+        if (_wide && length - offset >= 16 * BLOCK_BYTES) {
             preparePowers();
+            while (length - offset >= 16 * BLOCK_BYTES) {
+                absorb16(data + offset);
+                offset += 16 * BLOCK_BYTES;
+            }
+            while (length - offset >= 8 * BLOCK_BYTES) {
+                absorb8(data + offset);
+                offset += 8 * BLOCK_BYTES;
+            }
+        }
+        if (_accelerated && length - offset >= 4 * BLOCK_BYTES) {
+            prepareSmallPowers();
             while (length - offset >= 4 * BLOCK_BYTES) {
                 absorb4(data + offset);
                 offset += 4 * BLOCK_BYTES;
@@ -486,6 +729,35 @@ namespace crypto {
     void Ghash::finish(uint8_t out[BLOCK_BYTES]) {
         padToBlock();
         std::memcpy(out, _y, BLOCK_BYTES);
+    }
+
+    /* Supplies AES-GCM's fused wide kernel with the state it needs. */
+    bool Ghash::exportWideState(
+        uint8_t accumulator[BLOCK_BYTES], uint8_t powers[16][BLOCK_BYTES]
+    ) {
+#if defined(CERTPP_GHASH_HWACCEL_AVAILABLE)
+        if (!_wide || _buffered != 0 || !accumulator || !powers) {
+            return false;
+        }
+        preparePowers();
+        std::memcpy(accumulator, _y, BLOCK_BYTES);
+        std::memcpy(powers, powerTable(), sizeof(_hPowersReflected));
+        return true;
+#else
+        (void)accumulator;
+        (void)powers;
+        return false;
+#endif
+    }
+
+    /* Takes back the accumulator produced by AES-GCM's fused wide kernel. */
+    void Ghash::replaceAccumulator(const uint8_t accumulator[BLOCK_BYTES]) {
+        if (!accumulator) {
+            return;
+        }
+        std::memcpy(_y, accumulator, BLOCK_BYTES);
+        std::memset(_block, 0, sizeof(_block));
+        _buffered = 0;
     }
 
 } // namespace crypto

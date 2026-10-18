@@ -57,6 +57,16 @@
   `checkPrivateKey()`로 독립적으로 검증된 적 없는 들여온 키에 대해서도 CRT를
   쓰는 것이 올바르도록 만들어 주는 안전망입니다.
 
+  RSA 키 객체는 공개 modulus `n`과 개인 CRT modulus `p`, `q`의 Montgomery context를
+  캐시합니다. 따라서 반복 공개 연산, 개인 CRT 지수승, 개인키 연산의 fault 검사는
+  호출마다 긴 나눗셈 두 번으로 `R`, `R²`, packed modulus를 다시 만들지 않고
+  재사용합니다. 64비트 이하 지수는 전체 제곱-곱 체인 동안
+  고정 폭 64비트 Montgomery 저장소에 머뭅니다. 더 긴 지수는 4비트 sliding window를
+  사용하고 512비트를 넘으면 5비트로 넓히며, 누산기와 홀수 거듭제곱을 전체 체인 동안
+  packed 형식에 유지합니다. 캐시된 런타임 기능 검사 뒤 BMI2/ADX와 정확한 Tiger Lake
+  tuning target을 선택합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를
+  바꾸지 않습니다.
+
   `decryptBlock()`의 EME-PKCS1-v1_5 unpadding(RFC 8017 7.2.2)은 복호된
   블록에서 `0x00`/`0x02` 선두 바이트와 `0x00` 구분자를 constant-time으로
   스캔합니다. 구분자 탐색은 항상 `keyBytes - 2`회 전체를 돌고(첫 `0x00`에서
@@ -88,12 +98,15 @@
   직렬화됩니다.
 
   `sign()`의 `g^k mod p` 항은 개인키와 함께 캐시한 Montgomery context와
-  `CMontgomery::modExp()`의 4비트 sliding window를 사용합니다. 검증은 `g`, `y`,
-  `g*y`의 Montgomery 형태를 캐시한 뒤 하나의 공유 제곱 체인으로
-  `g^u1*y^u2 mod p`를 계산합니다. 검증 지수는 공개값이므로 그 경로의 지수 비트
-  분기는 허용됩니다. 서명 경로도 `CBigNum`이 가변 길이 저장소를 사용하며
-  constant-time primitive가 아니므로 variable-time입니다. 이 제한은 공개 헤더와
-  호출자 주의사항에 문서화되어 있습니다.
+  `CMontgomery::modExp()`의 4비트 sliding window를 사용합니다. 검증은
+  `CMontgomery::modExpProduct()`를 호출해 하나의 공유 제곱 체인과 16항 2비트 곱 표로
+  `g^u1*y^u2 mod p`를 계산합니다. 네이티브 Clang x86-64 빌드는 그 표와 모든
+  중간값을 마지막 변환까지 packed 형식에 유지합니다. 홀수 부분군 위수에 대한
+  `CBigNum::modInverse()`는 binary extended GCD를 사용해 서명과 검증의 몫 크기
+  곱셈·나눗셈을 피합니다. 검증 지수는 공개값이므로 그 경로의 지수 비트 분기는
+  허용됩니다. 서명 경로도 `CBigNum`이 가변 길이 저장소를 사용하며 constant-time
+  primitive가 아니므로 variable-time입니다. 이 제한은 공개 헤더와 호출자 주의사항에
+  문서화되어 있습니다.
 - **`crypto/eccurve.hpp` / `src/crypto/eccurve.cpp`**는
   `CEcCurve`/`SEcPoint`를 정의합니다. 아핀 좌표의 short-Weierstrass 타원
   곡선(`y^2 = x^3 + a*x + b mod p`)입니다. `CBigNum`과 같은 이유로 `src/`
@@ -105,25 +118,28 @@
   곡선 자체 검사들이 그 위에 올라앉습니다. `scalarMul()`(임의의 점 곱하기
   임의의 스칼라)과 `scalarMulBase()`(`g` 곱하기 스칼라. 예컨대 모든
   sign()/verify() 호출의 `k*g`/`u1*g` 항)는 대신 내부적으로 Jacobian
-  좌표(`ECPointJac`. `eccurve.cpp`의 익명 네임스페이스 — `X/Z^2, Y/Z^3`,
-  무한점은 `Z == 0`)에서 작동합니다. 분기 없는 R0/R1
-  ladder(`condSwapJac()`가 더할지 말지로 분기하는 대신 스칼라의 비트에 따라
-  어느 레지스터가 어느 값을 담는지를 swap합니다)이며, 비트당 하나가 아니라
-  맨 마지막에 정확히 한 번의 모듈러 역원 비용만 치르고
-  (`toAffineFromJac()`), 좌표를 **Montgomery 형태**로 보유합니다
-  (`CMontgomery`. 위의 `utils/montgomery.hpp` 참고). 그래서 스칼라 곱이
-  수행하는 수천 번의 체 곱셈이 각각 긴 나눗셈이 아니라 limb 단위
-  곱셈-누산 패스의 비용을 치릅니다. 모듈러스별 컨텍스트는 `CEcCurve`
+  좌표(`X/Z^2, Y/Z^3`, 무한점은 `Z == 0`)에서 작동합니다. 네이티브
+  64×64→128 곱셈이 있는 x86-64 Clang/GCC 빌드에서는 좌표가 스택의 고정 폭
+  64비트 Montgomery limb에 머뭅니다. 체는 지원하는 limb 폭마다 고정 count 곱셈
+  kernel을 선택해 compiler가 곱과 reduction loop를 펼칠 수 있게 합니다. 4비트
+  private-scalar window는 16개 후보를
+  모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 호출마다 점을 배가하지
+  않고 mixed 덧셈을 허용하는 batch-normalized affine 점의 프로세스 전역 64행 4비트
+  comb 표도 사용합니다. P-256은 Montgomery reduction에서
+  희소 modulus와 `a == -3` 배가 공식을 사용합니다. 다른 빌드는 mask 기반 R0/R1
+  `CBigNum` Montgomery ladder를 유지합니다. 두 경로 모두 스칼라 비트마다 하나가
+  아니라 마지막 역원 하나만 계산합니다. 모듈러스별 컨텍스트는 `CEcCurve`
   인스턴스에 캐시되지 않고 `scalarMul()`/`scalarMulBase()`의 앞머리에서
   만들어져 아래로 전달됩니다. `p`/`a`/`b`가 공개 가변 필드이므로 캐시된
   컨텍스트는 호출자가 그중 하나에 쓸 때마다 무효화가 필요할 것이고, 그
   두 번의 나눗셈은 뒤따르는 스칼라 곱 옆에서는 측정되지 않습니다.
-  `toJacobian()`/`toAffineFromJac()`이 양방향 변환 경계이므로 Montgomery
-  형태의 값이 그 다섯 함수를 벗어나는 일이 없습니다. 아핀
+  고정 폭 경로는 스칼라 곱 경계에서 변환하고 fallback은
+  `toJacobian()`/`toAffineFromJac()`을 사용하므로 Montgomery 형태의 값이 어느
+  경로에서도 밖으로 나가지 않습니다. 아핀
   `add()`/`doublePoint()`/`isOnCurve()`는 의도적으로 `CBigNum`의 일반 경로에
   남는데, 군 연산 하나는 그 한 번의 모듈러 역원이 지배하고 컨텍스트를 분산시킬
-  대상이 없기 때문입니다. `scalarMulBase()`도 임의 기저와 같은 고정 너비 ladder를
-  사용하여 이전의 비밀 의존 고정 기저 테이블 조회를 없앴습니다.
+  대상이 없기 때문입니다. `scalarMulBase()`의 comb와 호출별 window 경로는 모두 모든
+  후보를 스캔하여 비밀 의존 고정 기저 테이블 조회를 피합니다.
   `doublePointJac()`/`addJac()`(Bernstein/Lange의
   `dbl-2007-bl`/`add-2007-bl`. 일반 `a`)과 `ec2curve.cpp`의 Lopez-Dahab
   대응물들은, 어떤 피연산자의 현재 값이 이후에 다시 읽히지 않을 때마다 그것을
@@ -131,14 +147,15 @@
   지점마다 어느 읽기가 그 피연산자의 마지막인지 이름을 댄 주석이 있습니다) —
   `CBigNum`/`CGf2m` 자신의 메서드들이 따르는 것과 같은
   복사보다-제자리 규율(위의 그들 doc 주석 참고)을 이 자유 함수들의 지역
-  변수에까지 이어 간 것입니다. ladder는 군 위수의 전체 비트 폭을 처리하고
-  레지스터 교환에는 mask 기반 limb swap을 사용하지만, `CBigNum`은 여전히 가변 폭
-  값을 할당하고 잘라내며 일반 산술도 constant-time이 아닙니다. 따라서 소수 곡선
-  스택 전체에 대한 부채널 저항을 주장하지 않습니다.
-  검증은 `linearCombination(k1, p1, k2, p2)`으로 두 공개 스칼라 곱이 Jacobian
-  누산기 하나와 마지막 역원 하나를 공유하게 합니다. 이 메서드는 스칼라 비트에 따라
-  분기하며 공개 검증값에만 쓰도록 명시되어 있습니다. private 스칼라는 계속
-  `scalarMul()` 또는 `scalarMulBase()`를 거칩니다.
+  변수에까지 이어 간 것입니다. 어느 구현도 완전한 부채널 저항을 주장하지 않습니다.
+  예외 점 처리는 데이터 의존 제어 흐름을 가지며 fallback은 가변 폭 `CBigNum` 값을
+  할당하고 잘라내기도 합니다. 검증 context는 키를 바인딩할 때 generator와 바인딩한
+  공개키의 폭 6 affine 홀수 배수 표를 한 번 batch-normalize합니다. 반복 검증은 mixed
+  덧셈, Jacobian 누산기 하나, 마지막 역원 하나로 이 표를 재사용합니다. 직접
+  `linearCombination(k1, p1, k2, p2)`을 호출하면 폭 5 signed-window NAF를 사용합니다.
+  두 경로 모두 공개값에 따라 분기하고 표를 인덱싱하며 공개 검증값에만
+  쓰도록 명시되어 있습니다. private 스칼라는 계속 `scalarMul()` 또는
+  `scalarMulBase()`를 거칩니다.
   `EEcKnownCurves`(`ECURVE_P192`/`ECURVE_P224`/`ECURVE_P256`/`ECURVE_P384`/
   `ECURVE_P521`/`ECURVE_SECP256K1`, 더해서 Brainpool 곡선들을 위한 14개
   `ECURVE_BPOOLxxxR1`/`ECURVE_BPOOLxxxT1` 값)가 이 라이브러리의 내장 곡선들을
@@ -190,7 +207,12 @@
   이 모듈의 정착된 상수 검증 규율(아래 `_knownCurves` 참고)에 따라 여기
   하드코딩하기 전에 독립 Python GF(2^163) 구현으로 그것들에 대해 독립적으로
   교차 확인했습니다(무작위 시행 2,000회 이상에 경계 케이스들, 그리고 종단 간
-  ladder 실행 한 번). `linearCombination()`은 Lopez-Dahab 좌표에서 같은 공개 검증
+  ladder 실행 한 번). 고정 기저 곱과 공개 linear combination은 두 번째 피연산자를
+  affine으로 특화해 `addMixedLD()`를 사용하고, 일반 private-scalar 곱은 완전한
+  projective 공식을 유지합니다. `CGf2m`은 지원하는 다섯 폭을 고정 count PCLMUL
+  곱·제곱 kernel로 분기한 뒤 높은 word를 체 다항식으로 직접 축약합니다. portable
+  경로도 shift-and-XOR 곱 뒤 같은 축약기를 사용합니다.
+  `linearCombination()`은 Lopez-Dahab 좌표에서 같은 공개 검증
   최적화를 제공하며 공개 스칼라 전용이라는 같은 제한을 갖습니다. `field`는
   소유하는 값이 아니라 소유하지 않는 `const SGf2mField*`이고, `CGf2m` 자신의
   체 포인터를 반영합니다. 항상 `CGf2m`의 다섯 공유 정적 싱글턴 중

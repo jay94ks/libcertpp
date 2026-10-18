@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/ecdsa.hpp>
+#include "../fastprimefield.hpp"
 #include <certpp/asn1/der.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/io/buffer.hpp>
@@ -136,21 +137,38 @@ namespace crypto {
         };
 
         class EcContext : public IAsymmetricContext {
+        private:
+            TArray<SEcPoint> _verifyBaseTable;
+            TArray<SEcPoint> _verifyPublicTable;
+
+            void prepareVerificationTables(const CEcCurve& curve, const SEcPoint& publicPoint) {
+                if (!PreparePrimeWnafTable(curve, curve.g, _verifyBaseTable)
+                    || !PreparePrimeWnafTable(curve, publicPoint, _verifyPublicTable)) {
+                    _verifyBaseTable.resize(0);
+                    _verifyPublicTable.resize(0);
+                }
+            }
+
         protected:
             void onReset() override {
+                _verifyBaseTable.resize(0);
+                _verifyPublicTable.resize(0);
                 auto priv = std::dynamic_pointer_cast<EcPrivateKey>(privateKey());
                 if (priv) {
                     size_t orderBytes = (priv->curve().n.bitLength() + 7) / 8;
                     sizeOfSign(CDer::maxSignatureSize(orderBytes));
                     sizeOfDigest(orderBytes);
-                    return;
                 }
 
                 auto pub = std::dynamic_pointer_cast<EcPublicKey>(publicKey());
+                if (!pub && priv) {
+                    pub = std::dynamic_pointer_cast<EcPublicKey>(priv->publicKey());
+                }
                 if (pub) {
                     size_t orderBytes = (pub->curve().n.bitLength() + 7) / 8;
                     sizeOfSign(CDer::maxSignatureSize(orderBytes));
                     sizeOfDigest(orderBytes);
+                    prepareVerificationTables(pub->curve(), pub->q());
                 }
             }
 
@@ -202,7 +220,7 @@ namespace crypto {
                     }
 
                     CBigNum kInv;
-                    if (!CBigNum::modInverse(k, n, kInv)) {
+                    if (!FastPrimeInverse(k, n, kInv)) {
                         k.secureClear();
                         continue;
                     }
@@ -278,7 +296,7 @@ namespace crypto {
                 }
 
                 CBigNum w;
-                if (!CBigNum::modInverse(s, n, w)) {
+                if (!FastPrimeInverse(s, n, w)) {
                     return ERET_BADREQ;
                 }
 
@@ -290,7 +308,11 @@ namespace crypto {
                 CBigNum u2(r);
                 u2.mulMod(w, n);
 
-                SEcPoint sum = curve.linearCombination(u1, curve.g, u2, pub->q());
+                SEcPoint sum;
+                if (!FastPrimeLinearCombinationPrepared(
+                    curve, u1, _verifyBaseTable, u2, _verifyPublicTable, sum)) {
+                    sum = curve.linearCombination(u1, curve.g, u2, pub->q());
+                }
 
                 if (sum.infinity) {
                     return ERET_BADREQ;
@@ -303,17 +325,15 @@ namespace crypto {
             /* ECDH (RFC 5903 / SP 800-56A section 5.7.1.2) over the bound private key's curve.
              *
              * --> NOT constant-time, and the shape of this library's prime-curve arithmetic is
-             * why, not an oversight here. CEcCurve::scalarMul() is a branch-free-*shaped* ladder
-             * -- it always performs both an addition and a doubling per bit -- but it iterates
-             * k.bitLength() times (so the iteration count leaks the scalar's top bit position),
-             * dispatches each step through CBigNum::condSwap(), which is a plain
-             * `if (swap) std::swap(a, b)` on a bit of the private scalar, and runs on CBigNum,
-             * which trims leading zero limbs so every operation's cost depends on its operands.
+             * why, not an oversight here. The native fixed-width path scans every entry in each
+             * scalar window instead of using secret-indexed loads, and the portable fallback uses
+             * masked CBigNum register swaps. Both still use exceptional point formulas whose
+             * control flow depends on intermediate values; the fallback additionally trims
+             * leading zero limbs, so its arithmetic cost depends on its operands.
              * For an online handshake with ephemeral keys -- an IKEv2 exchange, say -- that is a
              * real timing side channel, not a theoretical one. X25519 has a fixed-width,
-             * branch-free field (crypto/asyms/fe25519.hpp) for exactly this reason; the prime
-             * curves have no equivalent yet, and giving them one is a larger job than adding this
-             * operation. Prefer X25519 where the protocol allows a choice. */
+             * branch-free field (crypto/asyms/fe25519.hpp) for exactly this reason. Prefer X25519
+             * where the protocol allows a choice. */
             ERetCode deriveSharedSecret(const IPublicKeyPtr& peerPublicKey, SByteSpan& out) override {
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
@@ -466,10 +486,6 @@ namespace crypto {
 
         auto pub = std::make_shared<EcPublicKey>(_curve, q, _which);
         auto priv = std::make_shared<EcPrivateKey>(_curve, d, pub, _which);
-
-        if (checkPrivateKey(priv) != ERET_OK) {
-            return ERET_AGAIN;
-        }
 
         out = SKeyPair(pub, priv);
         return ERET_OK;

@@ -79,6 +79,33 @@ namespace crypto {
             return supported;
         }
 
+        /* Four AES blocks per 512-bit VAES instruction. As with every AVX-512 path, the CPU bit
+         * is insufficient by itself: Windows must also save opmask and the high ZMM registers. */
+        bool cpuHasVaes512() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+                __cpuidex(info, 1, 0);
+                if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0 ||
+                    (_xgetbv(0) & 0xE6) != 0xE6) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 16)) != 0 &&
+                       (info[2] & (1 << 9)) != 0;
+#else
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f") != 0 &&
+                       __builtin_cpu_supports("vaes") != 0;
+#endif
+            }();
+            return supported;
+        }
+
 #endif
 
         /* AES-NI encrypt: the round-key bytes expandKey() produces are already exactly the
@@ -164,6 +191,40 @@ namespace crypto {
             }
         }
 
+        /* Four counters are enough to hide most of AESENC's dependency latency for short
+         * records. Keeping this separate from the eight-block bulk loop avoids falling back to
+         * four complete single-block calls for the common 64-byte record size. */
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("aes,sse2")))
+#endif
+        void xorCtr4Accelerated(
+            const uint8_t* in, uint8_t* out, const uint8_t counters[4][16],
+            const uint8_t* roundKeys, uint32_t nr
+        ) {
+            __m128i states[4];
+            const __m128i first =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(roundKeys));
+            for (size_t lane = 0; lane < 4; ++lane) {
+                states[lane] = _mm_xor_si128(
+                    _mm_loadu_si128(reinterpret_cast<const __m128i*>(counters[lane])), first);
+            }
+            for (uint32_t round = 1; round < nr; ++round) {
+                const __m128i key = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(roundKeys + round * 16));
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    states[lane] = _mm_aesenc_si128(states[lane], key);
+                }
+            }
+            const __m128i last = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(roundKeys + nr * 16));
+            for (size_t lane = 0; lane < 4; ++lane) {
+                states[lane] = _mm_xor_si128(
+                    _mm_aesenclast_si128(states[lane], last),
+                    _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + lane * 16)));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(out + lane * 16), states[lane]);
+            }
+        }
+
 #if defined(CERTPP_AES_VAES_AVAILABLE)
 #if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
         __attribute__((target("avx2,vaes")))
@@ -229,6 +290,58 @@ namespace crypto {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 32), s1);
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 64), s2);
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 96), s3);
+        }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx512f,vaes")))
+#endif
+        __m512i ctrGroup4(__m128i prefix, uint32_t value) {
+            __m512i result = _mm512_setzero_si512();
+            result = _mm512_inserti32x4(result, ctrBlock(prefix, value + 0), 0);
+            result = _mm512_inserti32x4(result, ctrBlock(prefix, value + 1), 1);
+            result = _mm512_inserti32x4(result, ctrBlock(prefix, value + 2), 2);
+            return _mm512_inserti32x4(result, ctrBlock(prefix, value + 3), 3);
+        }
+
+#if defined(__clang__) || (defined(__GNUC__) && !defined(_MSC_VER))
+        __attribute__((target("avx512f,vaes")))
+#endif
+        void xorCtr16Vaes512(
+            const uint8_t* in, uint8_t* out, const uint8_t counter[16],
+            uint32_t counterValue, const uint8_t* roundKeys, uint32_t nr
+        ) {
+            const __m128i prefix =
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(counter));
+            const __m512i first = _mm512_broadcast_i32x4(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(roundKeys)));
+            __m512i s0 = _mm512_xor_si512(ctrGroup4(prefix, counterValue + 0), first);
+            __m512i s1 = _mm512_xor_si512(ctrGroup4(prefix, counterValue + 4), first);
+            __m512i s2 = _mm512_xor_si512(ctrGroup4(prefix, counterValue + 8), first);
+            __m512i s3 = _mm512_xor_si512(ctrGroup4(prefix, counterValue + 12), first);
+
+            for (uint32_t round = 1; round < nr; ++round) {
+                const __m512i key = _mm512_broadcast_i32x4(_mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(roundKeys + round * 16)));
+                s0 = _mm512_aesenc_epi128(s0, key);
+                s1 = _mm512_aesenc_epi128(s1, key);
+                s2 = _mm512_aesenc_epi128(s2, key);
+                s3 = _mm512_aesenc_epi128(s3, key);
+            }
+
+            const __m512i last = _mm512_broadcast_i32x4(_mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(roundKeys + nr * 16)));
+            s0 = _mm512_xor_si512(_mm512_aesenclast_epi128(s0, last),
+                _mm512_loadu_si512(in + 0));
+            s1 = _mm512_xor_si512(_mm512_aesenclast_epi128(s1, last),
+                _mm512_loadu_si512(in + 64));
+            s2 = _mm512_xor_si512(_mm512_aesenclast_epi128(s2, last),
+                _mm512_loadu_si512(in + 128));
+            s3 = _mm512_xor_si512(_mm512_aesenclast_epi128(s3, last),
+                _mm512_loadu_si512(in + 192));
+            _mm512_storeu_si512(out + 0, s0);
+            _mm512_storeu_si512(out + 64, s1);
+            _mm512_storeu_si512(out + 128, s2);
+            _mm512_storeu_si512(out + 192, s3);
         }
 
 #endif
@@ -602,6 +715,14 @@ namespace crypto {
         if (cpuHasAesNi()) {
 #if defined(CERTPP_AES_VAES_AVAILABLE)
             const bool useVaes256 = cpuHasVaes256();
+            const bool useVaes512 = cpuHasVaes512();
+            while (useVaes512 && blocks - offset >= 16) {
+                xorCtr16Vaes512(
+                    in + offset * BLOCK_BYTES, out + offset * BLOCK_BYTES,
+                    counter, counterValue, roundKeys, nr);
+                counterValue += 16;
+                offset += 16;
+            }
 #endif
             while (blocks - offset >= 8) {
 #if defined(CERTPP_AES_VAES_AVAILABLE)
@@ -624,6 +745,18 @@ namespace crypto {
                 }
                 counterValue += 8;
                 offset += 8;
+            }
+            while (blocks - offset >= 4) {
+                uint8_t counters[4][16];
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    std::memcpy(counters[lane], counter, BLOCK_BYTES);
+                    storeCounter(counters[lane] + 12, counterValue + uint32_t(lane));
+                }
+                xorCtr4Accelerated(
+                    in + offset * BLOCK_BYTES, out + offset * BLOCK_BYTES,
+                    counters, roundKeys, nr);
+                counterValue += 4;
+                offset += 4;
             }
         }
 #endif

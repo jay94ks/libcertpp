@@ -34,13 +34,33 @@ and parallel AES-CTR, VAES, and four-block GHASH raised 64 KiB AES-256-GCM from
 then covered all 20 prime-field ECDSA/ECDH and 10 binary ECDSA curves. Joint public-scalar
 multiplication reduced representative prime-curve ECDSA verification by about
 2.3x and binary-curve verification by about 1.9--2.0x, and the same prime-field
-path accelerates GOST verification. The comparison then added RSA and DSA interoperability;
+path accelerates GOST verification. Fixed-width stack-resident Montgomery fields, full-scan
+private windows, signed public verification windows, and fixed-base comb tables first raised 72 of
+the 80 prime-field key-generation, signing, verification, and ECDH rows to at least 0.90 of
+OpenSSL. Fixed-count field kernels and key-bound width-six affine verification tables then raised
+every non-P-256 row above the gate; 76 of 80 now pass.
+fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
+the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
+freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,
+with five-run pinned medians from 1.12 to 1.83.
+The comparison then added RSA and DSA interoperability;
 Montgomery-backed primality tests, sliding-window exponentiation, and joint DSA verification
 reduced the first direct RSA key-generation/signing measurements by about 5.7x/1.3x and DSA
 key-generation/signing/verification by about 3.7x/3.4x/5.5x. The tested OpenSSL providers do not
-offer GOST signatures. Dedicated edwards448 doubling, a public subgroup-check window, and a
-joint `S*B - k*A` verifier then reduced median Ed448 verification latency from 11.454 to
-6.055 ms while retaining the secret-scalar ladder. Removing X25519 key generation's redundant
+offer GOST signatures. Caching each RSA key's public-modulus context and keeping small public exponents
+in one packed 64-bit Montgomery chain later raised pinned Windows RSA verification from 0.11 to
+0.54 of OpenSSL. Keeping long exponentiation and two-base DSA verification in packed 64-bit form,
+plus binary modular inversion for odd moduli, raised the remaining operations substantially.
+Caching the private CRT `p` and `q` Montgomery contexts removed their per-signature setup divisions.
+Integrated CIOS multiplication and a two-bit simultaneous DSA window then produced fresh pinned
+ratios of 0.36/0.27/0.61 for RSA and 0.61/0.65/0.48 for DSA keygen/sign/verify while preserving
+the CRT fault check and portable fallbacks.
+Dedicated edwards448
+doubling, a public subgroup-check window, and a
+joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to
+6.055 ms. A fixed-width Fe448 implementation and 10-column comb tables then reduced signing and
+verification to 0.139/0.191 ms in a matched WSL comparison, reaching 1.48/0.99 of OpenSSL; the
+portable 16-limb fallback passed the same field and RFC tests under MSVC. Removing X25519 key generation's redundant
 derived-point cofactor ladder reduced its median from 0.270 to 0.139 ms. Test processes now
 route assertions and crashes to console diagnostics without Windows error dialogs. Automated CI
 and the platform matrix intentionally remain in [the roadmap](PLANS.md). A four-lane SSE2
@@ -66,6 +86,27 @@ permuted value between EDE stages. Seven-run median OpenSSL ratios rose from 0.0
 ARIA then replaced byte-at-a-time substitution and diffusion with expanded 32-bit S-boxes, word
 diffusion, and an inlined CBC bulk loop. Its 128/192/256-bit seven-run median OpenSSL ratios rose
 from about 0.31 to 1.04/1.03/1.03 while the RFC 5794 vectors remained unchanged.
+Generated Fe25519 squaring, mixed precomputed point addition, one-exponent point recovery, joint
+public verification, and per-public-key odd-multiple tables then raised the eleven-run median
+Ed25519 sign/verify ratios to 0.94/0.97 while retaining RFC 8032 and low-order-point checks. Making
+the five-limb radix-51 path the GCC/Clang 64-bit default, keeping its unsigned loose bounds
+explicit, and flattening the X25519 ladder then raised Ed25519 to 1.53/1.28 and X25519
+keygen/derive from 0.24/0.21 to 0.77/0.62 of OpenSSL in the matched WSL comparison. The portable
+ten-limb path remains the MSVC and no-native-wide-product fallback. A later radix-51 pass used
+two independent carry chains, a dedicated ten-product square, shorter ladder live ranges,
+runtime AVX2/BMI2/ADX and exact Tiger Lake tuning, and bound-key caches. Fifteen matched Windows
+runs pinned to one logical processor then measured median X25519 keygen/derive ratios of
+1.035/0.909 against OpenSSL 3.6.4.
+ML-KEM then replaced bit-at-a-time codecs and CBD sampling with word-sized paths, used bounded
+Barrett reduction in its NTT, and prepared decoded/expanded key material when a context binds a
+key. In seven matched Windows runs, all nine ML-KEM keygen/encapsulate/decapsulate median ratios
+reached 1.07--1.25 of OpenSSL 3.6.4 while the NIST ACVP and cross-implementation checks remained
+unchanged.
+ML-DSA then replaced per-coefficient modular division in its NTT with fixed-modulus Montgomery
+products, moved bit packing to a reservoir, and consumed SHAKE rejection streams by rate block.
+Seven matched Windows runs raised all six sign/verify median ratios to 1.17--1.38 of OpenSSL 3.6.4;
+the official signing and verification vectors and arithmetic reference checks retained their
+results.
 
 ## Chapters
 

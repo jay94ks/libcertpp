@@ -21,40 +21,39 @@ implement: they do ECDSA and not ECDH.
 
 ## Current optimization checks
 
-### AVX-512 AEAD
+### Current AEAD comparison
 
-The ChaCha20-Poly1305 bulk result was refreshed on 2026-10-16 after adding the
-sixteen-block AVX-512F ChaCha20 path and removing the Poly1305 AVX-512 vector-argument ABI
-boundary. This focused comparison used the same i7-11370H host under Windows, Clang 22.1.8
-targeting the MSVC ABI, Ninja, and a Release build. It ran the 64 KiB row from
-[`examples/05_benchmark.cpp`](../../examples/05_benchmark.cpp); each build kept all other
-hardware acceleration enabled.
+The AEAD rows were refreshed on 2026-10-18 on the same i7-11370H host under Windows, using
+Clang 22.1.8, Ninja, a Release build, and OpenSSL 3.6.4 from the same process. Poly1305 now
+aggregates thirty-two blocks before reducing the AVX512-IFMA products into its scalar
+accumulator. This halves the horizontal-reduction and accumulator-update frequency relative to
+the previous sixteen-block path while retaining sixteen- and eight-block tails. Powers through
+r^16 are prepared only for an eight-block group, and r^17 through r^32 only for a thirty-two-block
+group, so the wider path does not add setup work to short or medium-sized records.
 
-| ChaCha20-Poly1305 seal, 64 KiB | Throughput | Relative |
-|---|---:|---:|
-| AVX-512F ChaCha20 + AVX512-IFMA Poly1305 | **1979.7 MiB/s** | **4.00x** |
-| `CERTPP_DISABLE_HWACCEL_AVX512=ON` (AVX2/SSE2 retained) | 494.8 MiB/s | 1.00x |
+| Five-run paired median | certpp | OpenSSL EVP | certpp / OpenSSL |
+|---|---:|---:|---:|
+| ChaCha20-Poly1305 seal, 64 KiB | **3796 MiB/s** | 4129 MiB/s | **0.92x** |
+| ChaCha20-Poly1305 seal, 64-byte record | 264 ns | 258 ns | **0.97x** |
+| AES-256-GCM seal, 64 KiB | **10692 MiB/s** | 11800 MiB/s | **0.90x** |
+| AES-256-GCM seal, 64-byte record | 83 ns | 75 ns | **0.93x** |
 
-This isolates the combined effect of the two AVX-512 tiers. It does not assign the gain to
-ChaCha20 and Poly1305 individually. The larger tables below remain the original full MSVC/GCC
-cross-toolchain run; their conditions are stated separately so results from different compiler
-versions are not mixed into one column.
+The five paired bulk ChaCha20-Poly1305 ratios were 0.92x, 0.92x, 0.87x, 0.92x, and 0.92x;
+the median now exceeds the active threshold. Before the thirty-two-block Poly1305 aggregation,
+three immediately preceding runs measured 0.84--0.87x. AES-GCM was remeasured without an
+implementation change and remains close to the threshold. Published RFC vectors, long messages
+through every wide Poly1305 boundary, streaming chunk boundaries, in-place operation, and
+forgery rejection pass. XChaCha20-Poly1305 remains unavailable through the tested OpenSSL EVP
+interface and retains the same internal accelerated path as its inner ChaCha20-Poly1305 operation.
 
 ### Ed25519 point arithmetic
 
-The same Windows/Clang 22.1.8 Release harness was run before and after replacing
-unified-addition doubling with a dedicated formula, using a public-scalar window during
-verification, and changing fixed-base multiplication to a masked signed-radix-16 table.
-
-| Operation | Before | Current | Speedup |
-|---|---:|---:|---:|
-| Ed25519 sign | 0.153 ms | **0.056 ms** | **2.73x** |
-| Ed25519 verify | 0.675 ms | **0.388 ms** | **1.74x** |
-
-These are the corresponding rows from [`examples/05_benchmark.cpp`](../../examples/05_benchmark.cpp),
-which reports the fastest of three 20-iteration batches. The signing path now performs four
-fixed-base point doublings instead of 256 and scans every candidate table entry for each secret
-digit. Verification keeps the strict subgroup checks and uses windowing only for public values.
+Ed25519 now uses a masked signed-radix-16 fixed-base table, mixed cached/precomputed additions,
+completed coordinates for public double-scalar multiplication, generated 55-product field
+squaring, and one exponentiation for point recovery. The private key caches its RFC 8032 expansion;
+the public key caches the odd multiples used by repeated verification. The current matched result
+and its method are recorded in [Current Ed25519 comparison](#current-ed25519-comparison); the
+step-by-step historical measurements live in [Ed25519 on Fe25519](../history/12-ed25519.md).
 
 ## Against OpenSSL
 
@@ -224,23 +223,25 @@ portable builds.
 
 ### Current AES-GCM comparison
 
-The 64 KiB AES-256-GCM row was refreshed after adding eight-counter AES-CTR processing, a
-256-bit VAES tier, and four-block GHASH aggregation. Counter blocks are constructed in registers;
-building eight byte arrays and incrementing each one had been a larger cost than the AES rounds.
-GHASH folds four recurrence steps into independent carry-less products and one reduction, while
-short records retain the single-block path and avoid power-table setup.
+The 64 KiB AES-256-GCM row was refreshed after extending the earlier eight-counter and
+four-block GHASH work to a sixteen-block fused kernel. Four 512-bit VAES chains encrypt sixteen
+counters while GFNI/VPCLMULQDQ computes the preceding sixteen ciphertext blocks' GHASH products;
+the independent instruction streams overlap before one field reduction. Counter blocks are
+constructed in registers. Short records retain the five-way AES-NI path that encrypts the tag
+mask and four payload counters together and avoids the long-message power-table setup.
 
-| Three-run median | certpp | OpenSSL EVP | certpp / OpenSSL |
+| Matched comparison | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
 | Before, 64 KiB | 517 MiB/s | 11608 MiB/s | 0.04x |
-| Current, 64 KiB | **2953 MiB/s** | 10569 MiB/s | **0.28x** |
-| Current, 64-byte record | 176 ns | **78 ns** | **0.43x** |
+| Earlier VAES/GHASH path, 64 KiB | **2953 MiB/s** | 10569 MiB/s | **0.28x** |
+| Current five-run median, 64 KiB | **10692 MiB/s** | 11800 MiB/s | **0.90x** |
+| Current five-run median, 64-byte record | 83 ns | 75 ns | **0.93x** |
 
-Bulk certpp throughput improved 5.71x. The three current per-run ratios are 0.28x, 0.24x, and
-0.29x; the median remains below the 0.90 goal. The accelerated path is checked against portable
-AES across all key sizes and a 32-bit counter carry, and long GHASH input is compared with the
-serial path under different chunk boundaries. Both accelerated and fully portable test builds
-pass.
+Bulk certpp throughput is now about 20.7 times the initial implementation. The five current
+paired bulk ratios are 0.90x, 0.91x, 0.93x, 0.90x, and 0.90x; the median meets the goal narrowly.
+The accelerated path is checked against portable AES across all key sizes and a 32-bit counter
+carry, and long GHASH input is compared with the serial path under different chunk boundaries.
+Both accelerated and fully portable test builds pass.
 
 ### Current algorithm inventory comparison
 
@@ -256,9 +257,12 @@ implementations as one continuous stream; the earlier harness reset only OpenSSL
 charging it context setup and overstating certpp's relative result. The table reports the median
 per-run ratio from three complete runs. Latency ratios use `OpenSSL latency / certpp latency`, so
 every ratio has the same direction and 1.00x means parity.
-The RSA/DSA rows come from three targeted `--classic-signatures` runs after the same setup and
-warm-up rules; both directions verify across the implementation boundary and reject an altered
-digest before timing.
+The RSA and DSA rows were refreshed from eleven targeted `--rsa` or `--dsa` runs in a static Clang
+22.1.8 Release build against OpenSSL 3.6.4, with the process pinned to one logical processor at high
+priority. Each side still uses the same setup and warm-up rules. The displayed latencies are the
+per-side medians, while the ratio is the median of the eleven paired run ratios; randomized prime
+search makes the key-generation ratio differ from the quotient of the two displayed medians. Both
+directions verify across the implementation boundary and reject an altered digest before timing.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
@@ -284,101 +288,108 @@ digest before timing.
 | ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
 | ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
 | ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
-| RSA-2048 keygen | 266.524 ms | 15.088 ms | 0.05x |
-| RSA-2048 sign | 4.340 ms | 0.260 ms | 0.06x |
-| RSA-2048 verify | 0.148 ms | 0.016 ms | 0.11x |
-| DSA-2048 keygen, including fresh parameters | 1392.749 ms | 142.425 ms | 0.10x |
-| DSA-2048 sign | 2.382 ms | 0.337 ms | 0.14x |
-| DSA-2048 verify | 3.417 ms | 0.297 ms | 0.09x |
+| RSA-2048 keygen | 67.994 ms | 24.426 ms | 0.364x |
+| RSA-2048 sign | 0.959 ms | 0.255 ms | 0.266x |
+| RSA-2048 verify | 0.027 ms | 0.016 ms | 0.610x |
+| DSA-2048 keygen, including fresh parameters | 235.572 ms | 145.370 ms | 0.605x |
+| DSA-2048 sign | 0.519 ms | 0.339 ms | 0.653x |
+| DSA-2048 verify | 0.625 ms | 0.299 ms | 0.479x |
 | GOST R 34.10-2012 |  | unavailable |  |
-| Ed25519 sign, 32-byte message | 0.052 ms | 0.035 ms | 0.65x |
-| Ed25519 verify, 32-byte message | 0.369 ms | 0.097 ms | 0.26x |
-| ChaCha20-Poly1305 seal, 64 KiB | 923 MiB/s | 4117 MiB/s | 0.22x |
+| Ed25519 sign, 32-byte message | 0.024 ms | 0.036 ms | 1.53x |
+| Ed25519 verify, 32-byte message | 0.077 ms | 0.098 ms | 1.28x |
+| ChaCha20-Poly1305 seal, 64 KiB | 3796 MiB/s | 4129 MiB/s | 0.92x |
 | XChaCha20-Poly1305 seal, 64 KiB |  | unavailable |  |
-| AES-256-GCM seal, 64 KiB | 2953 MiB/s | 10569 MiB/s | 0.28x |
-| ChaCha20-Poly1305 seal, 64-byte record | 363 ns | 255 ns | 0.70x |
+| AES-256-GCM seal, 64 KiB | 10692 MiB/s | 11800 MiB/s | 0.90x |
+| ChaCha20-Poly1305 seal, 64-byte record | 264 ns | 258 ns | 0.97x |
 | XChaCha20-Poly1305 seal, 64-byte record |  | unavailable |  |
-| AES-256-GCM seal, 64-byte record | 176 ns | 78 ns | 0.43x |
-| X25519 keygen | 0.139 ms | 0.034 ms | 0.24x |
-| X25519 derive | 0.136 ms | 0.029 ms | 0.21x |
-| ML-KEM-512 keygen | 0.079 ms | 0.032 ms | 0.40x |
-| ML-KEM-512 encapsulate | 0.063 ms | 0.028 ms | 0.44x |
-| ML-KEM-512 decapsulate | 0.067 ms | 0.035 ms | 0.52x |
-| ML-KEM-768 keygen | 0.125 ms | 0.047 ms | 0.37x |
-| ML-KEM-768 encapsulate | 0.094 ms | 0.030 ms | 0.32x |
-| ML-KEM-768 decapsulate | 0.100 ms | 0.047 ms | 0.47x |
-| ML-KEM-1024 keygen | 0.186 ms | 0.069 ms | 0.37x |
-| ML-KEM-1024 encapsulate | 0.140 ms | 0.042 ms | 0.30x |
-| ML-KEM-1024 decapsulate | 0.143 ms | 0.063 ms | 0.44x |
-| Ed448 sign, 32-byte message | 2.855 ms | 0.191 ms | 0.08x |
-| Ed448 verify, 32-byte message | 6.055 ms | 0.183 ms | 0.03x |
-| ML-DSA-44 sign, 32-byte message | 0.733 ms | 0.523 ms | 0.78x |
-| ML-DSA-44 verify, 32-byte message | 0.159 ms | 0.118 ms | 0.74x |
-| ML-DSA-65 sign, 32-byte message | 1.217 ms | 0.883 ms | 0.71x |
-| ML-DSA-65 verify, 32-byte message | 0.251 ms | 0.181 ms | 0.72x |
-| ML-DSA-87 sign, 32-byte message | 1.410 ms | 1.024 ms | 0.73x |
-| ML-DSA-87 verify, 32-byte message | 0.461 ms | 0.287 ms | 0.64x |
+| AES-256-GCM seal, 64-byte record | 83 ns | 75 ns | 0.93x |
+| X25519 keygen | 0.032 ms | 0.033 ms | 1.035x |
+| X25519 derive | 0.032 ms | 0.029 ms | 0.909x |
+| ML-KEM-512 keygen | 0.025 ms | 0.032 ms | 1.24x |
+| ML-KEM-512 encapsulate | 0.019 ms | 0.022 ms | 1.15x |
+| ML-KEM-512 decapsulate | 0.028 ms | 0.035 ms | 1.25x |
+| ML-KEM-768 keygen | 0.042 ms | 0.046 ms | 1.11x |
+| ML-KEM-768 encapsulate | 0.029 ms | 0.031 ms | 1.10x |
+| ML-KEM-768 decapsulate | 0.040 ms | 0.048 ms | 1.18x |
+| ML-KEM-1024 keygen | 0.064 ms | 0.072 ms | 1.13x |
+| ML-KEM-1024 encapsulate | 0.039 ms | 0.043 ms | 1.07x |
+| ML-KEM-1024 decapsulate | 0.053 ms | 0.064 ms | 1.19x |
+| Ed448 sign, 32-byte message | 0.139 ms | 0.200 ms | 1.48x |
+| Ed448 verify, 32-byte message | 0.191 ms | 0.188 ms | 0.99x |
+| ML-DSA-44 sign, 32-byte message | 0.394 ms | 0.541 ms | 1.38x |
+| ML-DSA-44 verify, 32-byte message | 0.090 ms | 0.118 ms | 1.31x |
+| ML-DSA-65 sign, 32-byte message | 0.705 ms | 0.942 ms | 1.32x |
+| ML-DSA-65 verify, 32-byte message | 0.145 ms | 0.182 ms | 1.26x |
+| ML-DSA-87 sign, 32-byte message | 0.858 ms | 1.000 ms | 1.21x |
+| ML-DSA-87 verify, 32-byte message | 0.253 ms | 0.301 ms | 1.17x |
 
-The EC rows use the same three-run median methodology. This compact table reports the
-`certpp / OpenSSL` performance ratio; `examples/06_openssl_compare.cpp` prints both absolute
-latencies. Binary-curve ECDH is marked unavailable because `CEcdsa2` implements signatures only.
+The 20 prime-field curves and 10 binary-field curves were refreshed with five complete focused
+runs after their respective field and point-arithmetic changes. The process was pinned to one
+logical processor at high priority. This compact table reports the median `certpp / OpenSSL`
+performance ratio; `examples/06_openssl_compare.cpp` prints both absolute latencies. Binary-curve
+ECDH is unavailable because `CEcdsa2` implements signatures only.
 
 | Curve | Keygen | ECDSA sign | ECDSA verify | ECDH derive |
 |---|---:|---:|---:|---:|
-| P-192 | 0.08x | 0.22x | 0.24x | 0.23x |
-| P-224 | 0.09x | 0.24x | 0.25x | 0.24x |
-| P-256 | <0.01x | 0.01x | 0.04x | 0.03x |
-| P-384 | 0.07x | 0.22x | 0.21x | 0.23x |
-| P-521 | 0.08x | 0.25x | 0.22x | 0.23x |
-| secp256k1 | 0.08x | 0.23x | 0.25x | 0.23x |
-| brainpoolP160r1 | 0.10x | 0.24x | 0.27x | 0.25x |
-| brainpoolP192r1 | 0.08x | 0.21x | 0.24x | 0.21x |
-| brainpoolP224r1 | 0.08x | 0.23x | 0.26x | 0.24x |
-| brainpoolP256r1 | 0.07x | 0.21x | 0.25x | 0.21x |
-| brainpoolP320r1 | 0.08x | 0.22x | 0.23x | 0.22x |
-| brainpoolP384r1 | 0.07x | 0.22x | 0.22x | 0.21x |
-| brainpoolP512r1 | 0.05x | 0.15x | 0.16x | 0.15x |
-| brainpoolP160t1 | 0.09x | 0.24x | 0.27x | 0.24x |
-| brainpoolP192t1 | 0.08x | 0.21x | 0.24x | 0.21x |
-| brainpoolP224t1 | 0.09x | 0.23x | 0.25x | 0.24x |
-| brainpoolP256t1 | 0.07x | 0.21x | 0.22x | 0.22x |
-| brainpoolP320t1 | 0.08x | 0.22x | 0.22x | 0.22x |
-| brainpoolP384t1 | 0.07x | 0.22x | 0.21x | 0.21x |
-| brainpoolP512t1 | 0.05x | 0.15x | 0.15x | 0.15x |
-| B-163 | 0.09x | 0.34x | 0.39x | unavailable |
-| K-163 | 0.08x | 0.35x | 0.35x | unavailable |
-| B-233 | 0.09x | 0.38x | 0.41x | unavailable |
-| K-233 | 0.10x | 0.39x | 0.41x | unavailable |
-| B-283 | 0.11x | 0.43x | 0.47x | unavailable |
-| K-283 | 0.10x | 0.45x | 0.47x | unavailable |
-| B-409 | 0.14x | 0.61x | 0.66x | unavailable |
-| K-409 | 0.14x | 0.62x | 0.63x | unavailable |
-| B-571 | 0.16x | 0.74x | 0.77x | unavailable |
-| K-571 | 0.16x | 0.72x | 0.76x | unavailable |
+| P-192 | 2.095x | 1.862x | 1.560x | 1.975x |
+| P-224 | 1.891x | 1.743x | 1.451x | 1.814x |
+| P-256 | 0.403x | 0.345x | 0.315x | 0.302x |
+| P-384 | 1.712x | 1.647x | 1.301x | 1.673x |
+| P-521 | 1.632x | 1.567x | 1.225x | 1.598x |
+| secp256k1 | 1.999x | 1.854x | 1.523x | 1.929x |
+| brainpoolP160r1 | 2.136x | 1.857x | 1.586x | 1.931x |
+| brainpoolP192r1 | 2.121x | 1.884x | 1.598x | 1.967x |
+| brainpoolP224r1 | 1.872x | 1.742x | 1.484x | 1.796x |
+| brainpoolP256r1 | 1.853x | 1.712x | 1.478x | 1.778x |
+| brainpoolP320r1 | 1.670x | 1.584x | 1.340x | 1.597x |
+| brainpoolP384r1 | 1.638x | 1.549x | 1.362x | 1.593x |
+| brainpoolP512r1 | 1.139x | 1.083x | 0.918x | 1.122x |
+| brainpoolP160t1 | 2.034x | 1.781x | 1.554x | 1.873x |
+| brainpoolP192t1 | 2.036x | 1.810x | 1.563x | 1.934x |
+| brainpoolP224t1 | 1.881x | 1.705x | 1.434x | 1.836x |
+| brainpoolP256t1 | 1.834x | 1.699x | 1.438x | 1.794x |
+| brainpoolP320t1 | 1.733x | 1.650x | 1.171x | 1.688x |
+| brainpoolP384t1 | 1.691x | 1.620x | 1.293x | 1.668x |
+| brainpoolP512t1 | 1.204x | 1.138x | 0.916x | 1.176x |
+| B-163 | 1.762x | 1.188x | 1.565x | unavailable |
+| K-163 | 1.689x | 1.121x | 1.487x | unavailable |
+| B-233 | 1.785x | 1.191x | 1.543x | unavailable |
+| K-233 | 1.760x | 1.165x | 1.491x | unavailable |
+| B-283 | 1.549x | 1.205x | 1.504x | unavailable |
+| K-283 | 1.476x | 1.130x | 1.418x | unavailable |
+| B-409 | 1.830x | 1.434x | 1.761x | unavailable |
+| K-409 | 1.760x | 1.371x | 1.691x | unavailable |
+| B-571 | 1.705x | 1.489x | 1.728x | unavailable |
+| K-571 | 1.596x | 1.404x | 1.648x | unavailable |
 
-ECDSA and GOST verification now use one public-scalar `linearCombination()` instead of two
-private-scalar ladders followed by an affine addition. Representative certpp verification latency
-fell from 3.171 to 1.315 ms for P-256, 15.847 to 6.776 ms for P-521, 7.648 to 4.048 ms for B-571,
-and 7.270 to 3.745 ms for K-571. The new operation is deliberately variable-time because both
-verification scalars are public; signing, key generation, and ECDH continue to use the existing
-private-scalar paths.
+ECDSA and GOST verification use one public-scalar `linearCombination()` instead of two
+private-scalar ladders followed by an affine addition. The binary-field path now combines
+fixed-count PCLMUL product and square kernels with a descending word reducer and mixed affine/
+Lopez-Dahab addition. Key generation also avoids re-running public-key validation over a scalar and
+point it just constructed. All 30 directly comparable binary-curve rows now clear the gate. The
+five-run medians for B-163 keygen/sign/verify are 0.099/0.148/0.219 ms against OpenSSL's
+0.176/0.175/0.343 ms; K-571 measures 0.876/1.057/1.764 ms against 1.398/1.484/2.885 ms.
+Public verification remains deliberately variable-time because both verification scalars are
+public; private scalar paths retain their existing control-flow policy.
 
-Ed448 verification now uses a dedicated untwisted-Edwards doubling formula, a public 4-bit
-window for subgroup checks, and one public-scalar Straus loop for `S*B - k*A`. Across three
-complete runs, certpp verification measured 7.433, 6.055, and 5.994 ms; the 6.055 ms median is
-about 47% lower than the previous 11.454 ms row. The median per-run OpenSSL ratio rose from 0.02x
-to 0.03x. RFC 8032 TEST 1 and the malformed-point, identity-point, altered-message, altered-
-signature, and wrong-key negative controls continue to pass. The window and Straus branches see
-only the public order, signature scalar, and challenge hash; private scalar multiplication keeps
-the existing ladder.
+The prime-field refresh puts 76 of 80 directly comparable operations at or above the 0.90 gate;
+only the four P-256 operations remain. P-256 measured 0.046/0.060/0.188/0.148 ms for certpp key
+generation/signing/verification/ECDH and 0.019/0.021/0.059/0.045 ms for OpenSSL. Fixed-count
+Montgomery kernels removed runtime limb loops on every curve. Verification contexts additionally
+prepare width-six affine odd-multiple tables when a key is bound, so repeated verification does
+not rebuild or normalize either public table.
+
+Ed448 now uses fixed-width Fe448 arithmetic and 10-column comb tables for the base point and each
+public key. The current matched result and its validation are recorded in
+[Current Ed448 comparison](#current-ed448-comparison).
 
 X25519 key generation no longer runs a second 255-step ladder to multiply its freshly derived
-public value by the cofactor. The private scalar is clamped to a multiple of 8 before it is
-multiplied by the standard base point, so the result is already in the prime-order subgroup;
-the retained all-zero check covers the only invalid derived result. Three targeted comparison
-runs measured certpp key generation at 0.136, 0.141, and 0.139 ms with per-run OpenSSL ratios
-0.24x, 0.24x, and 0.25x. The median 0.139 ms is about 49% below the previous 0.270 ms row.
-The RFC 7748 vectors and the low-order-peer rejection test continue to pass.
+public value by the cofactor. The native radix-51 path now uses independent carry chains, a
+ten-product squaring schedule, shorter ladder live ranges, and cached runtime dispatch to generic
+AVX2/BMI2/ADX or exact Tiger Lake tuning. Private keys retain a clamped scalar and contexts retain
+successfully checked bound keys. The portable radix-2^25.5 path remains available. Current matched
+measurements and validation are recorded in
+[Current X25519 comparison](#current-x25519-comparison).
 
 The harness explicitly loads OpenSSL 3.6.4's default and legacy providers, which makes MD4 and
 DES measurable. Streebog needs a provider this installation does not include, and OpenSSL does
@@ -397,26 +408,132 @@ how quickly random prime candidates are found, but the repeated signing and veri
 are stable. The remaining gap is tracked in
 [the performance roadmap](../roadmap/performance.md#openssl-90-program).
 
-### Current Ed25519 comparison
+### Current ML-KEM comparison
 
-The Ed25519 row was refreshed on 2026-10-16 after the point-arithmetic optimization above. This
-was a native Windows Release build with GCC 16.2.0 and OpenSSL 3.6.4 from MSYS2 MinGW64. Three
-complete harness runs were made; each run measured each side independently after warm-up and took
-the fastest of five 200-operation batches.
+The ML-KEM rows were refreshed on 2026-10-18 on the Windows review host with Clang 22.1.8
+targeting the MinGW64 ABI and OpenSSL 3.6.4. The focused `--mlkem` harness ran seven times.
+Each run first imported raw public keys in both directions and checked
+`certpp encapsulate -> OpenSSL decapsulate` plus the reverse, then timed each implementation
+in its own warmed loop. Output buffers were allocated before both timed loops. The table reports
+the median rounded latency and the median of the seven per-run performance ratios.
 
 | Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
 |---|---:|---:|---:|
-| Ed25519 sign, 32-byte message | 0.059 ms | **0.040 ms** | **0.67x** |
-| Ed25519 verify, 32-byte message | 0.430 ms | **0.107 ms** | **0.25x** |
+| ML-KEM-512 keygen | **0.025 ms** | 0.032 ms | **1.24x** |
+| ML-KEM-512 encapsulate | **0.019 ms** | 0.022 ms | **1.15x** |
+| ML-KEM-512 decapsulate | **0.028 ms** | 0.035 ms | **1.25x** |
+| ML-KEM-768 keygen | **0.042 ms** | 0.046 ms | **1.11x** |
+| ML-KEM-768 encapsulate | **0.029 ms** | 0.031 ms | **1.10x** |
+| ML-KEM-768 decapsulate | **0.040 ms** | 0.048 ms | **1.18x** |
+| ML-KEM-1024 keygen | **0.064 ms** | 0.072 ms | **1.13x** |
+| ML-KEM-1024 encapsulate | **0.039 ms** | 0.043 ms | **1.07x** |
+| ML-KEM-1024 decapsulate | **0.053 ms** | 0.064 ms | **1.19x** |
 
-The three certpp/OpenSSL latency ratios were 1.46x, 1.49x, and 1.42x for signing; verification
-was 3.97x, 3.99x, and 4.03x. OpenSSL still has lower latency, but the current matched signing
-comparison is much closer than the
-earlier 4.5x row. That old result used a different compiler and OpenSSL session, so the change in
-ratio is evidence of the present gap, not a compiler-isolated attribution of the whole gain.
-The verification row is end-to-end API behavior rather than an isolated group-equation benchmark:
-certpp retains its strict full `L·R` subgroup check on the signature point in addition to checking
-the signature equation.
+The implementation now parses coefficients with bit reservoirs, samples CBD coefficients in
+fixed-width bit lanes, uses bounded Barrett reduction in the NTT, and expands a bound key's public
+matrix and secret vector once when an `IKemContext` is reset. The raw `CMlKem` entry points
+still prepare their supplied byte spans on every call. NIST ACVP vectors, modified-ciphertext
+implicit rejection, canonical-key negatives, ring reference checks, and both interoperability
+directions passed after the change. All nine directly comparable ML-KEM rows exceed the 0.90
+threshold on this host.
+
+### Current ML-DSA comparison
+
+The ML-DSA rows were refreshed on 2026-10-18 in the same Windows Clang 22.1.8 and OpenSSL
+3.6.4 environment as ML-KEM. The focused `--mldsa` harness ran seven times. Each run used a
+bound certpp context and an OpenSSL key, warmed both sides independently, and took the fastest
+of five 20-operation batches. Signing is rejection-sampled and therefore varies with the nonce;
+the table reports the median rounded latency and the median of the seven paired performance
+ratios rather than selecting one favorable run.
+
+| Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
+|---|---:|---:|---:|
+| ML-DSA-44 sign, 32-byte message | **0.394 ms** | 0.541 ms | **1.38x** |
+| ML-DSA-44 verify, 32-byte message | **0.090 ms** | 0.118 ms | **1.31x** |
+| ML-DSA-65 sign, 32-byte message | **0.705 ms** | 0.942 ms | **1.32x** |
+| ML-DSA-65 verify, 32-byte message | **0.145 ms** | 0.182 ms | **1.26x** |
+| ML-DSA-87 sign, 32-byte message | **0.858 ms** | 1.000 ms | **1.21x** |
+| ML-DSA-87 verify, 32-byte message | **0.253 ms** | 0.301 ms | **1.17x** |
+
+The NTT now uses fixed-modulus Montgomery products in its butterflies and pointwise
+multiplication instead of a 64-bit division per coefficient. Bit packing uses a 64-bit
+reservoir, and SHAKE rejection samplers consume complete rate blocks while preserving byte and
+nibble order. The exact FIPS 204 Appendix B twiddle table remains exposed in normal form; a
+separate multiplication form is derived once for the hot loops. Official signing and
+verification vectors, ring reference products, codec boundaries, malformed signatures, and the
+public wrapper all passed after the change. All six directly comparable ML-DSA rows exceed the
+0.90 threshold on this host. This performance result does not make signing constant-time: the
+standard rejection loop still has a nonce-dependent attempt count, which remains a separate
+timing-review item.
+
+### Current Ed25519 comparison
+
+The Ed25519 row was refreshed on 2026-10-18 in WSL2 Ubuntu using GCC 13.3.0 and OpenSSL 3.0.13.
+The Release build enabled the native radix-51 field path. Eleven focused `--ed25519` harness runs were made; each run
+measured each side independently and took the fastest of five 200-operation batches. The table
+reports the median rounded latency and the median of each run's reported performance ratio.
+
+| Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
+|---|---:|---:|---:|
+| Ed25519 sign, 32-byte message | **0.024 ms** | 0.036 ms | **1.53x** |
+| Ed25519 verify, 32-byte message | **0.077 ms** | 0.098 ms | **1.28x** |
+
+The eleven certpp/OpenSSL performance ratios had medians of 1.53 for signing and 1.28 for
+verification. The implementation reaches those results by using affine precomputed fixed-base
+points, loose additions consumed immediately by field multiplication, a generated squaring kernel,
+a shared-doubling `S*B - k*A` verifier, and an odd-multiple table stored with each public key.
+Verification still requires imported public keys to be in the prime-order subgroup. It omits a
+separate `L*R` multiplication because the exact uncofactored equation, with `A` already in that
+subgroup, can accept only an `R` in the same subgroup. Canonical decoding, on-curve recovery, and
+identity rejection remain, and a dedicated order-two `R` negative test covers this boundary.
+
+### Current X25519 comparison
+
+The X25519 rows were refreshed on 2026-10-18 in a static Windows x86-64 Release build using Clang
+22.1.8, the native radix-51 field path, and OpenSSL 3.6.4 from MSYS2 MinGW64. Fifteen focused
+`--x25519` runs pinned the process to logical processor 0 at high priority and measured each
+implementation independently. Each program row is the fastest of five 200-operation batches per
+side; the table reports median rounded latency and the median of the 15 per-run performance
+ratios.
+
+| Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
+|---|---:|---:|---:|
+| X25519 keygen | **0.032 ms** | 0.033 ms | **1.035x** |
+| X25519 derive | 0.032 ms | **0.029 ms** | **0.909x** |
+
+Relative to the earlier 0.139/0.136 ms portable measurements, radix-51 first reached
+0.049/0.048 ms in WSL. Two-chain carry reduction and a dedicated square schedule then shortened
+the field work; whole-ladder runtime dispatch selects a generic AVX2/BMI2/ADX body or an exact
+Tiger Lake body, with a portable fallback. Key construction clamps once, and a context reuses its
+validated bound private and peer key objects. The current keygen and derive medians both meet the
+90% completion threshold. RFC 7748 known-answer and repeated-iteration vectors, exact-arithmetic
+field checks, cross-implementation shared-secret checks, non-canonical-u handling, and low-order
+peer rejection remain the acceptance boundary for later changes.
+
+### Current Ed448 comparison
+
+The Ed448 rows were refreshed on 2026-10-18 in WSL2 Ubuntu with GCC 13.3.0 and OpenSSL 3.0.13.
+The Windows MinGW64 compiler installation could not start `cc1plus.exe` and exited with
+`0xC0000139`, so both sides were built and measured in the same WSL environment instead. Eleven
+focused `--ed448` runs were made; each side was measured independently and each run took the
+fastest of five 20-operation batches. The table reports median rounded latency and the median of
+the per-run performance ratios.
+
+| Operation | certpp | OpenSSL EVP | certpp / OpenSSL performance |
+|---|---:|---:|---:|
+| Ed448 sign, 32-byte message | **0.139 ms** | 0.200 ms | **1.48x** |
+| Ed448 verify, 32-byte message | 0.191 ms | **0.188 ms** | **0.99x** |
+
+The field implementation uses eight radix-2^56 limbs where a native 128-bit product is available
+and sixteen radix-2^28 limbs otherwise. Fixed exponent chains replace general big-number field
+inversion and square roots. Mixed precomputed addition and 10-column comb tables reduce base-point
+multiplication and joint `S*B - k*A` verification to 45 online doubling rows; the public-key table
+is retained for repeated verification. Imported public keys still undergo the full subgroup check.
+Signature `R` retains canonical, on-curve, and identity checks; the exact uncofactored equation
+permits the redundant `L*R` multiplication to be omitted, with an order-two `R` negative test
+covering that boundary. RFC 8032, malformed-input, altered-message/signature, wrong-key, and field
+arithmetic tests pass on the native WSL layout and the 16-limb MSVC fallback. Comb lookup indices
+depend on the scalar, so these measurements do not support a constant-time claim for signing.
 
 ### Earlier full comparison
 

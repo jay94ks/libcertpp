@@ -9,12 +9,12 @@ optimizations, investigations, and negative results are recorded in
 
 ## Security work
 
-- **Finish constant-time prime-curve ECDH and ECDSA signing.** The ladder now
-  processes the full group-order width, masked-swaps its registers, and uses no
-  secret-indexed fixed-base table. The remaining blocker is `CBigNum` itself:
-  it allocates and trims variable-width limbs and its arithmetic has
-  operand-dependent cost. A shared fixed-width field strategy is still needed
-  across the supported prime curves.
+- **Finish the portable constant-time prime-curve fallback.** Native x86-64
+  Clang/GCC builds now keep field coordinates in fixed-width Montgomery limbs,
+  scan every private-window candidate, and process the full group-order width.
+  The portable fallback still uses `CBigNum`, whose allocation, limb trimming,
+  and arithmetic have operand-dependent cost. Replace that fallback or keep its
+  variable-time boundary explicit before making a platform-independent claim.
 - **Audit ML-DSA signing for timing leakage.** The retry count in
   Fiat-Shamir-with-aborts is data-dependent by design. The current
   implementation zeroizes secret intermediates and avoids secret-indexed
@@ -71,41 +71,66 @@ Direct whole-block streaming subsequently raised AES-128/192/256-CBC to about
 one permutation pair per TripleDES EDE block, and direct CBC streaming subsequently raised DES
 and 2-key 3DES-CBC to about 1.04 and 1.01, so both now meet the threshold. An expanded 32-bit
 S-box/diffusion path and direct CBC loop subsequently raised all three ARIA rows to about
-1.03--1.04, so they now meet the threshold. Ed25519 signing is about 0.65 and verification about
-0.27. Streebog is unavailable from the tested
+1.03--1.04, so they now meet the threshold. Mixed precomputed point addition, generated field
+squaring, joint verification, per-public-key odd-multiple tables, and the native radix-51 field
+path subsequently raised Ed25519 signing/verification to about 1.53/1.28, so both meet the
+threshold. Streebog is unavailable
+from the tested
 OpenSSL default and legacy providers. The next inventory stage added AEAD,
-X25519, ML-KEM, Ed448, and ML-DSA. The largest new gaps are AES-256-GCM bulk at
-about 0.27 after its first CTR/GHASH optimization, Ed448 verification at about
-0.03 after dedicated doubling and a joint public-scalar verifier, X25519 key
-generation at about 0.24 after removing its redundant derived-point cofactor
-ladder, and ML-KEM operations at about 0.30--0.52. ML-DSA operations currently
-range from about 0.64 to 0.78 and remain
-below the threshold. XChaCha20-Poly1305 is unavailable through the
+X25519, ML-KEM, Ed448, and ML-DSA. Fixed-width Fe448 arithmetic, mixed point
+addition, and 10-column comb tables subsequently raised Ed448 signing and
+verification to about 1.48/0.99 in the matched WSL comparison, so both rows now
+meet the threshold. The native radix-51 field path and flattened ladder first raised X25519 key
+generation/derivation from about 0.24/0.21 to about 0.77/0.62. Two-chain carry reduction,
+dedicated squaring, CPU-tuned whole-ladder dispatch, and bound-key caching subsequently raised
+the matched Windows medians to about 1.03/0.91, so both now meet the threshold. Bit-reservoir
+codecs, fixed-lane CBD sampling, bounded NTT reduction, and prepared
+key material subsequently raised the nine ML-KEM keygen/encapsulate/decapsulate rows to
+seven-run median ratios of 1.07--1.25, so all three parameter sets now meet the threshold.
+Fixed-modulus Montgomery NTT products, reservoir bit packing, and rate-block SHAKE sampling
+subsequently raised the six ML-DSA sign/verify rows to seven-run median ratios of 1.17--1.38,
+so all three parameter sets now meet the threshold.
+Sixteen-block fused VAES/GHASH processing subsequently raised AES-256-GCM bulk and short-record
+rows to about 0.90/0.93. Thirty-two-block IFMA aggregation raised ChaCha20-Poly1305 bulk and
+short-record rows to about 0.92/0.97. These AEAD rows now meet the threshold but remain
+remeasure-sensitive. The classical asymmetric rows remain the largest direct gaps.
+XChaCha20-Poly1305 is unavailable through the
 tested OpenSSL EVP interface. The next inventory stage covered all 20 prime-field ECDSA/ECDH
 curves and all 10 binary ECDSA curves with bidirectional interoperability; prime-curve ECDH also
 checks the exact cross-implementation secret. A joint public-scalar multiplication improved ECDSA
 verification by about 2.3x on representative prime curves and 1.9--2.0x on representative binary
-curves. Current prime-curve operations range from below 0.01 to about 0.27 of OpenSSL;
-binary-curve operations range from about 0.08 to 0.77. The next inventory stage added RSA-2048
+curves. Fixed-width Montgomery fields and private windows first brought 72 of the 80 prime-curve
+rows to the threshold. Fixed-count multiplication kernels and key-bound width-six verification
+tables then raised every remaining non-P-256 row above 0.90. Only the four P-256 operations remain,
+at 0.302--0.403. Fixed-count PCLMUL product and square kernels, descending word reduction, mixed
+Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
+binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
 and DSA-2048 with bidirectional signature interoperability and altered-digest rejection.
-Montgomery-backed Miller--Rabin, a sliding window for long exponents, and a joint public-exponent
-DSA verifier improved the initial measurements substantially, but current three-run median ratios
-remain about 0.05/0.06/0.11 for RSA keygen/sign/verify and 0.10/0.14/0.09 for DSA. OpenSSL
+Montgomery-backed Miller--Rabin, sliding windows, and joint public-exponent verification improved
+the initial measurements substantially. Cached RSA modulus contexts, packed 64-bit chains for both
+short and long exponents, a packed two-base DSA verifier, and binary modular inversion first raised
+the comparison substantially. An integrated CIOS pass now advances product and reduction carries
+together, while a two-bit simultaneous DSA window reduces verification multiplications. Fresh
+eleven-run pinned Windows medians are about 0.36/0.27/0.61 for RSA and 0.61/0.65/0.48 for DSA
+keygen/sign/verify; randomized prime search still gives the key-generation rows much wider run-to-run
+variance than signing and verification. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
 
-- **Profile the remaining RSA/DSA arithmetic gap.** The division-free paths removed the known
-  `divMod()` bottleneck, but OpenSSL still has much faster limb assembly and exponentiation.
-  Profile the current native GCC build before changing multiplication, reduction, or window size;
-  keep the existing CRT fault check and the documented variable-time boundary intact.
-- **Profile binary curves on GCC.** All ten GF(2^m) curves moved in the same
-  direction in the WSL2 comparison, pointing to shared `CGf2m` code. Reproduce
-  on bare-metal Linux and isolate the shared cost before proposing an
-  optimization.
-- **Evaluate a verify-time public-key table.** Signature verification uses a
-  variable base, but a certificate issuer key is commonly reused. Measure
-  whether caching a table per public key improves that workload without adding
-  unacceptable memory or setup cost.
+- **Profile the remaining RSA/DSA arithmetic gap.** Packed chains removed the repeated 32/64-bit
+  conversion cost, integrated CIOS removed the second accumulator pass, and binary inversion removed
+  quotient-sized extended-Euclidean work, but OpenSSL still has much faster Montgomery multiplication
+  and prime-generation arithmetic. Profile the
+  current native GCC build before changing the reduction kernel; keep the existing CRT fault check
+  and the documented variable-time boundary intact.
+- **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
+  unrolled four-limb Montgomery kernel, batch-normalized four-bit base table, and prepared public
+  verification tables raised the four ratios to 0.302--0.403, but all remain below the gate.
+  Profile the generated field instructions before adding another specialized arithmetic path.
+- **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
+  multiples with each public key, while Ed448 stores a larger comb table. Measure the same
+  setup-time, memory, and repeated-verification tradeoff for ECDSA, DSA, and other remaining
+  variable-base signature implementations.
 
 Any optimization begins with a reproducible baseline and a profile. Changes
 smaller than the benchmark machine's run-to-run spread are not treated as

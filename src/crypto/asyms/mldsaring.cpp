@@ -4,6 +4,54 @@
 namespace certpp {
 namespace crypto {
 
+    namespace {
+
+        /* q^(-1) mod 2^32, used by the FIPS 204 reference Montgomery reduction. The low
+         * 32 bits of value * Q_INVERSE choose a multiple of q that makes the subtraction
+         * divisible by 2^32. Inputs in this file are bounded by q^2, so the result is in
+         * (-q, q) and one branch-free correction produces the canonical representative. */
+        constexpr uint32_t Q_INVERSE = 58728449u;
+        constexpr int64_t MONTGOMERY_R = int64_t(1) << 32;
+        constexpr int32_t R_MOD_Q = 4193792;
+        constexpr int32_t R_SQUARED_MOD_Q = 2365951;
+
+        static_assert(
+            (uint64_t(MlDsaRing::Q) * Q_INVERSE) % uint64_t(MONTGOMERY_R) == 1,
+            "ML-DSA Montgomery inverse is wrong");
+
+        int32_t canonicalMontgomeryReduce(int64_t value) {
+            const int32_t multiple = int32_t(uint32_t(value) * Q_INVERSE);
+            int64_t reduced = (value - int64_t(multiple) * MlDsaRing::Q) >> 32;
+            reduced += int64_t(uint64_t(reduced) >> 63) * MlDsaRing::Q;
+            return int32_t(reduced);
+        }
+
+        int32_t multiplyByMontgomery(int32_t value, int32_t montgomeryFactor) {
+            return canonicalMontgomeryReduce(int64_t(value) * montgomeryFactor);
+        }
+
+        int32_t multiplyCanonical(int32_t left, int32_t right) {
+            const int32_t leftMontgomery = canonicalMontgomeryReduce(
+                int64_t(left) * R_SQUARED_MOD_Q);
+            return canonicalMontgomeryReduce(int64_t(leftMontgomery) * right);
+        }
+
+        int32_t addCanonical(int32_t left, int32_t right) {
+            int32_t sum = left + right - MlDsaRing::Q;
+            sum += int32_t(uint32_t(sum) >> 31) * MlDsaRing::Q;
+            return sum;
+        }
+
+        int32_t subtractCanonical(int32_t left, int32_t right) {
+            int32_t difference = left - right;
+            difference += int32_t(uint32_t(difference) >> 31) * MlDsaRing::Q;
+            return difference;
+        }
+
+        const int32_t* montgomeryZetas();
+
+    } // namespace
+
     /* Reverses the low 8 bits of index. */
     size_t MlDsaRing::bitRev8(size_t index) {
         size_t out = 0;
@@ -46,6 +94,29 @@ namespace crypto {
 
         return table.values;
     }
+
+    namespace {
+
+        /* The public/internal zetas() contract is the exact Appendix B table. Keep it in normal
+         * form for tests and diagnostics, and derive this multiplication form once for hot NTT
+         * loops rather than changing what zetas() exposes. */
+        const int32_t* montgomeryZetas() {
+            static const struct Table {
+                int32_t values[MlDsaRing::N];
+
+                Table() {
+                    const int32_t* normal = MlDsaRing::zetas();
+                    for (size_t i = 0; i < MlDsaRing::N; ++i) {
+                        values[i] = int32_t(
+                            (int64_t(normal[i]) * R_MOD_Q) % MlDsaRing::Q);
+                    }
+                }
+            } table;
+
+            return table.values;
+        }
+
+    } // namespace
 
     /* Reduces value into [0, Q). */
     int32_t MlDsaRing::reduce(int64_t value) {
@@ -116,7 +187,7 @@ namespace crypto {
 
     /* Forward NTT, in place (FIPS 204 Algorithm 41). */
     void MlDsaRing::ntt(Poly& poly) {
-        const int32_t* z = zetas();
+        const int32_t* z = montgomeryZetas();
         int32_t* f = poly.coeffs;
 
         // --> Cooley-Tukey, and unlike ML-KEM's this runs all the way down to length 1: eight
@@ -130,13 +201,13 @@ namespace crypto {
         for (size_t length = 128; length >= 1; length >>= 1) {
             for (size_t start = 0; start < N; start += 2 * length) {
                 ++m;
-                const int64_t zeta = int64_t(z[m]);
+                const int32_t zeta = z[m];
 
                 for (size_t j = start; j < start + length; ++j) {
-                    const int64_t t = (zeta * int64_t(f[j + length])) % Q;
+                    const int32_t t = multiplyByMontgomery(f[j + length], zeta);
 
-                    f[j + length] = reduce(int64_t(f[j]) - t);
-                    f[j] = reduce(int64_t(f[j]) + t);
+                    f[j + length] = subtractCanonical(f[j], t);
+                    f[j] = addCanonical(f[j], t);
                 }
             }
         }
@@ -144,7 +215,7 @@ namespace crypto {
 
     /* Inverse NTT, in place (FIPS 204 Algorithm 42). */
     void MlDsaRing::inverseNtt(Poly& poly) {
-        const int32_t* z = zetas();
+        const int32_t* z = montgomeryZetas();
         int32_t* f = poly.coeffs;
 
         // Gentleman-Sande, walking the same twiddle table backwards and negating each entry.
@@ -153,20 +224,22 @@ namespace crypto {
         for (size_t length = 1; length < N; length <<= 1) {
             for (size_t start = 0; start < N; start += 2 * length) {
                 --m;
-                const int64_t zeta = -int64_t(z[m]);
+                const int32_t zeta = Q - z[m];
 
                 for (size_t j = start; j < start + length; ++j) {
-                    const int64_t t = int64_t(f[j]);
-                    const int64_t u = int64_t(f[j + length]);
+                    const int32_t t = f[j];
+                    const int32_t u = f[j + length];
 
-                    f[j] = reduce(t + u);
-                    f[j + length] = reduce(zeta * (t - u));
+                    f[j] = addCanonical(t, u);
+                    f[j + length] = multiplyByMontgomery(subtractCanonical(t, u), zeta);
                 }
             }
         }
 
+        const int32_t inverseMontgomery = int32_t(
+            (int64_t(N_INVERSE) * R_MOD_Q) % Q);
         for (size_t i = 0; i < N; ++i) {
-            f[i] = reduce(int64_t(f[i]) * int64_t(N_INVERSE));
+            f[i] = multiplyByMontgomery(f[i], inverseMontgomery);
         }
     }
 
@@ -177,7 +250,7 @@ namespace crypto {
         // and a second twiddle table; neither exists here, and expecting one is the easiest way
         // to misread this ring as the other.
         for (size_t i = 0; i < N; ++i) {
-            out.coeffs[i] = reduce(int64_t(a.coeffs[i]) * int64_t(b.coeffs[i]));
+            out.coeffs[i] = multiplyCanonical(a.coeffs[i], b.coeffs[i]);
         }
     }
 

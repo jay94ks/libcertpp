@@ -152,12 +152,12 @@ ABI 경계를 넘나들고 새 해시가 뒤에 추가되지만, 숫자 자체�
 
 **`CBigNum`은 constant-time이 아니며**, 그 자신의 문서에도 그렇게 적혀
 있습니다. 선행 0 limb를 잘라내고 가변 크기 산술을 사용하므로 연산 비용이
-피연산자에 따라 달라집니다. `condSwap()`은 이제 기존 limb를 mask로 교환하고,
-소수 곡선 스칼라 곱은 고정된 군 너비의 ladder를 사용하며, 고정 기저 곱도 더는
-비밀에 따른 테이블 조회를 하지 않습니다. 이 국소 변경들이 가변 폭 백엔드 전체를
-constant-time으로 만들지는 않으므로 소수체 곡선 ECDSA와 ECDH에는 여전히 타이밍
-위험이 있습니다. 프로토콜이 허용한다면 고정 폭 `Fe25519`를 쓰는 X25519를
-권합니다.
+피연산자에 따라 달라집니다. 네이티브 64×64→128 빌드는 소수 곡선 좌표를 고정 폭
+Montgomery 체에 보관하고 private-scalar window 표의 모든 항목을 스캔하며, fallback은
+mask 기반 `CBigNum` swap을 사용합니다. 어느 경로도 private 스칼라를 표 인덱스로 쓰지
+않습니다. 예외 점 처리는 여전히 데이터 의존 제어 흐름을 가지며 fallback에는 가변 폭
+산술도 남아 있으므로 소수체 곡선 ECDSA와 ECDH에는 타이밍 위험이 있습니다. 프로토콜이
+허용한다면 고정 폭 `Fe25519`를 쓰는 X25519를 권합니다.
 
 **`CEcCurve::linearCombination()`과 `CEc2Curve::linearCombination()`에는 공개
 스칼라만 전달해야 합니다.** 이 메서드들은 서명 검증을 가속하려고 스칼라 비트에 따라
@@ -176,7 +176,9 @@ private 값에는 `scalarMul()` 또는 `scalarMulBase()`를 사용하십시오.
 확인하거나, 어떤 modulus든 처리하는 `CBigNum::mod()`를 쓰세요 —
 `CMontgomery`를 추가하면서 `CBigNum::mod()`, `mulMod()`, `divMod()`는 바이트
 단위로 그대로 두었으므로, 일반 경로는 여전히 그 자리에 있고 여전히
-정확합니다.
+정확합니다. `modExp()`와 `modExpProduct()`는 지수 비트에 따라 분기하고
+`CBigNum`의 variable-time 제한을 이어받습니다. 둘을 constant-time 개인 지수
+primitive로 취급하면 안 됩니다.
 
 ## 식별 이름(DN)
 
