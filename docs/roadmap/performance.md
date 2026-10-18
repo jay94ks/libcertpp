@@ -101,8 +101,10 @@ checks the exact cross-implementation secret. A joint public-scalar multiplicati
 verification by about 2.3x on representative prime curves and 1.9--2.0x on representative binary
 curves. Fixed-width Montgomery fields and private windows first brought 72 of the 80 prime-curve
 rows to the threshold. Fixed-count multiplication kernels and key-bound width-six verification
-tables then raised every remaining non-P-256 row above 0.90. Only the four P-256 operations remain,
-at 0.302--0.403. Fixed-count PCLMUL product and square kernels, descending word reduction, mixed
+tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit P-256 base table,
+one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
+the four P-256 rows to five-run medians of 0.318--0.614. They remain the only four prime-curve rows
+below the gate. Fixed-count PCLMUL product and square kernels, descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
 binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
 and DSA-2048 with bidirectional signature interoperability and altered-digest rejection.
@@ -127,9 +129,14 @@ keeps an internal before/after baseline and an explicit unavailable result.
   carry-chain design rather than a generic full-product buffer. Keep the existing CRT fault check
   and the documented variable-time boundary intact.
 - **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
-  unrolled four-limb Montgomery kernel, batch-normalized four-bit base table, and prepared public
-  verification tables raised the four ratios to 0.302--0.403, but all remain below the gate.
-  Profile the generated field instructions before adding another specialized arithmetic path.
+  unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
+  masked private-table selection, and width-eight prepared verification tables raised the four
+  ratios to 0.318--0.614, but all remain below the gate. A symmetric full-product squaring path was
+  correct against the external vectors but 20--34% slower because carry propagation and a separate
+  reduction outweighed the six saved products. A five-bit private variable-base window was also
+  slightly slower, while a four-bit sliding inversion changed the focused medians by too little to
+  separate from run variation. Further work needs a generated carry-chain or a whole point-operation
+  hardware target rather than another generic full-product buffer.
 - **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
   multiples with each public key, while Ed448 stores a larger comb table. Measure the same
   setup-time, memory, and repeated-verification tradeoff for ECDSA, DSA, and other remaining

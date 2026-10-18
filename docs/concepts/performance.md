@@ -331,26 +331,26 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 
 | Curve | Keygen | ECDSA sign | ECDSA verify | ECDH derive |
 |---|---:|---:|---:|---:|
-| P-192 | 2.095x | 1.862x | 1.560x | 1.975x |
-| P-224 | 1.891x | 1.743x | 1.451x | 1.814x |
-| P-256 | 0.403x | 0.345x | 0.315x | 0.302x |
-| P-384 | 1.712x | 1.647x | 1.301x | 1.673x |
-| P-521 | 1.632x | 1.567x | 1.225x | 1.598x |
-| secp256k1 | 1.999x | 1.854x | 1.523x | 1.929x |
-| brainpoolP160r1 | 2.136x | 1.857x | 1.586x | 1.931x |
-| brainpoolP192r1 | 2.121x | 1.884x | 1.598x | 1.967x |
-| brainpoolP224r1 | 1.872x | 1.742x | 1.484x | 1.796x |
-| brainpoolP256r1 | 1.853x | 1.712x | 1.478x | 1.778x |
-| brainpoolP320r1 | 1.670x | 1.584x | 1.340x | 1.597x |
-| brainpoolP384r1 | 1.638x | 1.549x | 1.362x | 1.593x |
-| brainpoolP512r1 | 1.139x | 1.083x | 0.918x | 1.122x |
-| brainpoolP160t1 | 2.034x | 1.781x | 1.554x | 1.873x |
-| brainpoolP192t1 | 2.036x | 1.810x | 1.563x | 1.934x |
-| brainpoolP224t1 | 1.881x | 1.705x | 1.434x | 1.836x |
-| brainpoolP256t1 | 1.834x | 1.699x | 1.438x | 1.794x |
-| brainpoolP320t1 | 1.733x | 1.650x | 1.171x | 1.688x |
-| brainpoolP384t1 | 1.691x | 1.620x | 1.293x | 1.668x |
-| brainpoolP512t1 | 1.204x | 1.138x | 0.916x | 1.176x |
+| P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
+| P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
+| P-256 | 0.614x | 0.434x | 0.361x | 0.318x |
+| P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
+| P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
+| secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
+| brainpoolP160r1 | 2.223x | 2.022x | 1.888x | 2.094x |
+| brainpoolP192r1 | 2.250x | 2.000x | 1.830x | 2.174x |
+| brainpoolP224r1 | 1.967x | 1.816x | 1.624x | 1.912x |
+| brainpoolP256r1 | 2.073x | 1.816x | 1.708x | 1.866x |
+| brainpoolP320r1 | 1.714x | 1.680x | 1.483x | 1.674x |
+| brainpoolP384r1 | 1.710x | 1.595x | 1.417x | 1.663x |
+| brainpoolP512r1 | 1.176x | 1.091x | 1.001x | 1.200x |
+| brainpoolP160t1 | 2.182x | 1.915x | 1.879x | 2.072x |
+| brainpoolP192t1 | 2.152x | 1.977x | 1.833x | 2.100x |
+| brainpoolP224t1 | 2.041x | 1.930x | 1.636x | 2.050x |
+| brainpoolP256t1 | 1.971x | 1.831x | 1.638x | 1.905x |
+| brainpoolP320t1 | 1.803x | 1.756x | 1.441x | 1.713x |
+| brainpoolP384t1 | 1.808x | 1.666x | 1.427x | 1.706x |
+| brainpoolP512t1 | 1.278x | 1.199x | 1.012x | 1.288x |
 | B-163 | 1.762x | 1.188x | 1.565x | unavailable |
 | K-163 | 1.689x | 1.121x | 1.487x | unavailable |
 | B-233 | 1.785x | 1.191x | 1.543x | unavailable |
@@ -373,11 +373,16 @@ Public verification remains deliberately variable-time because both verification
 public; private scalar paths retain their existing control-flow policy.
 
 The prime-field refresh puts 76 of 80 directly comparable operations at or above the 0.90 gate;
-only the four P-256 operations remain. P-256 measured 0.046/0.060/0.188/0.148 ms for certpp key
-generation/signing/verification/ECDH and 0.019/0.021/0.059/0.045 ms for OpenSSL. Fixed-count
-Montgomery kernels removed runtime limb loops on every curve. Verification contexts additionally
-prepare width-six affine odd-multiple tables when a key is bound, so repeated verification does
-not rebuild or normalize either public table.
+only the four P-256 operations remain. In the five complete inventory runs, P-256 measured
+0.031/0.055/0.183/0.144 ms for certpp key generation/signing/verification/ECDH and
+0.023/0.022/0.064/0.046 ms for OpenSSL. An additional eleven-run P-256-only check produced paired
+median ratios of 0.680/0.508/0.358/0.331 and lower certpp medians of
+0.028/0.042/0.167/0.137 ms, illustrating the host's short-run frequency variation without changing
+which rows remain open. P-256 now uses a compact 37-row, seven-bit affine base table. One-way
+masked assignment halves the selection writes relative to swapping both operands, and the wider
+table reduces private fixed-base additions while still scanning every entry. Verification contexts
+cache width-eight affine odd multiples directly as Montgomery limbs, so repeated verification does
+not reconstruct or normalize either public table or convert its coordinates through `CBigNum`.
 
 Ed448 now uses fixed-width Fe448 arithmetic and 10-column comb tables for the base point and each
 public key. The current matched result and its validation are recorded in

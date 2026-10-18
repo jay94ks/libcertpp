@@ -328,6 +328,14 @@ namespace crypto {
                     right.limbs[i] ^= difference;
                 }
             }
+
+            void conditionalAssign(uint64_t assign, Value& destination, const Value& source) const {
+                const uint64_t mask = uint64_t(0) - assign;
+                for (size_t i = 0; i < _count; ++i) {
+                    destination.limbs[i] ^=
+                        (destination.limbs[i] ^ source.limbs[i]) & mask;
+                }
+            }
         };
 
         struct FastEcPoint {
@@ -337,10 +345,15 @@ namespace crypto {
         };
 
         struct FastP256CombTable {
-            static constexpr size_t WINDOW_BITS = 4;
+            static constexpr size_t WINDOW_BITS = 7;
             static constexpr size_t ROWS = (256 + WINDOW_BITS - 1) / WINDOW_BITS;
             static constexpr size_t ENTRIES = size_t(1) << WINDOW_BITS;
-            FastEcPoint points[ROWS][ENTRIES];
+            struct AffinePoint {
+                uint64_t x[4] = {};
+                uint64_t y[4] = {};
+            };
+            AffinePoint points[ROWS][ENTRIES];
+            bool valid = false;
         };
 
         FastEcPoint fastInfinity(
@@ -358,6 +371,15 @@ namespace crypto {
             field.conditionalSwap(swap, left.x, right.x);
             field.conditionalSwap(swap, left.y, right.y);
             field.conditionalSwap(swap, left.z, right.z);
+        }
+
+        void fastConditionalAssign(
+            const FastPrimeField& field, uint64_t assign,
+            FastEcPoint& destination, const FastEcPoint& source
+        ) {
+            field.conditionalAssign(assign, destination.x, source.x);
+            field.conditionalAssign(assign, destination.y, source.y);
+            field.conditionalAssign(assign, destination.z, source.z);
         }
 
         FastEcPoint fastNegate(
@@ -601,16 +623,15 @@ namespace crypto {
                     (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
                 const size_t tableDigit = digit | (nonZero ^ size_t(1));
                 FastEcPoint selected = table[1];
-                for (size_t i = 1; i < TABLE_SIZE; ++i) {
-                    FastEcPoint candidate = table[i];
-                    fastConditionalSwap(
-                        field, uint64_t(i == tableDigit), selected, candidate);
+                for (size_t i = 2; i < TABLE_SIZE; ++i) {
+                    fastConditionalAssign(
+                        field, uint64_t(i == tableDigit), selected, table[i]);
                 }
 
-                FastEcPoint unchanged = accumulator;
                 FastEcPoint sum = fastAdd(
                     accumulator, selected, field, aMont, one, aMinusThree);
-                fastConditionalSwap(field, uint64_t(nonZero ^ size_t(1)), sum, unchanged);
+                fastConditionalAssign(
+                    field, uint64_t(nonZero ^ size_t(1)), sum, accumulator);
                 accumulator = sum;
             }
             return accumulator;
@@ -659,15 +680,15 @@ namespace crypto {
     }
 
     bool PreparePrimeWnafTable(
-        const CEcCurve& curve, const SEcPoint& point, TArray<SEcPoint>& out
+        const CEcCurve& curve, const SEcPoint& point, FastPrimeWnafTable& out
     ) {
-        out.resize(0);
+        out.clear();
         if (point.infinity) {
             return false;
         }
 
 #if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
-        constexpr size_t TABLE_SIZE = 16;
+        constexpr size_t TABLE_SIZE = FastPrimeWnafTable::TABLE_SIZE;
         const CMontgomery montgomery(curve.p);
         const FastPrimeField field(curve.p);
         CBigNum pMinusThree(curve.p);
@@ -694,13 +715,13 @@ namespace crypto {
         FastPrimeField::Value prefixes[TABLE_SIZE];
         fastBatchNormalize(table, TABLE_SIZE, field, one, prefixes);
 
-        if (!out.resize(TABLE_SIZE)) {
+        static_assert(TABLE_SIZE == FastPrimeWnafTable::TABLE_SIZE, "table size mismatch");
+        if (!out.resize(field.count())) {
             return false;
         }
         for (size_t i = 0; i < TABLE_SIZE; ++i) {
-            CBigNum x = montgomery.fromMont(field.store(table[i].x));
-            CBigNum y = montgomery.fromMont(field.store(table[i].y));
-            out[i] = SEcPoint(std::move(x), std::move(y));
+            std::memcpy(out.x(i), table[i].x.limbs, field.count() * sizeof(uint64_t));
+            std::memcpy(out.y(i), table[i].y.limbs, field.count() * sizeof(uint64_t));
         }
         return true;
 #else
@@ -711,45 +732,33 @@ namespace crypto {
 
     bool FastPrimeLinearCombinationPrepared(
         const CEcCurve& curve,
-        const CBigNum& firstScalar, const TArray<SEcPoint>& firstTable,
-        const CBigNum& secondScalar, const TArray<SEcPoint>& secondTable,
+        const CBigNum& firstScalar, const FastPrimeWnafTable& firstTable,
+        const CBigNum& secondScalar, const FastPrimeWnafTable& secondTable,
         SEcPoint& out
     ) {
 #if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
-        constexpr size_t TABLE_SIZE = 16;
-        if (firstTable.size() != TABLE_SIZE || secondTable.size() != TABLE_SIZE) {
-            return false;
-        }
-
         const CMontgomery montgomery(curve.p);
         const FastPrimeField field(curve.p);
+        if (!field.valid() || !firstTable.validFor(field.count())
+            || !secondTable.validFor(field.count())) {
+            return false;
+        }
         CBigNum pMinusThree(curve.p);
         pMinusThree.sub(CBigNum(uint64_t(3)));
         const bool aMinusThree = curve.a == pMinusThree;
         FastPrimeField::Value one;
         FastPrimeField::Value aMont;
-        FastEcPoint tables[2][TABLE_SIZE];
         if (!montgomery.isValid() || !field.valid()
             || !field.load(montgomery.one(), one)
             || !field.load(montgomery.toMont(curve.a), aMont)) {
             return false;
         }
-        for (size_t i = 0; i < TABLE_SIZE; ++i) {
-            if (firstTable[i].infinity || secondTable[i].infinity
-                || !field.load(montgomery.toMont(firstTable[i].x), tables[0][i].x)
-                || !field.load(montgomery.toMont(firstTable[i].y), tables[0][i].y)
-                || !field.load(montgomery.toMont(secondTable[i].x), tables[1][i].x)
-                || !field.load(montgomery.toMont(secondTable[i].y), tables[1][i].y)) {
-                return false;
-            }
-            tables[0][i].z = one;
-            tables[1][i].z = one;
-        }
 
-        const TArray<int8_t> firstDigits = computeWnaf(firstScalar, 6);
-        const TArray<int8_t> secondDigits = computeWnaf(secondScalar, 6);
+        const TArray<int8_t> firstDigits = computeWnaf(firstScalar, 8);
+        const TArray<int8_t> secondDigits = computeWnaf(secondScalar, 8);
         const size_t iterations = firstDigits.size() > secondDigits.size()
             ? firstDigits.size() : secondDigits.size();
+        const FastPrimeWnafTable* tables[2] = { &firstTable, &secondTable };
         FastEcPoint accumulator = fastInfinity(field, one);
         for (size_t i = iterations; i-- > 0; ) {
             accumulator = fastDouble(accumulator, field, aMont, one, aMinusThree);
@@ -762,8 +771,15 @@ namespace crypto {
                 if (digit == 0) {
                     continue;
                 }
-                FastEcPoint addend = tables[which][
-                    (digit < 0 ? -digit : digit) / 2];
+                const size_t index = size_t(digit < 0 ? -digit : digit) / 2;
+                FastEcPoint addend;
+                std::memcpy(
+                    addend.x.limbs, tables[which]->x(index),
+                    field.count() * sizeof(uint64_t));
+                std::memcpy(
+                    addend.y.limbs, tables[which]->y(index),
+                    field.count() * sizeof(uint64_t));
+                addend.z = one;
                 if (digit < 0) {
                     addend = fastNegate(addend, field);
                 }
@@ -1577,7 +1593,7 @@ namespace crypto {
     }
 
     /* Fixed-base multiplication with full-scan tables, so secret scalar bits never become memory
-     * indexes. The native fixed-width path caches a 64-row, four-bit comb only after every
+     * indexes. The native fixed-width path caches a compact 37-row, seven-bit comb only after every
      * standard P-256 parameter and the generator compare equal; mutable or other parameters build
      * a four-bit table per call. The portable CBigNum path always builds that per-call four-bit
      * table. */
@@ -1619,13 +1635,22 @@ namespace crypto {
                 if (standardP256) {
                     static const FastP256CombTable comb = [&] {
                         FastP256CombTable built;
+                        constexpr size_t POINTS =
+                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES;
+                        TArray<FastEcPoint> projective;
+                        TArray<FastPrimeField::Value> prefixes;
+                        if (!projective.resize(POINTS) || !prefixes.resize(POINTS)) {
+                            return built;
+                        }
                         FastEcPoint windowBase = fastBase;
                         for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                            built.points[window][0] = fastInfinity(fastField, fastOne);
-                            built.points[window][1] = windowBase;
+                            FastEcPoint* row = projective.begin()
+                                + window * FastP256CombTable::ENTRIES;
+                            row[0] = fastInfinity(fastField, fastOne);
+                            row[1] = windowBase;
                             for (size_t digit = 2; digit < FastP256CombTable::ENTRIES; ++digit) {
-                                built.points[window][digit] = fastAdd(
-                                    built.points[window][digit - 1], windowBase,
+                                row[digit] = fastAdd(
+                                    row[digit - 1], windowBase,
                                     fastField, fastA, fastOne, fastAMinusThree);
                             }
                             for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
@@ -1633,40 +1658,60 @@ namespace crypto {
                                     windowBase, fastField, fastA, fastOne, fastAMinusThree);
                             }
                         }
-                        FastPrimeField::Value prefixes[
-                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES];
                         fastBatchNormalize(
-                            &built.points[0][0],
-                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES,
-                            fastField, fastOne, prefixes);
+                            projective.begin(), POINTS,
+                            fastField, fastOne, prefixes.begin());
+                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                            for (size_t digit = 0; digit < FastP256CombTable::ENTRIES; ++digit) {
+                                const FastEcPoint& source = projective[
+                                    window * FastP256CombTable::ENTRIES + digit];
+                                for (size_t limb = 0; limb < 4; ++limb) {
+                                    built.points[window][digit].x[limb] = source.x.limbs[limb];
+                                    built.points[window][digit].y[limb] = source.y.limbs[limb];
+                                }
+                            }
+                        }
+                        built.valid = true;
                         return built;
                     }();
 
-                    FastEcPoint accumulator = fastInfinity(fastField, fastOne);
-                    for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                        size_t digit = 0;
-                        for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
-                            digit |= size_t(k.testBit(
-                                window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
+                    if (comb.valid) {
+                        FastEcPoint accumulator = fastInfinity(fastField, fastOne);
+                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                            size_t digit = 0;
+                            for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
+                                digit |= size_t(k.testBit(
+                                    window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
+                            }
+                            const size_t nonZero =
+                                (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+                            const size_t tableDigit = digit | (nonZero ^ size_t(1));
+                            FastEcPoint selected;
+                            for (size_t limb = 0; limb < 4; ++limb) {
+                                selected.x.limbs[limb] = comb.points[window][1].x[limb];
+                                selected.y.limbs[limb] = comb.points[window][1].y[limb];
+                            }
+                            selected.z = fastOne;
+                            for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
+                                const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
+                                for (size_t limb = 0; limb < 4; ++limb) {
+                                    selected.x.limbs[limb] ^=
+                                        (selected.x.limbs[limb]
+                                            ^ comb.points[window][i].x[limb]) & mask;
+                                    selected.y.limbs[limb] ^=
+                                        (selected.y.limbs[limb]
+                                            ^ comb.points[window][i].y[limb]) & mask;
+                                }
+                            }
+                            FastEcPoint sum = fastAddMixed(
+                                accumulator, selected,
+                                fastField, fastA, fastOne, fastAMinusThree);
+                            fastConditionalAssign(
+                                fastField, uint64_t(nonZero ^ size_t(1)), sum, accumulator);
+                            accumulator = sum;
                         }
-                        const size_t nonZero =
-                            (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
-                        const size_t tableDigit = digit | (nonZero ^ size_t(1));
-                        FastEcPoint selected = comb.points[window][1];
-                        for (size_t i = 1; i < FastP256CombTable::ENTRIES; ++i) {
-                            FastEcPoint candidate = comb.points[window][i];
-                            fastConditionalSwap(
-                                fastField, uint64_t(i == tableDigit), selected, candidate);
-                        }
-                        FastEcPoint unchanged = accumulator;
-                        FastEcPoint sum = fastAddMixed(
-                            accumulator, selected,
-                            fastField, fastA, fastOne, fastAMinusThree);
-                        fastConditionalSwap(
-                            fastField, uint64_t(nonZero ^ size_t(1)), sum, unchanged);
-                        accumulator = sum;
+                        return fastToAffine(accumulator, fastField, fastOne, field);
                     }
-                    return fastToAffine(accumulator, fastField, fastOne, field);
                 }
             }
             const FastEcPoint product = fastWindowMultiply(

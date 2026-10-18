@@ -88,7 +88,9 @@ Montgomery NTT 곱, reservoir 비트 패킹, rate-block SHAKE 샘플링이 ML-DS
 대표 이진 곡선은 약 1.9--2.0배 개선했습니다. 이어 고정 폭 Montgomery 체와 private
 window가 소수 곡선 80개 행 중 72개를 먼저 문턱까지 높였습니다. 고정 count 곱셈
 kernel과 키 바인딩 폭 6 검증 표가 남은 P-256 이외 행도 모두 0.90배 위로 높였습니다.
-이제 P-256 연산 4개만 0.302--0.403배로 남았습니다. 이어 고정 count PCLMUL 곱·제곱
+이후 압축한 P-256 7비트 기저 표, 한쪽 방향 mask 선택, 폭 8 Montgomery-limb 검증 표가
+P-256의 5회 중앙값을 0.318--0.614배로 높였습니다. 이 네 행만 소수 곡선 문턱 아래에
+남아 있습니다. 이어 고정 count PCLMUL 곱·제곱
 kernel, 높은 word부터 접는 축약, 혼합 Lopez-Dahab 덧셈, 생성 키의 중복 검증 제거가
 이진 곡선 키 생성/서명/검증 30개 행의 5회 중앙값을 1.12--1.83배로 높였습니다. 다음 목록
 단계에서 양방향 서명 상호운용과 변경된 digest 거부를 포함해 RSA-2048과 DSA-2048을
@@ -112,9 +114,14 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   설계가 필요합니다. 기존 CRT fault 검사와 문서화된 variable-time
   경계를 보존합니다.
 - **남은 P-256 행을 문턱까지 높입니다.** OpenSSL은 고도로 특화한 구현을 사용합니다.
-  희소·완전 전개 4-limb Montgomery kernel, batch-normalized 4비트 기저 표, 준비된 공개
-  검증 표가 네 비율을 0.302--0.403배로 높였지만 모두 문턱 아래입니다. 특화 산술 경로를
-  더 추가하기 전에 생성된 체 명령어를 프로파일링합니다.
+  희소·완전 전개 4-limb Montgomery kernel, 압축한 batch-normalized 7비트 기저 표,
+  한쪽 방향 private 표 mask 선택, 폭 8 준비 검증 표가 네 비율을 0.318--0.614배로
+  높였지만 모두 문턱 아래입니다. 대칭 full-product 제곱 경로는 외부 vector에 대해
+  정확했지만 carry 전파와 별도 reduction이 절약한 곱 6개보다 비싸 20--34% 느렸습니다.
+  5비트 private 가변 기저 window도 약간 느렸고, 4비트 sliding 역원은 집중 실행 중앙값
+  변화가 실행 편차와 구분하기에 너무 작았습니다. 다음 작업에는 또 다른 일반 full-product
+  buffer가 아니라 생성한 carry-chain 또는 점 연산 전체를 대상으로 한 hardware target이
+  필요합니다.
 - **남은 곡선의 검증용 공개 키 테이블을 평가합니다.** Ed25519는 공개키마다 홀수
   배수 8개를, Ed448은 더 큰 comb 표를 저장합니다. ECDSA, DSA 등 남은 가변 기저
   서명 구현에서 준비 시간, 메모리, 반복 검증의 같은 tradeoff를 측정합니다.

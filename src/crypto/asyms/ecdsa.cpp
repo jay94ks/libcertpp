@@ -138,21 +138,21 @@ namespace crypto {
 
         class EcContext : public IAsymmetricContext {
         private:
-            TArray<SEcPoint> _verifyBaseTable;
-            TArray<SEcPoint> _verifyPublicTable;
+            FastPrimeWnafTable _verifyBaseTable;
+            FastPrimeWnafTable _verifyPublicTable;
 
             void prepareVerificationTables(const CEcCurve& curve, const SEcPoint& publicPoint) {
                 if (!PreparePrimeWnafTable(curve, curve.g, _verifyBaseTable)
                     || !PreparePrimeWnafTable(curve, publicPoint, _verifyPublicTable)) {
-                    _verifyBaseTable.resize(0);
-                    _verifyPublicTable.resize(0);
+                    _verifyBaseTable.clear();
+                    _verifyPublicTable.clear();
                 }
             }
 
         protected:
             void onReset() override {
-                _verifyBaseTable.resize(0);
-                _verifyPublicTable.resize(0);
+                _verifyBaseTable.clear();
+                _verifyPublicTable.clear();
                 auto priv = std::dynamic_pointer_cast<EcPrivateKey>(privateKey());
                 if (priv) {
                     size_t orderBytes = (priv->curve().n.bitLength() + 7) / 8;

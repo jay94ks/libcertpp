@@ -38,7 +38,10 @@ path accelerates GOST verification. Fixed-width stack-resident Montgomery fields
 private windows, signed public verification windows, and fixed-base comb tables first raised 72 of
 the 80 prime-field key-generation, signing, verification, and ECDH rows to at least 0.90 of
 OpenSSL. Fixed-count field kernels and key-bound width-six affine verification tables then raised
-every non-P-256 row above the gate; 76 of 80 now pass.
+every non-P-256 row above the gate. A compact seven-bit P-256 base table, one-way masked selection,
+and width-eight verification tables stored directly as Montgomery limbs raised its five-run
+keygen/sign/verify/ECDH ratios from 0.403/0.345/0.315/0.302 to
+0.614/0.434/0.361/0.318; 76 of 80 prime-field rows now pass.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,

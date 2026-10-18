@@ -127,9 +127,10 @@
   multiplication kernel for each supported limb width, letting the compiler unroll product and
   reduction loops. Four-bit
   private-scalar windows scan all 16 candidates and select with masks; the
-  exact standard P-256 parameters additionally use a process-wide 64-row, four-bit comb
-  table of batch-normalized affine points that removes per-call point doublings and permits mixed
-  additions. P-256 uses its sparse
+  exact standard P-256 parameters additionally use a process-wide 37-row, seven-bit comb
+  table. Its batch-normalized affine coordinates retain only four field limbs per coordinate,
+  and selection scans every entry with one-way masked assignments. This removes per-call point
+  doublings and permits mixed additions. P-256 uses its sparse
   modulus during Montgomery reduction and the `a == -3` doubling formula.
   Other builds retain the masked R0/R1 `CBigNum` Montgomery ladder. Both paths
   pay for one final inversion rather than one per scalar bit.
@@ -156,8 +157,9 @@
   through to these free functions' local variables too. Neither implementation
   makes a complete side-channel-resistance claim: exceptional point cases have
   data-dependent control flow, and the fallback also allocates and trims
-  variable-width `CBigNum` values. A verification context batch-normalizes width-six affine
-  odd-multiple tables for the generator and bound public key once when the key is bound. Repeated
+  variable-width `CBigNum` values. A verification context batch-normalizes width-eight affine
+  odd-multiple tables for the generator and bound public key once when the key is bound, retaining
+  their Montgomery limbs rather than round-tripping each coordinate through `CBigNum`. Repeated
   verification reuses those tables with mixed additions, one Jacobian accumulator, and one final
   inversion. Direct `linearCombination(k1, p1, k2, p2)` callers use width-five signed-window NAF.
   Both paths branch

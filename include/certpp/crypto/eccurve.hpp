@@ -252,9 +252,9 @@ namespace crypto {
         SEcPoint scalarMul(const SEcPoint& pt, const CBigNum& k) const;
 
         /**
-         * Computes k*g with full-scan window tables selected through conditional swaps, so secret
+         * Computes k*g with full-scan window tables selected through masked assignments, so secret
          * scalar bits do not become memory indexes. The standard P-256 parameters use a cached
-         * 64-row, four-bit comb table; mutable or other curve parameters build a four-bit table
+         * 37-row, seven-bit comb table; mutable or other curve parameters build a four-bit table
          * per call.
          * @param k The scalar to multiply g by.
          * @return k*g.

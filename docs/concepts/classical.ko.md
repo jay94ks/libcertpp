@@ -123,9 +123,10 @@
   64비트 Montgomery limb에 머뭅니다. 체는 지원하는 limb 폭마다 고정 count 곱셈
   kernel을 선택해 compiler가 곱과 reduction loop를 펼칠 수 있게 합니다. 4비트
   private-scalar window는 16개 후보를
-  모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 호출마다 점을 배가하지
-  않고 mixed 덧셈을 허용하는 batch-normalized affine 점의 프로세스 전역 64행 4비트
-  comb 표도 사용합니다. P-256은 Montgomery reduction에서
+  모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 프로세스 전역 37행 7비트
+  comb 표도 사용합니다. batch-normalized affine 좌표는 좌표마다 field limb 4개만
+  보관하고 모든 항을 한쪽 방향 mask 대입으로 스캔합니다. 이 표는 호출마다 점을 배가하지
+  않고 mixed 덧셈을 허용합니다. P-256은 Montgomery reduction에서
   희소 modulus와 `a == -3` 배가 공식을 사용합니다. 다른 빌드는 mask 기반 R0/R1
   `CBigNum` Montgomery ladder를 유지합니다. 두 경로 모두 스칼라 비트마다 하나가
   아니라 마지막 역원 하나만 계산합니다. 모듈러스별 컨텍스트는 `CEcCurve`
@@ -150,8 +151,9 @@
   변수에까지 이어 간 것입니다. 어느 구현도 완전한 부채널 저항을 주장하지 않습니다.
   예외 점 처리는 데이터 의존 제어 흐름을 가지며 fallback은 가변 폭 `CBigNum` 값을
   할당하고 잘라내기도 합니다. 검증 context는 키를 바인딩할 때 generator와 바인딩한
-  공개키의 폭 6 affine 홀수 배수 표를 한 번 batch-normalize합니다. 반복 검증은 mixed
-  덧셈, Jacobian 누산기 하나, 마지막 역원 하나로 이 표를 재사용합니다. 직접
+  공개키의 폭 8 affine 홀수 배수 표를 한 번 batch-normalize하고 각 좌표를 `CBigNum`으로
+  왕복하는 대신 Montgomery limb를 그대로 보관합니다. 반복 검증은 mixed 덧셈,
+  Jacobian 누산기 하나, 마지막 역원 하나로 이 표를 재사용합니다. 직접
   `linearCombination(k1, p1, k2, p2)`을 호출하면 폭 5 signed-window NAF를 사용합니다.
   두 경로 모두 공개값에 따라 분기하고 표를 인덱싱하며 공개 검증값에만
   쓰도록 명시되어 있습니다. private 스칼라는 계속 `scalarMul()` 또는
