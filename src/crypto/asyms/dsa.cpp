@@ -25,70 +25,51 @@ namespace crypto {
      * with q | (p - 1)), and g (a generator of the order-q subgroup of Z*p). Uses the
      * simplified "probable primes" construction (FIPS 186-4 A.1.1.2, minus the seed/counter
      * bookkeeping needed to later *re-verify* a parameter set's provenance, which nothing in
-     * this library needs): draw a random L-bit X, then set p = X - (X mod 2q) + 1, which is
-     * always congruent to 1 (mod 2q) -- i.e. odd and a multiple of q above 1 -- and, since 2q is
-     * negligibly small next to 2^(L-1) for every (L, N) pair this library supports, almost
-     * always still exactly L bits long (unlike naively building p as k*q + 1 for a freshly
-     * random k, which lets the product's bit length wander across a ~4x range and wastes
-     * the large majority of attempts on the wrong size before ever reaching a primality
-     * test). */
-    bool DSA::generateDomainParams(size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g) {
+     * this library needs): draw a random L-bit starting value X, set the first candidate to
+     * X - (X mod 2q) + 1, then walk a bounded number of candidates by adding 2q. Every candidate
+     * is therefore odd and congruent to 1 (mod q). Since 2q is negligibly small next to 2^(L-1)
+     * for every supported (L, N) pair, the bounded progression remains exactly L bits except at
+     * the upper edge, where generation simply draws another starting value. */
+    bool DSA::generateDomainParams(
+        size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
+        CMontgomery& montgomery
+    ) {
         if (!CBigNum::generatePrime(bitsN, q)) {
             return false;
         }
 
-            CBigNum twoQ(q);
-            twoQ.shl(1);
+        CBigNum twoQ(q);
+        twoQ.shl(1);
 
-            CBigNum lowerBound(uint64_t(1));
-            lowerBound.shl(bitsL - 1); // 2^(L-1)
-
-            constexpr size_t MAX_ATTEMPTS = 100000;
-            for (size_t attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
-                CBigNum x;
-                if (!CBigNum::random(bitsL, x)) {
-                    return false;
-                }
-                x.setBit(bitsL - 1); // force into [2^(L-1), 2^L)
-
-                CBigNum c(x);
-                c.mod(twoQ);
-
-                x.sub(c);
-                x.add(CBigNum(uint64_t(1)));
-                CBigNum candidate = std::move(x);
-
-                if (candidate < lowerBound || candidate.bitLength() != bitsL) {
-                    continue;
-                }
-
-                if (!candidate.isProbablePrime()) {
-                    continue;
-                }
-
-                p = candidate;
-
-                // (p - 1) is always exactly divisible by q by construction.
-                CBigNum pMinus1(p);
-                pMinus1.sub(CBigNum(uint64_t(1)));
-
-                CBigNum quotient, remainder;
-                pMinus1.divMod(q, quotient, remainder);
-
-                for (uint64_t h = 2; h < 1000; ++h) {
-                    CBigNum candidateG = CBigNum::modExp(CBigNum(h), quotient, p);
-                    if (candidateG != CBigNum(uint64_t(1))) {
-                        g = candidateG;
-                        return true;
-                    }
-                }
-
-                // Astronomically unlikely (no generator found among h in [2, 999]); try a
-                // fresh p instead of failing outright.
-            }
-
+        // Walking one bounded p == 1 (mod 2q) progression lets the big-number helper reuse
+        // each candidate's small-prime residues as well as avoiding a fresh division by 2q.
+        // It retains the same 20 Miller--Rabin rounds used by ordinary prime generation.
+        if (!CBigNum::generatePrimeCongruentOne(bitsL, twoQ, p)) {
             return false;
         }
+
+        // (p - 1) is exactly divisible by q by construction.
+        CBigNum pMinus1(p);
+        pMinus1.sub(CBigNum(uint64_t(1)));
+
+        CBigNum quotient, remainder;
+        pMinus1.divMod(q, quotient, remainder);
+
+        montgomery = CMontgomery(p);
+        if (!montgomery.isValid()) {
+            return false;
+        }
+        for (uint64_t h = 2; h < 1000; ++h) {
+            CBigNum candidateG = montgomery.modExp(CBigNum(h), quotient);
+            if (candidateG != CBigNum(uint64_t(1))) {
+                g = candidateG;
+                return true;
+            }
+        }
+
+        // Astronomically unlikely (no generator found among h in [2, 999]).
+        return false;
+    }
 
     namespace {
 
@@ -196,6 +177,15 @@ namespace crypto {
                 algorithm(EASYM_DSA);
             }
 
+            DsaPublicKey(
+                CBigNum p, CBigNum q, CBigNum g, CBigNum y,
+                const CMontgomery& montgomery)
+                : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y)),
+                  _montgomery(montgomery)
+            {
+                algorithm(EASYM_DSA);
+            }
+
             SKeySize keySize() const override {
                 return _p.bitLength();
             }
@@ -267,6 +257,16 @@ namespace crypto {
             DsaPrivateKey(CBigNum p, CBigNum q, CBigNum g, CBigNum y, CBigNum x, IPublicKeyPtr publicKey)
                 : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y)),
                   _x(std::move(x)), _publicKey(std::move(publicKey)), _montgomery(_p)
+            {
+                algorithm(EASYM_DSA);
+            }
+
+            DsaPrivateKey(
+                CBigNum p, CBigNum q, CBigNum g, CBigNum y, CBigNum x,
+                IPublicKeyPtr publicKey, const CMontgomery& montgomery)
+                : _p(std::move(p)), _q(std::move(q)), _g(std::move(g)), _y(std::move(y)),
+                  _x(std::move(x)), _publicKey(std::move(publicKey)),
+                  _montgomery(montgomery)
             {
                 algorithm(EASYM_DSA);
             }
@@ -546,7 +546,8 @@ namespace crypto {
         }
 
         CBigNum p, q, g;
-        if (!generateDomainParams(keySize, bitsN, p, q, g)) {
+        CMontgomery montgomery;
+        if (!generateDomainParams(keySize, bitsN, p, q, g, montgomery)) {
             return ERET_UNKNOWN;
         }
 
@@ -559,10 +560,10 @@ namespace crypto {
         }
         x.add(CBigNum(uint64_t(1))); // x in [1, q-1]
 
-        CBigNum y = CBigNum::modExp(g, x, p);
+        CBigNum y = montgomery.modExp(g, x);
 
-        auto pub = std::make_shared<DsaPublicKey>(p, q, g, y);
-        auto priv = std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub);
+        auto pub = std::make_shared<DsaPublicKey>(p, q, g, y, montgomery);
+        auto priv = std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub, montgomery);
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -617,7 +618,7 @@ namespace crypto {
             return ERET_KEY_PARAM;
         }
 
-        const CMontgomery montgomery(p);
+        const CMontgomery& montgomery = priv->montgomery();
         CBigNum gq = montgomery.isValid()
             ? montgomery.modExp(g, q) : CBigNum::modExp(g, q, p);
         if (gq != one) {

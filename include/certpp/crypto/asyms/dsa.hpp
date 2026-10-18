@@ -38,7 +38,9 @@ namespace crypto {
          * with q | (p - 1)), and g (a generator of the order-q subgroup of Z*p).
          * @return true on success; false on failure (exhausted attempts or a CRng failure).
          */
-        static bool generateDomainParams(size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g);
+        static bool generateDomainParams(
+            size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
+            CMontgomery& montgomery);
 
     public:
         /**

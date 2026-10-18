@@ -4,6 +4,7 @@
 #include <certpp/utils/secure.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
+#include <array>
 #include <cstring>
 #include <utility>
 
@@ -26,20 +27,45 @@ namespace certpp {
 
     namespace {
 
-        /* Small-prime sieve used before Miller-Rabin. */
-        constexpr uint32_t SMALL_PRIMES[] = {
-            2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
-            89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179,
-            181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277,
-            281, 283, 293, 307, 311, 313, 317, 331, 337, 347, 349, 353, 359, 367, 373, 379, 383, 389,
-            397, 401, 409, 419, 421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479, 487, 491, 499,
-            503, 509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607, 613, 617,
-            619, 631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701, 709, 719, 727, 733, 739,
-            743, 751, 757, 761, 769, 773, 787, 797, 809, 811, 821, 823, 827, 829, 839, 853, 857, 859,
-            863, 877, 881, 883, 887, 907, 911, 919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991,
-            997
-        };
-        constexpr size_t SMALL_PRIME_COUNT = sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]);
+        /* Small-prime sieve used before Miller--Rabin. Generate the table at compile time so its
+         * coverage can be tuned without maintaining a long literal list. Extending the old 997
+         * limit to 4096 rejects more cheap composites before a full modular exponentiation, while
+         * the grouped-residue paths keep the extra trial divisions off the big-number limbs. */
+        constexpr uint32_t SMALL_PRIME_LIMIT = 4096;
+
+        constexpr bool isSmallPrime(uint32_t value) {
+            if (value < 2) {
+                return false;
+            }
+            for (uint32_t divisor = 2; divisor * divisor <= value; ++divisor) {
+                if (value % divisor == 0) {
+                    return value == divisor;
+                }
+            }
+            return true;
+        }
+
+        constexpr size_t countSmallPrimes() {
+            size_t count = 0;
+            for (uint32_t value = 2; value < SMALL_PRIME_LIMIT; ++value) {
+                count += isSmallPrime(value) ? 1 : 0;
+            }
+            return count;
+        }
+
+        constexpr auto makeSmallPrimes() {
+            std::array<uint32_t, countSmallPrimes()> primes = {};
+            size_t index = 0;
+            for (uint32_t value = 2; value < SMALL_PRIME_LIMIT; ++value) {
+                if (isSmallPrime(value)) {
+                    primes[index++] = value;
+                }
+            }
+            return primes;
+        }
+
+        constexpr auto SMALL_PRIMES = makeSmallPrimes();
+        constexpr size_t SMALL_PRIME_COUNT = SMALL_PRIMES.size();
 
     } // namespace
 
@@ -1211,7 +1237,7 @@ namespace certpp {
             // Small sizes can equal a sieve prime. The general predicate handles that exception
             // directly; the residue walk below deliberately treats every small-prime multiple as
             // composite and is intended for the cryptographic-size candidates that dominate keygen.
-            if (bits <= 10) {
+            if (bits <= 12) {
                 ++attempts;
                 if (seed.isProbablePrime()) {
                     out = seed;
@@ -1276,6 +1302,101 @@ namespace certpp {
                 if (candidate.isProbablePrimeAfterSieve(20)) {
                     out = std::move(candidate);
                     return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool CBigNum::generatePrimeCongruentOne(
+        size_t bits, const CBigNum& step, CBigNum& out
+    ) {
+        if (bits < 2 || step.isZero() || !step.isEven()) {
+            return false;
+        }
+
+        CBigNum lowerBound(uint64_t(1));
+        lowerBound.shl(bits - 1);
+
+        constexpr size_t MAX_ATTEMPTS = 100000;
+        constexpr size_t MAX_WALK = 4096;
+        size_t attempts = 0;
+        while (attempts < MAX_ATTEMPTS) {
+            CBigNum candidate;
+            if (!random(bits, candidate)) {
+                return false;
+            }
+            candidate.setBit(bits - 1);
+
+            CBigNum offset(candidate);
+            offset.mod(step);
+            candidate.sub(offset);
+            candidate.add(CBigNum(uint64_t(1)));
+            if (candidate < lowerBound) {
+                candidate.add(step);
+            }
+            if (candidate.bitLength() != bits) {
+                ++attempts;
+                continue;
+            }
+
+            uint32_t products[SMALL_PRIME_COUNT] = {};
+            uint32_t remainders[SMALL_PRIME_COUNT] = {};
+            uint32_t increments[SMALL_PRIME_COUNT] = {};
+            size_t groupFirst[SMALL_PRIME_COUNT] = {};
+            size_t groupLast[SMALL_PRIME_COUNT] = {};
+            size_t groups = 0;
+            size_t first = 0;
+            while (first < SMALL_PRIME_COUNT) {
+                uint64_t product = 1;
+                size_t last = first;
+                while (last < SMALL_PRIME_COUNT
+                    && product <= uint64_t(UINT32_MAX) / SMALL_PRIMES[last]) {
+                    product *= SMALL_PRIMES[last++];
+                }
+
+                auto remainderOf = [product](const CBigNum& value) {
+                    uint64_t remainder = 0;
+                    for (size_t i = value._limbs.size(); i-- > 0; ) {
+                        remainder = ((remainder << 32) | value._limbs[i]) % product;
+                    }
+                    return uint32_t(remainder);
+                };
+                products[groups] = uint32_t(product);
+                remainders[groups] = remainderOf(candidate);
+                increments[groups] = remainderOf(step);
+                groupFirst[groups] = first;
+                groupLast[groups] = last;
+                ++groups;
+                first = last;
+            }
+
+            for (size_t walk = 0;
+                 walk < MAX_WALK && attempts < MAX_ATTEMPTS;
+                 ++walk, ++attempts) {
+                if (candidate.bitLength() != bits) {
+                    break;
+                }
+
+                bool passesSieve = true;
+                for (size_t group = 0; group < groups && passesSieve; ++group) {
+                    for (size_t i = groupFirst[group]; i < groupLast[group]; ++i) {
+                        if (remainders[group] % SMALL_PRIMES[i] == 0) {
+                            passesSieve = false;
+                            break;
+                        }
+                    }
+                }
+                if (passesSieve && candidate.isProbablePrimeAfterSieve(20)) {
+                    out = std::move(candidate);
+                    return true;
+                }
+
+                candidate.add(step);
+                for (size_t group = 0; group < groups; ++group) {
+                    remainders[group] = uint32_t(
+                        (uint64_t(remainders[group]) + increments[group]) % products[group]);
                 }
             }
         }

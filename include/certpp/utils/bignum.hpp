@@ -15,6 +15,7 @@ namespace certpp {
     // which includes this header rather than the other way round.
     class CMontgomery;
     struct MontgomeryParallel;
+    namespace crypto { class DSA; }
 
     /**
      * An arbitrary-precision, non-negative integer, stored as a little-endian array of 32-bit
@@ -31,6 +32,7 @@ namespace certpp {
         // only the Montgomery arithmetic implementation can reach it.
         friend class CMontgomery;
         friend struct MontgomeryParallel;
+        friend class crypto::DSA;
 
     private:
         TArray<uint32_t> _limbs; // little-endian limbs; canonical (no leading zero limb); empty == 0.
@@ -120,6 +122,11 @@ namespace certpp {
         /* Runs Miller--Rabin after the caller has already ruled out every SMALL_PRIMES divisor.
          * generatePrime() uses this to reuse one seed's sieve residues across nearby candidates. */
         bool isProbablePrimeAfterSieve(size_t rounds) const;
+
+        /* Generates a prime with out == 1 (mod step), reusing small-prime residues while walking
+         * one bounded progression. DSA owns the only current use: p == 1 (mod 2q). */
+        static bool generatePrimeCongruentOne(
+            size_t bits, const CBigNum& step, CBigNum& out);
 
     public:
         /**

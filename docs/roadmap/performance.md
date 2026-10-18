@@ -124,9 +124,13 @@ its repeated sign/verify ratios to 1.667/1.103. The original eleven runs measure
 ratios of 0.393 and 0.594. Grouping the small-prime sieve divisors into 32-bit products made its worst
 2048-bit path 5.16x faster locally. Reusing one random seed's grouped residues while walking nearby
 odd candidates subsequently reduced a 15-run WSL RSA-2048 key-generation median from 63.937 to
-54.471 ms without reducing the 20 Miller--Rabin rounds. Randomized prime search still gives the
-key-generation rows much wider run-to-run variance than signing and verification, and the pinned
-Windows RSA/DSA key-generation rows remain below the gate. OpenSSL
+54.471 ms without reducing the 20 Miller--Rabin rounds. DSA now walks its required `p == 1 (mod
+2q)` progression while reusing grouped residues through a sieve of primes below 4096, and reuses
+the accepted modulus's Montgomery context. Its two independent 20-round primality checks remain.
+The current 36-run WSL DSA key-generation ratio median is 0.9015, so the row meets the gate narrowly.
+Randomized prime search still gives both key-generation rows much wider run-to-run variance than
+signing and verification; the pinned Windows rows remain a historical same-configuration snapshot
+below the gate, while current WSL RSA key generation is above it. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
 
@@ -153,8 +157,9 @@ keeps an internal before/after baseline and an explicit unavailable result.
   subsequently raised seven-run current sign/verify ratios to 0.328/0.673. Further RSA work still
   needs a generated ADCX/ADOX dual-carry
   schedule rather than either intrinsic chaining or a generic full-product
-  buffer. DSA's context-bound position tables subsequently raised its repeated sign/verify ratios
-  to 1.667/1.103, so the remaining work here is RSA plus RSA/DSA key generation. Keep the existing
+  buffer. DSA's context-bound position tables raised its repeated sign/verify ratios to
+  1.667/1.103, and bounded residue-reusing parameter search brought its current key-generation
+  median to 0.9015. The remaining direct gaps are RSA signing and verification. Keep the existing
   CRT fault check and documented variable-time boundary intact.
 
 Any optimization begins with a reproducible baseline and a profile. Changes

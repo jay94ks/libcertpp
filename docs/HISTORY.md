@@ -120,9 +120,7 @@ Montgomery prototype passed the RSA known-answer and unit tests but increased si
 outweighed the narrower multiply count. Running the two CRT exponentiations through `std::async`
 lost on the single-CPU benchmark, routing CRT recombination through the cached Montgomery context
 was about 4% slower than the existing division path, and a six-bit long-exponent window did not
-improve the five-bit baseline. DSA candidate walking by `2q`, with and without incremental
-small-prime residues, likewise failed to improve its key-generation median. These results leave a
-register-scheduled fixed-width square or ADCX/ADOX kernel as the next RSA arithmetic direction.
+improve the five-bit baseline.
 The accepted follow-up instead kept integrated CIOS and advanced the two 1024-bit RSA CRT branches
 through one fixed five-bit schedule. A paired kernel interleaves their independent product and
 reduction carry chains on one thread. Fifteen alternating pinned WSL Clang 18 runs reduced the
@@ -135,6 +133,18 @@ answer directly. Eleven alternating pinned runs reduced RSA-2048 verification fr
 median to 0.023 ms and its median OpenSSL ratio rose from 0.640 to 0.676; signing, whose CRT fault
 check performs the same re-encryption, fell from 0.793 to 0.782 ms. A separate seven-run current
 snapshot measured sign/verify ratios of 0.328/0.673. The same Montgomery and RSA checks passed.
+DSA parameter generation then began walking a bounded `p += 2q` progression, reusing grouped
+small-prime residues instead of drawing and dividing a fresh 2048-bit candidate. The compile-time
+sieve now covers primes below 4096, and the Montgomery context built for the accepted `p` is reused
+for generator construction, public-key derivation, both key objects, and generated-key validation.
+The 20 Miller--Rabin rounds in generation and the independent 20-round key check remain unchanged.
+Twenty-one alternating pre-change/current WSL runs reduced the certpp median from 225.673 to
+178.276 ms (21.0%). Fifteen additional current runs gave a 158.894 ms median; across all 36 current
+runs the certpp median was 164.646 ms and the paired OpenSSL ratio median was 0.9015. Limits of 2048
+and 8192 were rejected after 15-run medians of 187.664 and 204.667 ms against 158.894 and 171.999 ms
+for 4096. Keeping a Miller--Rabin result in Montgomery form saved only 0.3% on a fixed RFC 3526
+prime and was also rejected. The randomized row remains remeasurement-sensitive. A generated
+ADCX/ADOX dual-carry kernel remains the next RSA arithmetic direction.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

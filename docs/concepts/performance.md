@@ -285,6 +285,16 @@ improvement. The current runs had a 1.824 median OpenSSL ratio, but the table re
 internally consistent pinned Windows RSA snapshot until that configuration is remeasured; randomized
 prime search makes cross-implementation key-generation ratios substantially noisier than the
 within-implementation before/after result.
+DSA parameter generation now applies the same residue-reuse idea to its constrained search: it
+walks a bounded `p += 2q` progression, updates grouped small-prime residues through every candidate,
+and uses a compile-time table of primes below 4096. The accepted `p`'s Montgomery context is reused
+for generator construction, public-key derivation, both key objects, and generated-key validation;
+both independent 20-round Miller--Rabin checks remain in place. Twenty-one alternating runs reduced
+the certpp median from 225.673 to 178.276 ms. Fifteen additional current runs measured a 158.894 ms
+median; the combined 36 current runs have a 164.646 ms certpp median and a 0.9015 paired OpenSSL
+ratio median. This reaches the gate, but the wide randomized distribution makes the row especially
+remeasurement-sensitive. The pinned Windows table remains the last complete same-configuration
+inventory rather than mixing this WSL row into it.
 RSA CRT exponentiation now advances the two 1024-bit branches through one fixed five-bit schedule
 and interleaves their independent CIOS carry chains on the same thread. Fifteen alternating pinned
 WSL Clang 18 runs reduced the certpp RSA-2048 signing median from 0.811 to 0.772 ms, a 4.8%
