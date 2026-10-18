@@ -128,8 +128,10 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   DSA 서명/검증 중앙값을 5--8% 늦췄습니다. 이전 full-square REDC 실험도 RSA 서명을 두 배
   넘게 느리게 했습니다. 고정 count 제곱 wrapper에서 입력 포인터 하나를 재사용한 변경은 CIOS
   body를 유지하면서 RSA·DSA 서명/검증을 작지만 반복 가능한 2.5--4.2%만큼 개선했습니다.
-  현재 WSL RSA 서명/검증 비율은 0.310/0.628배로 여전히 문턱 아래이므로, 다음 RSA 시도에는
-  intrinsic chain이나 일반 full-product buffer가 아니라 생성한 ADCX/ADOX dual-carry
+  이후 AVX-512 IFMA full-product 시제품, 단일 CPU에서의 CRT `std::async`, Montgomery CRT
+  재결합, 6비트 지수 window도 측정하고 기각했으며 어느 것도 고정 count CIOS 기준을 개선하지
+  못했습니다. 현재 WSL RSA 서명/검증 비율은 0.310/0.628배로 여전히 문턱 아래이므로, 다음
+  RSA 시도에는 intrinsic chain이나 일반 full-product buffer가 아니라 생성한 ADCX/ADOX dual-carry
   schedule이 필요합니다. 이어 DSA의 context 바인딩 위치별 표가 반복 서명/검증
   비율을 1.667/1.103배로 높였으므로 여기서 남은 작업은 RSA와 RSA/DSA 키 생성입니다. 기존
   CRT fault 검사와 문서화된 variable-time 경계를 보존합니다.

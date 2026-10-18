@@ -114,6 +114,15 @@ candidates by adjusting those residues before running the unchanged 20-round Mil
 A separately built pre-change `HEAD` and the new binary were each measured in 15 pinned WSL Clang
 18 runs; the certpp RSA-2048 key-generation median fell from 63.937 to 54.471 ms, or 14.8%. Exact
 bit-length and probable-prime checks now cover both sides of the small-prime-walk boundary.
+Several follow-up RSA experiments were measured and rejected. An AVX-512 IFMA full-product
+Montgomery prototype passed the RSA known-answer and unit tests but increased signing from about
+0.8 to 4.0 ms and verification from about 0.024 to 0.105 ms because its scratch-product traffic
+outweighed the narrower multiply count. Running the two CRT exponentiations through `std::async`
+lost on the single-CPU benchmark, routing CRT recombination through the cached Montgomery context
+was about 4% slower than the existing division path, and a six-bit long-exponent window did not
+improve the five-bit baseline. DSA candidate walking by `2q`, with and without incremental
+small-prime residues, likewise failed to improve its key-generation median. These results leave a
+register-scheduled fixed-width square or ADCX/ADOX kernel as the next RSA arithmetic direction.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

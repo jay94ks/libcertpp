@@ -199,7 +199,8 @@ bare metal before either is called a compiler defect.
 - **Signing beats verification on the prime curves** -- P-256 signs in 0.91 ms and verifies in
   2.43 ms -- because signing multiplies the *fixed* base point with a precomputed window table,
   while verification multiplies a caller-supplied point and cannot.
-- **RSA-2048 is lopsided by design**: `e = 65537` makes verification three multiplies, while
+- **RSA-2048 is lopsided by design**: `e = 65537` has only two set bits, so verification uses a
+  short binary chain of 16 squares and one multiply after seeding from the leading bit, while
   signing is a full CRT exponentiation.
 - **AES-256-GCM sits below ChaCha20-Poly1305 despite AES-NI**, because GHASH rather than the cipher
   is the bottleneck and an AEAD composes as `1/total = 1/cipher + 1/mac`. (GHASH has since been
