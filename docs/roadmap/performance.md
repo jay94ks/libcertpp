@@ -126,7 +126,11 @@ keeps an internal before/after baseline and an explicit unavailable result.
   common 1024/2048-bit loops to the compiler, and binary inversion removed quotient-sized
   extended-Euclidean work. A Clang 18 `perf` run attributed 35.85% of the combined RSA comparison's
   self cycles to the 16-limb Montgomery kernel; its call tree covered both prime testing and private
-  CRT exponentiation. Replacing the wide-integer expression with `_mulx_u64` plus `_addcarryx_u64`
+  CRT exponentiation. A separate 200,000-operation RSA verification profile attributed 88.24% to
+  the 32-limb kernel and 6.95% to the input-domain conversion. Moving that conversion into the
+  packed chain passed the full Montgomery checks but left five-run verification medians unchanged
+  at 5.48 seconds, because it replaced one Montgomery product with another; that experiment was
+  rejected. Replacing the wide-integer expression with `_mulx_u64` plus `_addcarryx_u64`
   remained correct but made seven-run RSA signing and DSA signing/verification medians 5--8% slower,
   because it serialized carries that Clang had interleaved across the product and reduction chains.
   The earlier full-square REDC experiment made RSA signing more than twice as slow. Further work

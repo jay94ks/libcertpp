@@ -111,7 +111,11 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   1024/2048비트 loop를 compiler에 노출하고 binary 역원이 몫 크기 확장 유클리드 작업을
   제거했습니다. Clang 18 `perf` 실행은 RSA 전체 비교 self cycle의 35.85%를 16-limb
   Montgomery kernel에 귀속했고, 호출 트리는 소수 판정과 private CRT 지수승을 모두
-  포함했습니다. wide-integer 표현을 `_mulx_u64`와 `_addcarryx_u64`로 바꾼 실험은 정확했지만
+  포함했습니다. 별도의 RSA 검증 200,000회 프로파일은 32-limb kernel에 88.24%, 입력 domain
+  변환에 6.95%를 귀속했습니다. 그 변환을 packed chain 안으로 옮긴 실험은 Montgomery 전체
+  검사를 통과했지만 Montgomery 곱 하나를 다른 곱으로 바꾼 것뿐이어서 5회 검증 중앙값이
+  5.48초로 같았고, 따라서 기각했습니다. wide-integer 표현을 `_mulx_u64`와
+  `_addcarryx_u64`로 바꾼 실험은 정확했지만
   compiler가 곱·reduction chain 사이에서 교차 배치하던 carry를 직렬화해 7회 RSA 서명과
   DSA 서명/검증 중앙값을 5--8% 늦췄습니다. 이전 full-square REDC 실험도 RSA 서명을 두 배
   넘게 느리게 했습니다. 따라서 다음 시도에는 intrinsic chain이나 일반 full-product buffer가
