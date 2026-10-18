@@ -157,13 +157,13 @@ CMake는 하나의 타깃 `certpp`(별칭 `certpp::certpp`)를 빌드하며, sha
 
 - `CERTPP_DISABLE_HWACCEL_SIMD`(기본 `OFF`)는 AES-NI와 SHA-NI에 속하지 않는
   확장 명령 경로를 끕니다. `CBigNum`의 ADX/BMI2, `CGf2m`·`Ghash`의
-  PCLMULQDQ, `Ghash` 반사의 GFNI, SSE2/AVX2/AVX-512F ChaCha20 키스트림, Keccak의 BMI1 ANDN,
+  PCLMULQDQ, `Ghash` 반사의 GFNI, AVX-512F P-256 private comb 선택기,
+  SSE2/AVX2/AVX-512F ChaCha20 키스트림, Keccak의 BMI1 ANDN,
   SHA-384/SHA-512의 BMI2 RORX, Poly1305의 AVX512-IFMA가 해당합니다. 영향을
   받는 각 구성 요소는 이식 가능 경로를 유지합니다. 선택적 명령은 런타임 CPUID
   검사로 고르고, SSE2는 x86-64의 baseline입니다.
-- `CERTPP_DISABLE_HWACCEL_AVX512`(기본 `OFF`)는 16블록 ChaCha20 AVX-512F
-  경로와 8블록 Poly1305 AVX512-IFMA 경로만 끕니다. AVX2/SSE2와 다른 SIMD
-  계열은 계속 사용할 수 있습니다.
+- `CERTPP_DISABLE_HWACCEL_AVX512`(기본 `OFF`)는 P-256 private comb 선택을 포함한
+  AVX-512 단계를 끄며 더 좁거나 generic인 SIMD 경로는 계속 사용할 수 있습니다.
 - `CERTPP_DISABLE_HWACCEL_SHA`(기본 `OFF`)는
   `SHA1::transform()`/`SHA256::transform()`
   (`src/crypto/hashers/sha1.cpp`, `src/crypto/hashers/sha256.cpp`)이 x86 SHA

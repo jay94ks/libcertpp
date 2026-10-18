@@ -103,8 +103,9 @@ curves. Fixed-width Montgomery fields and private windows first brought 72 of th
 rows to the threshold. Fixed-count multiplication kernels and key-bound width-six verification
 tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit P-256 base table,
 one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
-the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining and a four-bit
-public-verification comb later raised verification to 0.999; keygen, signing, and ECDH remain the
+the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining, a four-bit
+public-verification comb, and AVX-512 full-scan private-comb selection later raised the current
+balanced medians to 0.838/0.497/1.007/0.322; keygen, signing, and ECDH remain the
 only three prime-curve rows below the gate. Fixed-count PCLMUL product and square kernels,
 descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
@@ -156,8 +157,12 @@ keeps an internal before/after baseline and an explicit unavailable result.
   then improved single-CPU 15-run keygen/sign/verify/ECDH medians by 15.6/9.3/5.7/5.2%, but the
   OpenSSL ratios remained only 0.797/0.477/0.406/0.322. A position-dependent four-bit comb then
   removed all 256 point doublings from public verification. Its 21-run median fell from 0.142 to
-  0.058 ms and reached 0.999 of OpenSSL, so verification is complete. Keygen, signing, and ECDH
-  remain at 0.793/0.474/0.321. Further work on those private paths needs a generated carry-chain or
+  0.058 ms and reached 0.999 of OpenSSL. An AVX-512F selector then loaded every 64-byte private-comb
+  entry and retained the requested point with masks, preserving the full-row scan while improving
+  keygen and signing by 15.8% and 8.3% against the preceding binary. The current benchmark uses
+  1,000-operation batches, alternates which independently timed implementation runs first, and
+  reports seven-run medians of 0.838/0.497/1.007/0.322. Verification is complete but close enough
+  to remeasure; keygen, signing, and ECDH remain open. Further work on those private paths needs a generated carry-chain or
   a whole point-operation
   Tiger Lake target that compiles the field products together with doubling and addition, rather
   than another generic full-product buffer or an isolated leaf-function dispatch.

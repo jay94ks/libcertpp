@@ -157,14 +157,14 @@ affects the others:
 
 - `CERTPP_DISABLE_HWACCEL_SIMD` (`OFF` by default) disables the extended-
   instruction paths independent of AES-NI and SHA-NI: ADX/BMI2 in `CBigNum`,
-  PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, the SSE2/AVX2/AVX-512F
+  PCLMULQDQ in `CGf2m` and `Ghash`, GFNI reflection in `Ghash`, the AVX-512F P-256 private-comb
+  selector, the SSE2/AVX2/AVX-512F
   ChaCha20 keystream, BMI1 ANDN in Keccak, BMI2 RORX in SHA-384/SHA-512, and
   AVX512-IFMA in Poly1305. Each affected component keeps a portable path;
   runtime CPUID checks select optional instructions, while SSE2 is baseline
   on x86-64.
-- `CERTPP_DISABLE_HWACCEL_AVX512` (`OFF` by default) disables only the
-  sixteen-block ChaCha20 AVX-512F path and the eight-block Poly1305
-  AVX512-IFMA path. AVX2/SSE2 and the other SIMD families remain available.
+- `CERTPP_DISABLE_HWACCEL_AVX512` (`OFF` by default) disables the AVX-512 tiers,
+  including P-256 private-comb selection, while narrower or generic SIMD paths remain available.
 - `CERTPP_DISABLE_HWACCEL_SHA` (`OFF` by default) forces `SHA1::transform()`/
   `SHA256::transform()` (`src/crypto/hashers/sha1.cpp`,
   `src/crypto/hashers/sha256.cpp`) to always use their portable compression

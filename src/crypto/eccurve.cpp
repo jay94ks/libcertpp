@@ -3,6 +3,17 @@
 #include <cstring>
 #include <utility>
 
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && !defined(CERTPP_DISABLE_HWACCEL_AVX512) && \
+    defined(__clang__) && (defined(__x86_64__) || defined(_M_X64))
+#define CERTPP_P256_COMB_AVX512 1
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
 namespace certpp {
 namespace crypto {
 
@@ -364,6 +375,60 @@ namespace crypto {
             AffinePoint points[ROWS][ENTRIES];
             bool valid = false;
         };
+
+#if defined(CERTPP_P256_COMB_AVX512)
+        bool hasP256CombAvx512() {
+            static const bool supported = [] {
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+                __cpuidex(info, 1, 0);
+                if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0
+                    || (_xgetbv(0) & 0xe6) != 0xe6) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return (info[1] & (1 << 16)) != 0;
+#else
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)
+                    || (ecx & (1u << 27)) == 0 || (ecx & (1u << 28)) == 0) {
+                    return false;
+                }
+                uint32_t xcr0Low, xcr0High;
+                __asm__ volatile("xgetbv" : "=a"(xcr0Low), "=d"(xcr0High) : "c"(0));
+                (void)xcr0High;
+                if ((xcr0Low & 0xe6) != 0xe6
+                    || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 16)) != 0;
+#endif
+            }();
+            return supported;
+        }
+
+        __attribute__((target("avx512f")))
+        void selectP256CombAvx512(
+            const FastP256CombTable::AffinePoint* row, size_t digit,
+            FastP256CombTable::AffinePoint& out
+        ) {
+            __m512i selected = _mm512_loadu_si512(
+                reinterpret_cast<const void*>(&row[0]));
+            for (size_t i = 1; i < FastP256CombTable::ENTRIES; ++i) {
+                const uint64_t difference = uint64_t(i ^ digit);
+                const uint64_t nonZero = (difference | (uint64_t(0) - difference)) >> 63;
+                const __mmask8 mask = __mmask8(uint8_t(nonZero - 1));
+                const __m512i candidate = _mm512_loadu_si512(
+                    reinterpret_cast<const void*>(&row[i]));
+                selected = _mm512_mask_mov_epi64(selected, mask, candidate);
+            }
+            _mm512_storeu_si512(reinterpret_cast<void*>(&out), selected);
+        }
+#endif
 
         FastEcPoint fastInfinity(
             const FastPrimeField& field, const FastPrimeField::Value& one
@@ -1783,6 +1848,9 @@ namespace crypto {
                     }();
 
                     if (comb.valid) {
+#if defined(CERTPP_P256_COMB_AVX512)
+                        const bool useAvx512Selection = hasP256CombAvx512();
+#endif
                         FastEcPoint accumulator = fastInfinity(fastField, fastOne);
                         for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
                             size_t digit = 0;
@@ -1794,22 +1862,33 @@ namespace crypto {
                                 (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
                             const size_t tableDigit = digit | (nonZero ^ size_t(1));
                             FastEcPoint selected;
-                            for (size_t limb = 0; limb < 4; ++limb) {
-                                selected.x.limbs[limb] = comb.points[window][1].x[limb];
-                                selected.y.limbs[limb] = comb.points[window][1].y[limb];
-                            }
-                            selected.z = fastOne;
-                            for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
-                                const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
+#if defined(CERTPP_P256_COMB_AVX512)
+                            if (useAvx512Selection) {
+                                FastP256CombTable::AffinePoint packed;
+                                selectP256CombAvx512(
+                                    comb.points[window], tableDigit, packed);
+                                std::memcpy(selected.x.limbs, packed.x, sizeof(packed.x));
+                                std::memcpy(selected.y.limbs, packed.y, sizeof(packed.y));
+                            } else
+#endif
+                            {
                                 for (size_t limb = 0; limb < 4; ++limb) {
-                                    selected.x.limbs[limb] ^=
-                                        (selected.x.limbs[limb]
-                                            ^ comb.points[window][i].x[limb]) & mask;
-                                    selected.y.limbs[limb] ^=
-                                        (selected.y.limbs[limb]
-                                            ^ comb.points[window][i].y[limb]) & mask;
+                                    selected.x.limbs[limb] = comb.points[window][1].x[limb];
+                                    selected.y.limbs[limb] = comb.points[window][1].y[limb];
+                                }
+                                for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
+                                    const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
+                                    for (size_t limb = 0; limb < 4; ++limb) {
+                                        selected.x.limbs[limb] ^=
+                                            (selected.x.limbs[limb]
+                                                ^ comb.points[window][i].x[limb]) & mask;
+                                        selected.y.limbs[limb] ^=
+                                            (selected.y.limbs[limb]
+                                                ^ comb.points[window][i].y[limb]) & mask;
+                                    }
                                 }
                             }
+                            selected.z = fastOne;
                             FastEcPoint sum = fastAddMixed(
                                 accumulator, selected,
                                 fastField, fastA, fastOne, fastAMinusThree);

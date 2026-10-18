@@ -345,7 +345,7 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 |---|---:|---:|---:|---:|
 | P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
 | P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.793x | 0.474x | 0.999x | 0.321x |
+| P-256 | 0.838x | 0.497x | 1.007x | 0.322x |
 | P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
 | P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
 | secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
@@ -398,8 +398,20 @@ contexts now use position-dependent four-bit public-scalar combs: a process-wide
 and one 60 KiB public-key table per context. Direct public lookup removes all 256 point doublings
 and performs at most 128 mixed additions; private scalar paths retain full-scan selection. In 21
 single-CPU alternating runs, verification fell from 0.142 to 0.058 ms, a 2.45x improvement, and
-reached 0.999 of OpenSSL. The current P-256 keygen/sign/verify/ECDH ratios are therefore
-0.793/0.474/0.999/0.321, putting 77 of 80 prime-field rows above the gate and leaving three open.
+reached 0.999 of OpenSSL. The private P-256 comb now uses an AVX-512F selector when the CPU and
+operating system expose the required state. Each table entry is exactly 64 bytes, so the selector
+loads every entry in a row into one ZMM register and uses equality masks to retain the requested
+point. The scalar full-scan selector remains the fallback. Against the immediately preceding
+binary, 21 alternating pinned runs improved certpp key generation from 0.044 to 0.038 ms and
+signing from 0.060 to 0.055 ms, or 15.8% and 8.3%, without changing verification or ECDH.
+
+The current P-256 row uses 1,000 operations per batch and seven complete single-CPU runs. Each
+measurement warms both implementations and alternates which independent batch runs first, avoiding
+the frequency bias observed when every certpp batch preceded every OpenSSL batch. Median
+keygen/sign/verify/ECDH ratios are 0.838/0.497/1.007/0.322; their per-run ranges are
+0.793--0.889, 0.465--0.529, 0.897--1.050, and 0.307--0.326 respectively. This leaves 77 of 80
+prime-field rows above the gate and three private-operation rows open. Verification meets the
+median gate but remains close enough to require remeasurement after related changes.
 Other prime curves retain width-eight affine odd-multiple tables stored directly as Montgomery
 limbs, so repeated verification does not reconstruct, normalize, or reconvert their coordinates.
 

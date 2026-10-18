@@ -30,7 +30,7 @@ endif()
 option(CERTPP_ENABLE_FE25519_RADIX51 "Use the 2^51 five-limb layout for GF(2^255-19) when the compiler provides native 64x64-to-128 products" ${_CERTPP_FE25519_RADIX51_DEFAULT})
 unset(_CERTPP_FE25519_RADIX51_DEFAULT)
 option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU acceleration (ADX/BMI2, PCLMULQDQ/GFNI, SSE2/AVX2/AVX-512F, BMI1 ANDN, BMI2 RORX, and AVX512-IFMA), always using portable implementations instead" OFF)
-option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512F ChaCha20 and AVX512-IFMA Poly1305 acceleration while retaining narrower SIMD paths" OFF)
+option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512 acceleration while retaining narrower or generic SIMD paths" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI and VAES for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
 

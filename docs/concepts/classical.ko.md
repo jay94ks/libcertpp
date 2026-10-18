@@ -133,8 +133,11 @@
   private-scalar window는 16개 후보를
   모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 프로세스 전역 37행 7비트
   comb 표도 사용합니다. batch-normalized affine 좌표는 좌표마다 field limb 4개만
-  보관하고 모든 항을 한쪽 방향 mask 대입으로 스캔합니다. 이 표는 호출마다 점을 배가하지
-  않고 mixed 덧셈을 허용합니다. P-256은 Montgomery reduction에서
+  보관하고 모든 항을 스캔합니다. 지원하는 x86-64 Clang 빌드에서는 직접 CPUID와 XCR0를
+  검사한 뒤 각 64바이트 affine 항목을 ZMM register 하나로 읽고 mask로 요청한 점을 남기는
+  AVX-512F 선택기를 사용합니다. 다른 대상은 한쪽 방향 scalar mask 선택기를 사용합니다.
+  두 구현 모두 private digit에 대해 같은 전체 행 스캔을 수행합니다. 이 표는 호출마다 점을
+  배가하지 않고 mixed 덧셈을 허용합니다. P-256은 Montgomery reduction에서
   희소 modulus와 `a == -3` 배가 공식을 사용합니다. 재사용 P-256 검증 context는 두 검증
   scalar가 모두 공개값이므로 별도의 위치별 4비트 comb를 사용합니다. 60 KiB 기저 표는
   프로세스 전체에서 공유하고 바인딩 공개키마다 60 KiB 표 하나를 보관하며, 직접 조회로

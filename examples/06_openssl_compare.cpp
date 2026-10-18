@@ -47,6 +47,7 @@ using namespace certpp::crypto;
 namespace {
     constexpr int OUTER = 5;
     constexpr int SIGNATURE_ITERS = 200;
+    constexpr int P256_ITERS = 1000;
 
     double fastestNs(int iters, const std::function<void()>& body) {
         double best = 0.0;
@@ -110,8 +111,43 @@ namespace {
 
     void rowMs(const char* name, const std::function<void()>& certpp,
                const std::function<void()>& ossl, int iters) {
-        const double a = fastestNs(iters, certpp);
-        const double b = fastestNs(iters, ossl);
+        const int warmupIters = iters < 100 ? iters : 100;
+        for (int i = 0; i < warmupIters; ++i) {
+            certpp();
+        }
+        for (int i = 0; i < warmupIters; ++i) {
+            ossl();
+        }
+
+        const auto batchNs = [iters](const std::function<void()>& body) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < iters; ++i) {
+                body();
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            return std::chrono::duration<double, std::nano>(t1 - t0).count() / iters;
+        };
+        double a = 0.0;
+        double b = 0.0;
+        for (int outer = 0; outer < OUTER; ++outer) {
+            double candidateA;
+            double candidateB;
+            // Keep each implementation in an independent batch while alternating
+            // which one receives the first-batch frequency and thermal conditions.
+            if ((outer & 1) == 0) {
+                candidateA = batchNs(certpp);
+                candidateB = batchNs(ossl);
+            } else {
+                candidateB = batchNs(ossl);
+                candidateA = batchNs(certpp);
+            }
+            if (outer == 0 || candidateA < a) {
+                a = candidateA;
+            }
+            if (outer == 0 || candidateB < b) {
+                b = candidateB;
+            }
+        }
         std::printf("  %-24s %8.3f ms      %8.3f ms      %7.3fx\n",
             name, a / 1e6, b / 1e6, b / a);
     }
@@ -577,7 +613,7 @@ namespace {
         const EcCurveSpec curves[] = {
             { "P-192", EASYM_P192, 192, "prime192v1", 20, true },
             { "P-224", EASYM_P224, 224, "secp224r1", 20, true },
-            { "P-256", EASYM_P256, 256, "prime256v1", 20, true },
+            { "P-256", EASYM_P256, 256, "prime256v1", P256_ITERS, true },
             { "P-384", EASYM_P384, 384, "secp384r1", 10, true },
             { "P-521", EASYM_P521, 521, "secp521r1", 4, true },
             { "secp256k1", EASYM_SECP256K1, 256, "secp256k1", 20, true },
@@ -668,7 +704,7 @@ int main(int argc, char** argv) {
 
     if (argc == 2 && std::strcmp(argv[1], "--p256") == 0) {
         std::printf("-- Prime-curve signatures and agreement --\n");
-        benchEcCurve({ "P-256", EASYM_P256, 256, "prime256v1", 20, true });
+        benchEcCurve({ "P-256", EASYM_P256, 256, "prime256v1", P256_ITERS, true });
         if (legacyProvider) {
             OSSL_PROVIDER_unload(legacyProvider);
         }

@@ -46,7 +46,12 @@ point formulas then reduced their single-CPU 15-run latencies by 5.2--15.6%, pro
 0.797/0.477/0.406/0.322. A position-dependent four-bit P-256 public-verification comb subsequently
 removed 256 point doublings. The base table is shared process-wide while each bound public key keeps
 one 60 KiB table. Twenty-one alternating runs reduced verification from 0.142 to 0.058 ms and raised
-its OpenSSL ratio to 0.999; 77 of 80 prime-field rows now pass.
+its OpenSSL ratio to 0.999. An AVX-512F private-comb selector then loaded every 64-byte affine entry
+and retained the requested point with masks, preserving the full-row scan while improving key
+generation and signing by 15.8% and 8.3% against the preceding binary. The comparison harness now
+warms both sides and alternates independent batch order; seven pinned runs with 1,000 operations per
+batch measured P-256 keygen/sign/verify/ECDH medians of 0.838/0.497/1.007/0.322. Seventy-seven of
+80 prime-field rows pass.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,
