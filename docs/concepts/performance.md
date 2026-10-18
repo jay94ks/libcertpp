@@ -288,12 +288,12 @@ directions verify across the implementation boundary and reject an altered diges
 | ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
 | ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
 | ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
-| RSA-2048 keygen | 67.994 ms | 24.426 ms | 0.364x |
-| RSA-2048 sign | 0.959 ms | 0.255 ms | 0.266x |
-| RSA-2048 verify | 0.027 ms | 0.016 ms | 0.610x |
-| DSA-2048 keygen, including fresh parameters | 235.572 ms | 145.370 ms | 0.605x |
-| DSA-2048 sign | 0.519 ms | 0.339 ms | 0.653x |
-| DSA-2048 verify | 0.625 ms | 0.299 ms | 0.479x |
+| RSA-2048 keygen | 62.170 ms | 24.380 ms | 0.409x |
+| RSA-2048 sign | 0.948 ms | 0.255 ms | 0.269x |
+| RSA-2048 verify | 0.027 ms | 0.016 ms | 0.605x |
+| DSA-2048 keygen, including fresh parameters | 199.772 ms | 154.290 ms | 0.746x |
+| DSA-2048 sign | 0.514 ms | 0.335 ms | 0.654x |
+| DSA-2048 verify | 0.616 ms | 0.298 ms | 0.483x |
 | GOST R 34.10-2012 |  | unavailable |  |
 | Ed25519 sign, 32-byte message | 0.024 ms | 0.036 ms | 1.53x |
 | Ed25519 verify, 32-byte message | 0.077 ms | 0.098 ms | 1.28x |
@@ -403,9 +403,13 @@ implementation through the tested default/legacy providers, so that row has no i
 The first direct classic-signature run measured RSA keygen/sign at 1522.626/5.831 ms and DSA
 keygen/sign/verify at 5162.961/8.089/18.882 ms. Reusing Montgomery reduction in Miller--Rabin,
 using a sliding window for long modular exponents, and combining DSA verification's two public
-exponents reduced the current three-run medians to the values above. Key generation varies with
-how quickly random prime candidates are found, but the repeated signing and verification gains
-are stable. The remaining gap is tracked in
+exponents produced most of the reduction. The small-prime sieve now groups primes into products
+that fit 32 bits, scans the candidate once per product, and tests the product remainder against
+its factors. On a fixed 2048-bit composite whose first divisor in the sieve is 997, the nine-run
+median fell from 86.687 to 16.790 microseconds per call, a 5.16x local before/after improvement.
+The final eleven-run OpenSSL comparison is reported above. Key generation still varies with how
+quickly random prime candidates are found, while repeated signing and verification are stable.
+The remaining gap is tracked in
 [the performance roadmap](../roadmap/performance.md#openssl-90-program).
 
 ### Current ML-KEM comparison

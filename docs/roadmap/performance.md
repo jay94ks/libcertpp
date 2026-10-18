@@ -111,8 +111,9 @@ the initial measurements substantially. Cached RSA modulus contexts, packed 64-b
 short and long exponents, a packed two-base DSA verifier, and binary modular inversion first raised
 the comparison substantially. An integrated CIOS pass now advances product and reduction carries
 together, while a two-bit simultaneous DSA window reduces verification multiplications. Fresh
-eleven-run pinned Windows medians are about 0.36/0.27/0.61 for RSA and 0.61/0.65/0.48 for DSA
-keygen/sign/verify; randomized prime search still gives the key-generation rows much wider run-to-run
+eleven-run pinned Windows medians are about 0.41/0.27/0.61 for RSA and 0.75/0.65/0.48 for DSA
+keygen/sign/verify. Grouping the small-prime sieve divisors into 32-bit products made its worst
+2048-bit path 5.16x faster locally; randomized prime search still gives the key-generation rows much wider run-to-run
 variance than signing and verification. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
@@ -121,7 +122,9 @@ keeps an internal before/after baseline and an explicit unavailable result.
   conversion cost, integrated CIOS removed the second accumulator pass, and binary inversion removed
   quotient-sized extended-Euclidean work, but OpenSSL still has much faster Montgomery multiplication
   and prime-generation arithmetic. Profile the
-  current native GCC build before changing the reduction kernel; keep the existing CRT fault check
+  current native GCC build before changing the reduction kernel. The rejected full-square REDC
+  experiment was correct but made RSA signing more than twice as slow, so further work needs a
+  carry-chain design rather than a generic full-product buffer. Keep the existing CRT fault check
   and the documented variable-time boundary intact.
 - **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
   unrolled four-limb Montgomery kernel, batch-normalized four-bit base table, and prepared public

@@ -234,6 +234,22 @@ TEST_CASE("CBigNum: isProbablePrime") {
     CHECK_FALSE(CBigNum(uint64_t(1)).isProbablePrime());
     CHECK_FALSE(CBigNum(uint64_t(100)).isProbablePrime());
     CHECK_FALSE(CBigNum(uint64_t(561)).isProbablePrime()); // Carmichael number
+
+    // A 2048-bit composite whose first divisor in the small-prime table is its final entry, 997.
+    // This exercises every grouped product rather than returning from an early factor.
+    CBigNum lateSieveFactor;
+    REQUIRE(CBigNum::fromHex(
+        "8000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000075BCD53",
+        lateSieveFactor
+    ));
+    CHECK_FALSE(lateSieveFactor.isProbablePrime());
 }
 
 TEST_CASE("CBigNum: generatePrime produces a probable prime of the requested bit length") {
