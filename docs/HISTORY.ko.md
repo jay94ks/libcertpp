@@ -61,7 +61,9 @@ RSA 서명/검증을 0.948/0.027 ms에서 0.805/0.025 ms로, DSA 서명/검증�
 X25519와 packed Montgomery의 BMI2/ADX gate는 compiler별 기능 문자열 대신 직접 CPUID
 검사로 전환했고, X25519는 AVX2 body에 들어가기 전에 OSXSAVE/XCR0도 확인합니다. 이로써
 cached dispatch와 portable fallback을 보존하면서 Clang 18에서도 최적화 경로를 빌드할 수
-있습니다. 프로파일은 RSA 전체 비교 self cycle의 35.85%를 16-limb kernel에 귀속했습니다.
+있습니다. 이어 AES VAES dispatch도 같은 방식으로 전환해 AVX2/AVX-512F, VAES 비트와 필요한
+XCR0 상태를 직접 해석하므로 전체 가속 빌드도 Clang 18에서 컴파일됩니다. 프로파일은 RSA
+전체 비교 self cycle의 35.85%를 16-limb kernel에 귀속했습니다.
 명시적인 `_mulx_u64`/`_addcarryx_u64` 재작성은 Montgomery 단언 914,917개를 통과했지만
 안정적인 RSA/DSA 연산을 5--8% 늦춰 기각했습니다. 이어 고정 count 제곱 wrapper가 기존 통합
 CIOS 산술은 그대로 두고 공유 피연산자를 compiler에 노출했습니다. WSL에서 기준과 변경

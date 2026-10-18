@@ -68,7 +68,9 @@ key-generation ratios remained dominated by random prime-search variance.
 The X25519 and packed-Montgomery BMI2/ADX gates then moved from compiler-specific feature strings
 to direct CPUID checks; X25519 additionally verifies OSXSAVE/XCR0 before entering its AVX2 body.
 This keeps the optimized paths buildable with Clang 18 while preserving cached dispatch and the
-portable fallback. A profile attributed 35.85% of a combined RSA comparison's self cycles to the
+portable fallback. AES VAES dispatch later made the same change, decoding AVX2/AVX-512F and VAES
+bits plus the required XCR0 state directly so the complete accelerated build also compiles with
+Clang 18. A profile attributed 35.85% of a combined RSA comparison's self cycles to the
 16-limb kernel. An explicit `_mulx_u64`/`_addcarryx_u64` rewrite passed 914,917 Montgomery assertions
 but was rejected after making stable RSA/DSA operations 5--8% slower. Fixed-count square wrappers
 then kept the existing integrated CIOS arithmetic but exposed the shared operand to the compiler.

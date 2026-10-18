@@ -282,7 +282,9 @@
   is pending; only a remainder is staged, while forward overlap keeps the buffered path.
   AES-GCM additionally processes eight independent
   counters together and uses 256-bit VAES after checking AVX2, VAES, and the
-  OS-enabled vector state; the AES-NI and portable paths remain its fallbacks.
+  OS-enabled vector state; the AES-NI and portable paths remain its fallbacks. The
+  VAES dispatch reads CPUID and XCR0 directly, so Clang releases that reject `vaes`
+  as a `__builtin_cpu_supports` feature string can still compile the accelerated path.
   ChaCha20's ARX rounds have no dedicated
   extension either, but they vectorize across blocks: groups of four use
   SSE2, groups of eight use AVX2, and groups of sixteen use AVX-512F after

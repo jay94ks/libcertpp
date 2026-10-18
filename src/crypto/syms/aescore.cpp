@@ -71,9 +71,19 @@ namespace crypto {
                 __cpuidex(info, 7, 0);
                 return (info[1] & (1 << 5)) != 0 && (info[2] & (1 << 9)) != 0;
 #else
-                __builtin_cpu_init();
-                return __builtin_cpu_supports("avx2") != 0
-                    && __builtin_cpu_supports("vaes") != 0;
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)
+                    || (ecx & (1u << 27)) == 0 || (ecx & (1u << 28)) == 0) {
+                    return false;
+                }
+                uint32_t xcr0Low, xcr0High;
+                __asm__ volatile("xgetbv" : "=a"(xcr0Low), "=d"(xcr0High) : "c"(0));
+                (void)xcr0High;
+                if ((xcr0Low & 0x6) != 0x6
+                    || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 5)) != 0 && (ecx & (1u << 9)) != 0;
 #endif
             }();
             return supported;
@@ -98,9 +108,19 @@ namespace crypto {
                 return (info[1] & (1 << 16)) != 0 &&
                        (info[2] & (1 << 9)) != 0;
 #else
-                __builtin_cpu_init();
-                return __builtin_cpu_supports("avx512f") != 0 &&
-                       __builtin_cpu_supports("vaes") != 0;
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)
+                    || (ecx & (1u << 27)) == 0 || (ecx & (1u << 28)) == 0) {
+                    return false;
+                }
+                uint32_t xcr0Low, xcr0High;
+                __asm__ volatile("xgetbv" : "=a"(xcr0Low), "=d"(xcr0High) : "c"(0));
+                (void)xcr0High;
+                if ((xcr0Low & 0xE6) != 0xE6
+                    || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return (ebx & (1u << 16)) != 0 && (ecx & (1u << 9)) != 0;
 #endif
             }();
             return supported;

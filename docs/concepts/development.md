@@ -178,8 +178,10 @@ affects the others:
 - `CERTPP_DISABLE_HWACCEL_AES` (`OFF` by default) forces `AesCore`
   (`src/crypto/syms/aescore.cpp`) to use portable rounds instead of AES-NI for
   single blocks/CBC and VAES for parallel GCM counters. AES-NI uses its own
-  runtime CPUID check (`hasAesNi()`, leaf 1, ECX bit 25); VAES also checks AVX2
-  and the OS-enabled XMM/YMM state. `DES`/`TripleDES` have no accelerated path and are
+  runtime CPUID check (`hasAesNi()`, leaf 1, ECX bit 25). The VAES checks decode
+  AVX2/AVX-512F and VAES directly from CPUID and verify the corresponding OS-enabled
+  XMM/YMM/ZMM state in XCR0; they do not depend on compiler-specific CPU-feature strings.
+  `DES`/`TripleDES` have no accelerated path and are
   unaffected; `ChaCha20` uses SSE2/AVX2/AVX-512F rather than an AES extension
   and so answers to `CERTPP_DISABLE_HWACCEL_SIMD` instead -- see the
   `crypto/syms/aes.hpp` bullet above for the Equivalent Inverse Cipher

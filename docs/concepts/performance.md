@@ -273,7 +273,8 @@ latencies changing from 0.829 to 0.797 ms for RSA signing, 0.025 to 0.024 ms for
 ratios of 0.310/0.628 for RSA and 0.758/0.562 for DSA. Its randomized key-generation rows varied
 too widely to replace the pinned Windows key-generation results below. The table therefore retains
 the latest internally consistent pinned Windows snapshot while the WSL figures isolate this newer
-optimization.
+optimization. Enabling the exact Tiger Lake target on the same source changed seven-run DSA
+sign/verify medians from 0.438/0.529 to 0.428/0.521 ms (2.3%/1.5%); RSA medians were unchanged.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

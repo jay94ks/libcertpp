@@ -264,7 +264,9 @@
   유지합니다.
   AES-GCM은 독립적인 카운터 여덟 개도 함께 처리하며 AVX2, VAES, OS가 활성화한
   벡터 상태를 검사한 뒤 256비트 VAES를 사용합니다. AES-NI와 portable 경로는
-  폴백으로 남습니다.
+  폴백으로 남습니다. VAES dispatch는 CPUID와 XCR0를 직접 읽으므로 `vaes`를
+  `__builtin_cpu_supports` 기능 문자열로 허용하지 않는 Clang release도 가속 경로를
+  컴파일할 수 있습니다.
   ChaCha20의 ARX 라운드에도 전용 확장이 없지만 블록들에 걸쳐 벡터화됩니다.
   4블록 묶음은 SSE2, 8블록은 AVX2, 16블록은 런타임 CPU 및 OS 벡터 상태 검사 뒤
   AVX-512F를 사용합니다. `CERTPP_DISABLE_HWACCEL_SIMD`가 전체를 제어하며,

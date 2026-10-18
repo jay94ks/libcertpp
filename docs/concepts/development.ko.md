@@ -178,8 +178,10 @@ CMake는 하나의 타깃 `certpp`(별칭 `certpp::certpp`)를 빌드하며, sha
 - `CERTPP_DISABLE_HWACCEL_AES`(기본 `OFF`)는 `AesCore`
   (`src/crypto/syms/aescore.cpp`)가 단일 블록/CBC의 AES-NI와 병렬 GCM 카운터의
   VAES 대신 이식 가능 라운드를 쓰게 강제합니다. AES-NI는 자기 런타임 CPUID
-  검사(`hasAesNi()`. leaf 1, ECX 비트 25)를 사용하고 VAES는 AVX2와 OS가 활성화한
-  XMM/YMM 상태도 검사합니다. `DES`/`TripleDES`에는 가속 경로가 없고
+  검사(`hasAesNi()`. leaf 1, ECX 비트 25)를 사용합니다. VAES 검사는 CPUID에서
+  AVX2/AVX-512F와 VAES를 직접 해석하고 XCR0에서 OS가 활성화한 해당 XMM/YMM/ZMM
+  상태를 확인하므로 compiler별 CPU 기능 문자열에 의존하지 않습니다.
+  `DES`/`TripleDES`에는 가속 경로가 없고
   영향을 받지 않습니다. `ChaCha20`은 AES 확장 대신 SSE2/AVX2/AVX-512F를 사용하며
   `CERTPP_DISABLE_HWACCEL_SIMD`에 응답합니다 — 복호 쪽이 쓰는
   Equivalent Inverse Cipher 구성은 위의 `crypto/syms/aes.hpp` 항목을
