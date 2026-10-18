@@ -146,8 +146,12 @@ keeps an internal before/after baseline and an explicit unavailable result.
   correct against the external vectors but 20--34% slower because carry propagation and a separate
   reduction outweighed the six saved products. A five-bit private variable-base window was also
   slightly slower, while a four-bit sliding inversion changed the focused medians by too little to
-  separate from run variation. Further work needs a generated carry-chain or a whole point-operation
-  hardware target rather than another generic full-product buffer.
+  separate from run variation. A current full-harness Clang 18 `perf` profile attributes 31.00% of
+  self cycles to `FastPrimeField::mul()`, 16.95% to point doubling, 7.01% to full point addition,
+  2.21% to mixed addition, and only 2.62% to field inversion. This rules out more inversion-window
+  tuning as the main route. Further work needs a generated carry-chain or a whole point-operation
+  Tiger Lake target that compiles the field products together with doubling and addition, rather
+  than another generic full-product buffer or an isolated leaf-function dispatch.
 - **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
   multiples with each public key, while Ed448 stores a larger comb table. Measure the same
   setup-time, memory, and repeated-verification tradeoff for ECDSA, DSA, and other remaining

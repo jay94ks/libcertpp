@@ -130,9 +130,12 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   높였지만 모두 문턱 아래입니다. 대칭 full-product 제곱 경로는 외부 vector에 대해
   정확했지만 carry 전파와 별도 reduction이 절약한 곱 6개보다 비싸 20--34% 느렸습니다.
   5비트 private 가변 기저 window도 약간 느렸고, 4비트 sliding 역원은 집중 실행 중앙값
-  변화가 실행 편차와 구분하기에 너무 작았습니다. 다음 작업에는 또 다른 일반 full-product
-  buffer가 아니라 생성한 carry-chain 또는 점 연산 전체를 대상으로 한 hardware target이
-  필요합니다.
+  변화가 실행 편차와 구분하기에 너무 작았습니다. 현재 전체 하네스의 Clang 18 `perf`
+  프로파일은 self cycle의 31.00%를 `FastPrimeField::mul()`, 16.95%를 점 배가, 7.01%를
+  일반 점 덧셈, 2.21%를 mixed 덧셈, 2.62%만 필드 역원에 귀속했습니다. 따라서 역원 window
+  조정은 주된 경로에서 제외됩니다. 다음 작업에는 또 다른 일반 full-product buffer나 고립된
+  leaf 함수 dispatch가 아니라, 필드 곱을 배가·덧셈과 함께 컴파일하는 생성 carry-chain 또는
+  전체 점 연산 Tiger Lake target이 필요합니다.
 - **남은 곡선의 검증용 공개 키 테이블을 평가합니다.** Ed25519는 공개키마다 홀수
   배수 8개를, Ed448은 더 큰 comb 표를 저장합니다. ECDSA, DSA 등 남은 가변 기저
   서명 구현에서 준비 시간, 메모리, 반복 검증의 같은 tradeoff를 측정합니다.
