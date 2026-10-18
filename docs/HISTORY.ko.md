@@ -136,6 +136,15 @@ Montgomery residue에 ordinary-domain base를 곱하면 ordinary 결과가 바�
 Montgomery 형식에 유지하는 실험도 고정 RFC 3526 소수에서 0.3%만 줄어 기각했습니다. 이
 무작위 행은 계속 재측정에 민감합니다. 다음 RSA 산술 방향은 생성한 ADCX/ADOX dual-carry
 kernel입니다.
+이어 더 좁은 RSA kernel 실험 네 가지로 생성 kernel이 피해야 할 형태를 확인했습니다. inline
+assembly 열마다 CF/OF를 초기화한 경로는 검증 중앙값을 0.023 ms에서 0.032 ms로 늦췄습니다.
+통합 radix-52 AVX-512 IFMA 시제품은 Montgomery 정답을 유지했지만 scalar carry 정규화와
+겹친 vector 접근 비용 때문에 같은 행을 0.044 ms로 늦췄습니다. compiler 전개를 4-limb로
+제한한 결과 서명/검증 중앙값은 0.774/0.023 ms에서 0.781/0.024 ms가 됐습니다. 지속되는
+dual-carry schedule이 없는 compact 및 완전 전개 BMI2 assembly kernel은 서명을 각각
+0.772에서 0.979 ms로, 0.780에서 0.895 ms로 늦췄습니다. 네 경로를 모두 제거했습니다. 유효한
+assembly 경로는 limb마다 carry를 정수화하거나 초기화하지 않고 여러 열에 걸쳐 두 ADX flag
+chain을 유지해야 합니다.
 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로

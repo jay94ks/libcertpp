@@ -145,6 +145,15 @@ and 8192 were rejected after 15-run medians of 187.664 and 204.667 ms against 15
 for 4096. Keeping a Miller--Rabin result in Montgomery form saved only 0.3% on a fixed RFC 3526
 prime and was also rejected. The randomized row remains remeasurement-sensitive. A generated
 ADCX/ADOX dual-carry kernel remains the next RSA arithmetic direction.
+Four narrower RSA kernel experiments established what that generated kernel must avoid. Resetting
+CF/OF around each inline-assembly column raised verification from a 0.023 ms median to 0.032 ms.
+An integrated radix-52 AVX-512 IFMA prototype kept the Montgomery tests correct but raised the same
+row to 0.044 ms because scalar carry normalization and overlapping vector accesses dominated its
+lower multiply count. Limiting compiler unrolling to four limbs changed sign/verify medians from
+0.774/0.023 to 0.781/0.024 ms. Compact and fully unrolled BMI2 assembly kernels without a persistent
+dual-carry schedule raised signing from 0.772 to 0.979 ms and from 0.780 to 0.895 ms, respectively.
+All four were removed; a useful assembly path has to preserve both ADX flag chains across a group
+of columns rather than materializing or resetting carry at every limb.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

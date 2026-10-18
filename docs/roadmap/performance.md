@@ -157,7 +157,10 @@ keeps an internal before/after baseline and an explicit unavailable result.
   subsequently raised seven-run current sign/verify ratios to 0.328/0.673. Further RSA work still
   needs a generated ADCX/ADOX dual-carry
   schedule rather than either intrinsic chaining or a generic full-product
-  buffer. DSA's context-bound position tables raised its repeated sign/verify ratios to
+  buffer. Per-column ADX, radix-52 IFMA with scalar normalization, reduced compiler unrolling, and
+  BMI2-only compact or fully unrolled assembly also measured slower; the next kernel must preserve
+  CF and OF across a multi-column schedule. DSA's context-bound position tables raised its repeated
+  sign/verify ratios to
   1.667/1.103, and bounded residue-reusing parameter search brought its current key-generation
   median to 0.9015. The remaining direct gaps are RSA signing and verification. Keep the existing
   CRT fault check and documented variable-time boundary intact.
