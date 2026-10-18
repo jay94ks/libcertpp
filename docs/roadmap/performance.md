@@ -159,8 +159,10 @@ keeps an internal before/after baseline and an explicit unavailable result.
   schedule rather than either intrinsic chaining or a generic full-product
   buffer. Per-column ADX, radix-52 IFMA with scalar normalization, reduced compiler unrolling, and
   BMI2-only compact or fully unrolled assembly also measured slower; the next kernel must preserve
-  CF and OF across a multi-column schedule. DSA's context-bound position tables raised its repeated
-  sign/verify ratios to
+  CF and OF across a multi-column schedule. The accepted 16-column dual-carry kernel now does so for
+  RSA CRT and reduced signing from 0.778 to 0.626 ms, raising its ratio median from 0.330 to 0.396.
+  Extend the same scheduling work to dedicated squaring and the 32-limb public-modulus path. DSA's
+  context-bound position tables raised its repeated sign/verify ratios to
   1.667/1.103, and bounded residue-reusing parameter search brought its current key-generation
   median to 0.9015. The remaining direct gaps are RSA signing and verification. Keep the existing
   CRT fault check and documented variable-time boundary intact.

@@ -145,6 +145,12 @@ dual-carry schedule이 없는 compact 및 완전 전개 BMI2 assembly kernel은 
 0.772에서 0.979 ms로, 0.780에서 0.895 ms로 늦췄습니다. 네 경로를 모두 제거했습니다. 유효한
 assembly 경로는 limb마다 carry를 정수화하거나 초기화하지 않고 여러 열에 걸쳐 두 ADX flag
 chain을 유지해야 합니다.
+채택한 다음 변경은 두 1024비트 RSA CRT branch에서 그 구조를 구현합니다. 첫 전체 폭 pass는
+scalar product와 accumulator carry를 CF와 OF에 유지하고, reduction pass는 modulus product와
+shifted accumulator에 두 flag를 다시 사용합니다. 기존 5비트 paired exponent schedule과 CRT
+fault 검사는 그대로입니다. 한 코어에 고정한 11회 교대 실행에서 RSA-2048 서명 중앙값은
+0.778에서 0.626 ms로 19.5% 줄었고 OpenSSL 대비 비율 중앙값은 0.330배에서 0.396배로
+높아졌습니다.
 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로

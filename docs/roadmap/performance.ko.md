@@ -141,8 +141,10 @@ GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 �
   chain이나 일반 full-product buffer가 아니라 생성한 ADCX/ADOX dual-carry
   schedule이 필요합니다. 열별 ADX, scalar 정규화를 쓰는 radix-52 IFMA, 축소된 compiler
   전개, BMI2 전용 compact·완전 전개 assembly도 더 느렸으므로 다음 kernel은 여러 열에 걸쳐
-  CF와 OF를 유지해야 합니다. DSA의 context 바인딩 위치별 표는 반복 서명/검증 비율을
-  1.667/1.103배로 높였고, 제한된 나머지 재사용 파라미터 탐색은 현재 키 생성 중앙값을
+  CF와 OF를 유지해야 합니다. 채택한 16열 dual-carry kernel은 RSA CRT에서 이를 구현해 서명을
+  0.778에서 0.626 ms로 줄이고 비율 중앙값을 0.330배에서 0.396배로 높였습니다. 같은 schedule을
+  전용 제곱과 32-limb 공개 modulus 경로로 확장합니다. DSA의 context 바인딩 위치별 표는
+  반복 서명/검증 비율을 1.667/1.103배로 높였고, 제한된 나머지 재사용 파라미터 탐색은 현재 키 생성 중앙값을
   0.9015배로 높였습니다. 남은 직접 격차는 RSA 서명과 검증입니다. 기존 CRT fault 검사와
   문서화된 variable-time 경계를 보존합니다.
 

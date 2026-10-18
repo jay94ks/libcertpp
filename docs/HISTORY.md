@@ -154,6 +154,11 @@ lower multiply count. Limiting compiler unrolling to four limbs changed sign/ver
 dual-carry schedule raised signing from 0.772 to 0.979 ms and from 0.780 to 0.895 ms, respectively.
 All four were removed; a useful assembly path has to preserve both ADX flag chains across a group
 of columns rather than materializing or resetting carry at every limb.
+The accepted follow-up does that for both 1024-bit RSA CRT branches. Its first full-width pass keeps
+the scalar-product and accumulator carries in CF and OF; its reduction pass reuses the two flags for
+the modulus product and shifted accumulator. The existing five-bit paired exponent schedule and CRT
+fault check remain unchanged. Eleven alternating pinned runs reduced the RSA-2048 signing median
+from 0.778 to 0.626 ms (19.5%) and raised the paired OpenSSL ratio median from 0.330 to 0.396.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

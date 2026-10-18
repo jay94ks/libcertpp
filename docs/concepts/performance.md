@@ -305,6 +305,12 @@ Eleven alternating pinned runs reduced verification from 0.024 to 0.023 ms and r
 OpenSSL ratio from 0.640 to 0.676; the private operation's re-encryption check gave signing a smaller
 0.793 to 0.782 ms reduction. A separate seven-run current-source snapshot measured median RSA
 sign/verify ratios of 0.328/0.673.
+The 1024-bit CRT multiplier now keeps its product and accumulator carries in CF and OF across all
+16 columns, then uses the two persistent ADX chains again for Montgomery reduction. Eleven pinned
+alternating runs against the pre-change binary reduced the RSA-2048 signing median from 0.778 to
+0.626 ms, a 19.5% latency reduction, while the paired OpenSSL ratio median rose from 0.330 to 0.396.
+The same runs measured a 0.675 verification ratio; public-exponent arithmetic is unchanged by this
+CRT-only kernel. The pinned Windows table remains the complete same-configuration inventory.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
