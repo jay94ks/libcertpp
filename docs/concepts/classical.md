@@ -153,6 +153,12 @@
   entries per row and selects with masks; the prepared path uses 64 mixed additions and no point
   doublings. Changing the peer replaces the cached table. Other prime curves retain width-eight
   wNAF verification tables and their ordinary private scalar path.
+  A newly bound P-256 signing context uses the ordinary one-nonce path for its first signature.
+  Repeated signing then prepares eight OS-CSPRNG nonces together: the eight projective `k*G`
+  coordinates share one batch field inversion and the eight values of `k^-1 mod n` share one batch
+  order inversion. The context queues only `r` and `k^-1`; taking an entry moves it out, and key
+  reset or context destruction securely clears every unused inverse. Point multiplication retains
+  the same full-scan private comb, and other curves retain per-signature preparation.
   Other builds retain the masked R0/R1 `CBigNum` Montgomery ladder. Both paths
   pay for one final inversion rather than one per scalar bit.
   The per-modulus context is built at the top of `scalarMul()`/

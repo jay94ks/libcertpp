@@ -138,10 +138,74 @@ namespace crypto {
 
         class EcContext : public IAsymmetricContext {
         private:
+            struct PreparedSigningNonce {
+                CBigNum r;
+                CBigNum inverse;
+            };
+
             FastPrimeVerifyTable _verifyBaseTable;
             FastPrimeVerifyTable _verifyPublicTable;
             IPublicKeyPtr _derivePeerKey;
             FastPrimeVerifyTable _derivePeerTable;
+            PreparedSigningNonce _signingNonces[FAST_PRIME_SIGN_BATCH_SIZE];
+            size_t _signingNonceIndex = FAST_PRIME_SIGN_BATCH_SIZE;
+            bool _signingBatchArmed = false;
+            bool _signingBatchSupported = false;
+
+            void clearSigningNonces() {
+                for (PreparedSigningNonce& nonce : _signingNonces) {
+                    nonce.r.secureClear();
+                    nonce.inverse.secureClear();
+                }
+                _signingNonceIndex = FAST_PRIME_SIGN_BATCH_SIZE;
+            }
+
+            bool refillSigningNonces(const CEcCurve& curve, const CBigNum& upperBound) {
+                clearSigningNonces();
+                CBigNum nonces[FAST_PRIME_SIGN_BATCH_SIZE];
+                bool generated = true;
+                for (size_t i = 0; i < FAST_PRIME_SIGN_BATCH_SIZE; ++i) {
+                    if (!CBigNum::randomBelow(upperBound, nonces[i])) {
+                        generated = false;
+                        break;
+                    }
+                    nonces[i].add(CBigNum(uint64_t(1)));
+                }
+                if (generated) {
+                    CBigNum r[FAST_PRIME_SIGN_BATCH_SIZE];
+                    CBigNum inverse[FAST_PRIME_SIGN_BATCH_SIZE];
+                    generated = FastPrimePrepareSigningNonces(
+                        curve, nonces, FAST_PRIME_SIGN_BATCH_SIZE, r, inverse);
+                    if (generated) {
+                        for (size_t i = 0; i < FAST_PRIME_SIGN_BATCH_SIZE; ++i) {
+                            _signingNonces[i].r = std::move(r[i]);
+                            _signingNonces[i].inverse = std::move(inverse[i]);
+                        }
+                        _signingNonceIndex = 0;
+                    }
+                    for (CBigNum& value : inverse) {
+                        value.secureClear();
+                    }
+                }
+                for (CBigNum& nonce : nonces) {
+                    nonce.secureClear();
+                }
+                return generated;
+            }
+
+            bool takeSigningNonce(
+                const CEcCurve& curve, const CBigNum& upperBound,
+                CBigNum& r, CBigNum& inverse
+            ) {
+                if (_signingNonceIndex == FAST_PRIME_SIGN_BATCH_SIZE
+                    && !refillSigningNonces(curve, upperBound)) {
+                    return false;
+                }
+                r = std::move(_signingNonces[_signingNonceIndex].r);
+                inverse = std::move(_signingNonces[_signingNonceIndex].inverse);
+                ++_signingNonceIndex;
+                return true;
+            }
 
             void prepareVerificationTables(const CEcCurve& curve, const SEcPoint& publicPoint) {
                 if (!PreparePrimeVerifyTable(curve, curve.g, _verifyBaseTable)
@@ -153,12 +217,16 @@ namespace crypto {
 
         protected:
             void onReset() override {
+                clearSigningNonces();
+                _signingBatchArmed = false;
+                _signingBatchSupported = false;
                 _verifyBaseTable.clear();
                 _verifyPublicTable.clear();
                 _derivePeerKey.reset();
                 _derivePeerTable.clear();
                 auto priv = std::dynamic_pointer_cast<EcPrivateKey>(privateKey());
                 if (priv) {
+                    _signingBatchSupported = FastPrimeSigningBatchSupported(priv->curve());
                     size_t orderBytes = (priv->curve().n.bitLength() + 7) / 8;
                     sizeOfSign(CDer::maxSignatureSize(orderBytes));
                     sizeOfDigest(orderBytes);
@@ -177,6 +245,10 @@ namespace crypto {
             }
 
         public:
+            ~EcContext() override {
+                clearSigningNonces();
+            }
+
             ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out) override {
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
@@ -196,37 +268,40 @@ namespace crypto {
                 CBigNum nMinus1(n);
                 nMinus1.sub(CBigNum(uint64_t(1)));
 
-                // --> k, and dr alongside it, are the two values here whose exposure is
-                // catastrophic rather than merely unwanted: k yields d outright from a published
-                // signature (d = (s*k - z) / r mod n), and dr yields it directly (d = dr / r mod
-                // n). So both are cleared on every path out of the loop, including the retry
-                // paths -- which take a zero r or a non-invertible k and so are unreachable short
-                // of a broken CSPRNG, but cost three lines to cover properly.
+                // --> k, k^-1, and dr are catastrophic rather than merely unwanted: either nonce
+                // form yields d from a published signature, and dr yields it directly. Ordinary
+                // k and dr temporaries are cleared on every retry path. The P-256 batch retains
+                // only k^-1 and clears every unused entry on key reset and context destruction;
+                // taking an entry moves it out so a nonce can never be reused.
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
-                    CBigNum k;
-                    if (!CBigNum::randomBelow(nMinus1, k)) {
-                        return ERET_UNKNOWN;
-                    }
-                    k.add(CBigNum(uint64_t(1))); // k in [1, n-1]
-
-                    SEcPoint kg = curve.scalarMulBase(k);
-                    if (kg.infinity) {
-                        k.secureClear();
-                        continue;
-                    }
-
-                    kg.x.mod(n);
-                    r = std::move(kg.x);
-                    if (r.isZero()) {
-                        k.secureClear();
-                        continue;
-                    }
-
                     CBigNum kInv;
-                    if (!FastPrimeInverse(k, n, kInv)) {
+                    const bool usePrepared = _signingBatchSupported && _signingBatchArmed
+                        && takeSigningNonce(curve, nMinus1, r, kInv);
+                    _signingBatchArmed = _signingBatchArmed || _signingBatchSupported;
+                    if (usePrepared) {
+                        // r and k^-1 were prepared together with the rest of this context's
+                        // nonce batch, sharing the two expensive inversions across the batch.
+                    } else {
+                        CBigNum k;
+                        if (!CBigNum::randomBelow(nMinus1, k)) {
+                            return ERET_UNKNOWN;
+                        }
+                        k.add(CBigNum(uint64_t(1))); // k in [1, n-1]
+
+                        SEcPoint kg = curve.scalarMulBase(k);
+                        if (kg.infinity) {
+                            k.secureClear();
+                            continue;
+                        }
+
+                        kg.x.mod(n);
+                        r = std::move(kg.x);
+                        if (r.isZero() || !FastPrimeInverse(k, n, kInv)) {
+                            k.secureClear();
+                            continue;
+                        }
                         k.secureClear();
-                        continue;
                     }
 
                     CBigNum dr(d);
@@ -239,7 +314,6 @@ namespace crypto {
                     kInv.mulMod(sum, n);
                     s = std::move(kInv);
 
-                    k.secureClear();
                     dr.secureClear();
                     sum.secureClear();
 

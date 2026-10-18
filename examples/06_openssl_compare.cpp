@@ -510,7 +510,7 @@ namespace {
             certppSignature.data(), certppSignature.size());
         const SReadOnlyByteSpan osslSignatureRead(
             osslSignature.data(), osslSignature.size());
-        const bool signaturesInteroperate =
+        bool signaturesInteroperate =
             EVP_PKEY_verify(osslVerify,
                 certppSignature.data(), certppSignature.size(),
                 digest.data(), digest.size()) == 1
@@ -521,6 +521,17 @@ namespace {
             && certppVerify->verify(
                 SReadOnlyByteSpan(changedDigest.data(), changedDigest.size()),
                 osslSignatureRead) != ERET_OK;
+        // Cross the P-256 signing nonce batch boundary before timing and have OpenSSL verify each
+        // result. Other curves simply exercise their ordinary per-signature path nine more times.
+        for (size_t i = 0; i < 9 && signaturesInteroperate; ++i) {
+            std::vector<uint8_t> preparedSignature(certppSign->sizeOfSign());
+            SByteSpan preparedSpan(preparedSignature.data(), preparedSignature.size());
+            signaturesInteroperate =
+                certppSign->sign(digestSpan, preparedSpan) == ERET_OK
+                && EVP_PKEY_verify(osslVerify,
+                    preparedSignature.data(), preparedSpan.size,
+                    digest.data(), digest.size()) == 1;
+        }
         if (!signaturesInteroperate) {
             std::printf("  %-24s signature interoperability failed\n", spec.name);
             EVP_PKEY_CTX_free(osslVerify);

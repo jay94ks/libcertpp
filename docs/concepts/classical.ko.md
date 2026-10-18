@@ -147,7 +147,14 @@
   대해 같은 60 KiB 위치별 표 형식을 지연 생성해 보관합니다. 공개 검증과 달리 private ECDH는
   행마다 항목 15개를 모두 스캔해 mask로 선택하며, 준비된 경로는 mixed 덧셈 64회만 수행하고
   점 배가는 하지 않습니다. peer가 바뀌면 캐시 표도 교체합니다. 다른 소수 곡선은 폭 8 wNAF
-  검증 표와 일반 private scalar 경로를 유지합니다. 다른 빌드는 mask 기반 R0/R1
+  검증 표와 일반 private scalar 경로를 유지합니다.
+  새로 바인딩한 P-256 서명 context는 첫 서명에 일반 단일 nonce 경로를 사용합니다. 반복
+  서명은 OS CSPRNG nonce 8개를 함께 준비합니다. projective `k*G` 좌표 8개가 batch field 역원
+  하나를 공유하고 `k^-1 mod n` 값 8개가 batch order 역원 하나를 공유합니다. context에는
+  `r`과 `k^-1`만 대기시키며, 항목을 사용할 때 이동해 빼고 키 reset이나 context 파괴 시 쓰지
+  않은 역원을 모두 안전하게 지웁니다. 점 곱셈은 같은 전체 스캔 private comb를 유지하고 다른
+  곡선은 서명마다 준비합니다.
+  다른 빌드는 mask 기반 R0/R1
   `CBigNum` Montgomery ladder를 유지합니다. 두 경로 모두 스칼라 비트마다 하나가
   아니라 마지막 역원 하나만 계산합니다. 모듈러스별 컨텍스트는 `CEcCurve`
   인스턴스에 캐시되지 않고 `scalarMul()`/`scalarMulBase()`의 앞머리에서

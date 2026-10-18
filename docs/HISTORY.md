@@ -61,6 +61,13 @@ A context-cached, position-dependent four-bit comb for the current P-256 ECDH pe
 fifteen candidates. Seven alternating runs reduced repeated certpp derive from 0.140 to 0.039 ms
 and raised its OpenSSL ratio from 0.315 to 1.164. The current P-256 ratios are
 0.959/0.543/0.994/1.164, so 79 of 80 prime-field rows pass and only signing remains.
+A repeated-signing P-256 context then began preparing eight random nonces together after preserving
+the ordinary one-shot first signature. Batch normalization shares one field inversion across their
+projective `k*G` coordinates, and Montgomery's batch method shares one order inversion across their
+`k^-1` values. Unused secret inverses are securely cleared on key reset and destruction. Seven
+alternating pinned runs reduced repeated signing from a 0.037 ms median to 0.020 ms and raised its
+OpenSSL ratio from 0.531 to 0.990. The refreshed keygen/sign/verify/ECDH medians are
+0.980/0.990/0.983/1.168, so all 80 prime-field rows pass.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,

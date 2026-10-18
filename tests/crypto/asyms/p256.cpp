@@ -2,6 +2,8 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
+#include <set>
+#include <vector>
 
 using namespace certpp;
 using namespace certpp::crypto;
@@ -117,6 +119,45 @@ TEST_CASE("P256: sign/verify round-trips for digests both wider and narrower tha
         CHECK(ctx->verify(SReadOnlyByteSpan(digest.begin(), digest.size()),
             SReadOnlyByteSpan(signature.begin(), signature.size())) != ERET_OK);
     }
+}
+
+TEST_CASE("P256: repeated signing crosses prepared-nonce batches and resets with the key") {
+    IAsymmetricPtr p256 = IAsymmetric::builtIn(EASYM_P256);
+    const SKeyPair& pair = sharedTestKeyPair();
+    REQUIRE(p256);
+    REQUIRE(pair);
+
+    IAsymmetricContextPtr ctx = p256->createContext();
+    REQUIRE(ctx);
+    ctx->keyPair(pair);
+
+    std::set<std::vector<uint8_t>> signatures;
+    uint8_t digest[32] = {};
+    // The accelerated implementation prepares eight nonces at a time; 33 signatures cross several
+    // refill boundaries while this test remains valid for the portable per-signature path.
+    for (size_t i = 0; i < 33; ++i) {
+        digest[0] = uint8_t(i);
+        std::vector<uint8_t> signature(ctx->sizeOfSign());
+        SByteSpan written(signature.data(), signature.size());
+        REQUIRE(ctx->sign(SReadOnlyByteSpan(digest, sizeof(digest)), written) == ERET_OK);
+        signature.resize(written.size);
+        CHECK(ctx->verify(
+            SReadOnlyByteSpan(digest, sizeof(digest)),
+            SReadOnlyByteSpan(signature.data(), signature.size())) == ERET_OK);
+        CHECK(signatures.insert(signature).second);
+    }
+
+    SKeyPair replacement;
+    REQUIRE(p256->generateKeyPair(TEST_KEY_SIZE, replacement) == ERET_OK);
+    ctx->keyPair(replacement);
+    std::vector<uint8_t> replacementSignature(ctx->sizeOfSign());
+    SByteSpan replacementWritten(replacementSignature.data(), replacementSignature.size());
+    REQUIRE(ctx->sign(
+        SReadOnlyByteSpan(digest, sizeof(digest)), replacementWritten) == ERET_OK);
+    replacementSignature.resize(replacementWritten.size);
+    CHECK(ctx->verify(
+        SReadOnlyByteSpan(digest, sizeof(digest)),
+        SReadOnlyByteSpan(replacementSignature.data(), replacementSignature.size())) == ERET_OK);
 }
 
 TEST_CASE("P256: verify rejects a tampered signature") {

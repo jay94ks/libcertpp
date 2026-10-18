@@ -6,6 +6,8 @@
 namespace certpp {
 namespace crypto {
 
+    static constexpr size_t FAST_PRIME_SIGN_BATCH_SIZE = 8;
+
     struct FastPrimeVerifyTable {
         static constexpr size_t WNAF_ENTRIES = 64;
         static constexpr size_t P256_COMB_WINDOW_BITS = 4;
@@ -90,6 +92,15 @@ namespace crypto {
      * that prime really is prime before using Fermat's exponent prime-2. */
     bool FastPrimeInverse(
         const CBigNum& value, const CBigNum& prime, CBigNum& out);
+
+    bool FastPrimeSigningBatchSupported(const CEcCurve& curve);
+
+    /* Prepares r and k^-1 for a batch of standard P-256 ECDSA nonces. Projective X coordinates
+     * and order inverses each share one batch inversion. Returns false on unsupported targets or
+     * malformed input so the caller can retain the ordinary per-signature path. */
+    bool FastPrimePrepareSigningNonces(
+        const CEcCurve& curve, const CBigNum* nonces, size_t count,
+        CBigNum* outR, CBigNum* outInverse);
 
     /* Builds a reusable affine table for public verification scalars. Standard P-256 uses a
      * position-dependent four-bit comb; other prime curves retain sixty-four odd multiples for a

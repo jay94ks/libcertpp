@@ -105,9 +105,10 @@ tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit
 one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
 the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining, a four-bit
 public-verification comb, AVX-512 full-scan private-comb selection, and a signed radix-256 base
-comb later raised the fixed-base rows. A peer-bound private full-scan comb then raised repeated ECDH;
-the current balanced medians are 0.959/0.543/0.994/1.164, leaving signing as the only prime-curve
-row below the gate. Fixed-count PCLMUL product and square kernels,
+comb later raised the fixed-base rows. A peer-bound private full-scan comb raised repeated ECDH, and
+batched P-256 nonce preparation shared coordinate and order inversions across repeated signatures.
+The current balanced medians are 0.980/0.990/0.983/1.168, so all 80 prime-curve rows pass.
+Fixed-count PCLMUL product and square kernels,
 descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
 binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
@@ -143,36 +144,6 @@ keeps an internal before/after baseline and an explicit unavailable result.
   remain 0.310/0.628 for RSA and 0.758/0.562 for DSA, so further work still needs a generated
   ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or a generic full-product
   buffer. Keep the existing CRT fault check and documented variable-time boundary intact.
-- **Close the remaining P-256 private-operation rows.** OpenSSL uses a highly specialized
-  implementation. A sparse,
-  unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
-  masked private-table selection, and width-eight prepared verification tables raised the four
-  ratios to 0.318--0.614, but all remain below the gate. A symmetric full-product squaring path was
-  correct against the external vectors but 20--34% slower because carry propagation and a separate
-  reduction outweighed the six saved products. A five-bit private variable-base window was also
-  slightly slower, while a four-bit sliding inversion changed the focused medians by too little to
-  separate from run variation. A current full-harness Clang 18 `perf` profile attributes 31.00% of
-  self cycles to `FastPrimeField::mul()`, 16.95% to point doubling, 7.01% to full point addition,
-  2.21% to mixed addition, and only 2.62% to field inversion. This rules out more inversion-window
-  tuning as the main route. Forcing the field selector and sparse multiply into the point formulas
-  then improved single-CPU 15-run keygen/sign/verify/ECDH medians by 15.6/9.3/5.7/5.2%, but the
-  OpenSSL ratios remained only 0.797/0.477/0.406/0.322. A position-dependent four-bit comb then
-  removed all 256 point doublings from public verification. Its 21-run median fell from 0.142 to
-  0.058 ms and reached 0.999 of OpenSSL. An AVX-512F selector then loaded every 64-byte private-comb
-  entry and retained the requested point with masks, preserving the full-row scan while improving
-  keygen and signing by 15.8% and 8.3% against the preceding binary. The current benchmark uses
-  1,000-operation batches, alternates which independently timed implementation runs first, and
-  first reported seven-run medians of 0.838/0.497/1.007/0.322. Replacing the unsigned seven-bit
-  base comb with 33-row signed radix-256 reduced the table and the expected mixed additions. Seven
-  alternating before/after runs reduced certpp keygen/sign medians from 0.027/0.039 to
-  0.025/0.037 ms. A context-cached, position-dependent four-bit peer comb then replaced repeated
-  ECDH's 256 doublings and 64 general additions with 64 full-scan mixed additions. Seven alternating
-  runs reduced certpp derive from 0.140 to 0.039 ms and raised its ratio from 0.315 to 1.164. The
-  current four ratios are 0.959/0.543/0.994/1.164. Key generation, verification, and repeated ECDH
-  are complete; signing remains open. Further work on signing needs a generated carry-chain or
-  a whole point-operation
-  Tiger Lake target that compiles the field products together with mixed addition and inversion, rather
-  than another generic full-product buffer or an isolated leaf-function dispatch.
 - **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
   multiples with each public key, while Ed448 stores a larger comb table. Measure the same
   setup-time, memory, and repeated-verification tradeoff for ECDSA, DSA, and other remaining

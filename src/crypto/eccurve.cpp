@@ -1,4 +1,5 @@
 #include <certpp/crypto/eccurve.hpp>
+#include <certpp/utils/secure.hpp>
 #include "fastprimefield.hpp"
 #include <cstring>
 #include <utility>
@@ -728,6 +729,167 @@ namespace crypto {
             return SEcPoint(std::move(x), std::move(y));
         }
 
+        bool isStandardP256(const CEcCurve& curve) {
+            static const CEcCurve standard = [] {
+                CEcCurve result;
+                CEcCurve::knownCurves(ECURVE_P256, result);
+                return result;
+            }();
+            return curve.p == standard.p && curve.a == standard.a
+                && curve.b == standard.b && curve.n == standard.n
+                && curve.g.equals(standard.g);
+        }
+
+        const FastP256CombTable& p256BaseComb(
+            const FastEcPoint& base, const FastPrimeField& field,
+            const FastPrimeField::Value& aMont, const FastPrimeField::Value& one,
+            bool aMinusThree
+        ) {
+            static const FastP256CombTable comb = [&] {
+                FastP256CombTable built;
+                constexpr size_t POINTS =
+                    FastP256CombTable::ROWS * FastP256CombTable::ENTRIES;
+                TArray<FastEcPoint> projective;
+                TArray<FastPrimeField::Value> prefixes;
+                if (!projective.resize(POINTS) || !prefixes.resize(POINTS)) {
+                    return built;
+                }
+                FastEcPoint windowBase = base;
+                for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                    FastEcPoint* row = projective.begin()
+                        + window * FastP256CombTable::ENTRIES;
+                    row[0] = fastInfinity(field, one);
+                    row[1] = windowBase;
+                    for (size_t digit = 2; digit < FastP256CombTable::ENTRIES; ++digit) {
+                        row[digit] = fastAdd(
+                            row[digit - 1], windowBase,
+                            field, aMont, one, aMinusThree);
+                    }
+                    for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
+                        windowBase = fastDouble(
+                            windowBase, field, aMont, one, aMinusThree);
+                    }
+                }
+                fastBatchNormalize(
+                    projective.begin(), POINTS, field, one, prefixes.begin());
+                for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                    for (size_t digit = 0; digit < FastP256CombTable::ENTRIES; ++digit) {
+                        const FastEcPoint& source = projective[
+                            window * FastP256CombTable::ENTRIES + digit];
+                        for (size_t limb = 0; limb < 4; ++limb) {
+                            built.points[window][digit].x[limb] = source.x.limbs[limb];
+                            built.points[window][digit].y[limb] = source.y.limbs[limb];
+                        }
+                    }
+                }
+                built.valid = true;
+                return built;
+            }();
+            return comb;
+        }
+
+        FastEcPoint fastP256BaseProjective(
+            const CBigNum& scalar, const FastP256CombTable& comb,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree
+        ) {
+#if defined(CERTPP_P256_COMB_AVX512)
+            const bool useAvx512Selection = hasP256CombAvx512();
+#endif
+            FastEcPoint accumulator = fastInfinity(field, one);
+            size_t carry = 0;
+            for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                size_t byte = 0;
+                for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
+                    byte |= size_t(scalar.testBit(
+                        window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
+                }
+                const size_t rawDigit = byte + carry;
+                carry = (rawDigit + 127) >> FastP256CombTable::WINDOW_BITS;
+                const size_t negativeMask = size_t(0) - carry;
+                const size_t digit = (rawDigit & ~negativeMask)
+                    | (((size_t(1) << FastP256CombTable::WINDOW_BITS) - rawDigit)
+                        & negativeMask);
+                const size_t nonZero =
+                    (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+                const size_t tableDigit = digit | (nonZero ^ size_t(1));
+                FastEcPoint selected;
+#if defined(CERTPP_P256_COMB_AVX512)
+                if (useAvx512Selection) {
+                    FastP256CombTable::AffinePoint packed;
+                    selectP256CombAvx512(comb.points[window], tableDigit, packed);
+                    std::memcpy(selected.x.limbs, packed.x, sizeof(packed.x));
+                    std::memcpy(selected.y.limbs, packed.y, sizeof(packed.y));
+                } else
+#endif
+                {
+                    for (size_t limb = 0; limb < 4; ++limb) {
+                        selected.x.limbs[limb] = comb.points[window][1].x[limb];
+                        selected.y.limbs[limb] = comb.points[window][1].y[limb];
+                    }
+                    for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
+                        const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
+                        for (size_t limb = 0; limb < 4; ++limb) {
+                            selected.x.limbs[limb] ^=
+                                (selected.x.limbs[limb]
+                                    ^ comb.points[window][i].x[limb]) & mask;
+                            selected.y.limbs[limb] ^=
+                                (selected.y.limbs[limb]
+                                    ^ comb.points[window][i].y[limb]) & mask;
+                        }
+                    }
+                }
+                selected.z = one;
+                FastPrimeField::Value negatedY = field.sub(
+                    FastPrimeField::Value(), selected.y);
+                field.conditionalAssign(
+                    uint64_t(carry & nonZero), selected.y, negatedY);
+                FastEcPoint sum = fastAddMixed(
+                    accumulator, selected, field, aMont, one, aMinusThree);
+                fastConditionalAssign(
+                    field, uint64_t(nonZero ^ size_t(1)), sum, accumulator);
+                accumulator = sum;
+            }
+            return accumulator;
+        }
+
+        void fastBatchNormalizeX(
+            FastEcPoint* points, size_t count, const FastPrimeField& field,
+            const FastPrimeField::Value& one, FastPrimeField::Value* prefixes
+        ) {
+            FastPrimeField::Value product = one;
+            for (size_t i = 0; i < count; ++i) {
+                prefixes[i] = product;
+                product = field.mul(product, points[i].z);
+            }
+            FastPrimeField::Value inverse = field.inverse(product, one);
+            for (size_t i = count; i-- > 0; ) {
+                const FastPrimeField::Value originalZ = points[i].z;
+                const auto zInverse = field.mul(inverse, prefixes[i]);
+                inverse = field.mul(inverse, originalZ);
+                const auto zInverse2 = field.mul(zInverse, zInverse);
+                points[i].x = field.mul(points[i].x, zInverse2);
+                points[i].z = one;
+            }
+        }
+
+        void fastBatchInverse(
+            FastPrimeField::Value* values, size_t count, const FastPrimeField& field,
+            const FastPrimeField::Value& one, FastPrimeField::Value* prefixes
+        ) {
+            FastPrimeField::Value product = one;
+            for (size_t i = 0; i < count; ++i) {
+                prefixes[i] = product;
+                product = field.mul(product, values[i]);
+            }
+            FastPrimeField::Value inverse = field.inverse(product, one);
+            for (size_t i = count; i-- > 0; ) {
+                const FastPrimeField::Value original = values[i];
+                values[i] = field.mul(inverse, prefixes[i]);
+                inverse = field.mul(inverse, original);
+            }
+        }
+
     } // namespace
 #endif
 
@@ -752,6 +914,112 @@ namespace crypto {
 #endif
 
         return CBigNum::modInverse(value, prime, out);
+    }
+
+    bool FastPrimePrepareSigningNonces(
+        const CEcCurve& curve, const CBigNum* nonces, size_t count,
+        CBigNum* outR, CBigNum* outInverse
+    ) {
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        if (!nonces || !outR || !outInverse || count == 0
+            || count > FAST_PRIME_SIGN_BATCH_SIZE || !isStandardP256(curve)) {
+            return false;
+        }
+
+        const CMontgomery coordinateMontgomery(curve.p);
+        const FastPrimeField coordinateField(curve.p);
+        CBigNum pMinusThree(curve.p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool aMinusThree = curve.a == pMinusThree;
+        FastPrimeField::Value coordinateOne;
+        FastPrimeField::Value aMont;
+        FastEcPoint base;
+        if (!coordinateMontgomery.isValid() || !coordinateField.valid()
+            || !coordinateField.load(coordinateMontgomery.one(), coordinateOne)
+            || !coordinateField.load(coordinateMontgomery.toMont(curve.a), aMont)
+            || !coordinateField.load(coordinateMontgomery.toMont(curve.g.x), base.x)
+            || !coordinateField.load(coordinateMontgomery.toMont(curve.g.y), base.y)) {
+            return false;
+        }
+        base.z = coordinateOne;
+        const FastP256CombTable& comb = p256BaseComb(
+            base, coordinateField, aMont, coordinateOne, aMinusThree);
+        if (!comb.valid) {
+            return false;
+        }
+
+        struct SigningScratch {
+            FastEcPoint points[FAST_PRIME_SIGN_BATCH_SIZE];
+            FastPrimeField::Value coordinatePrefixes[FAST_PRIME_SIGN_BATCH_SIZE];
+            FastPrimeField::Value inverses[FAST_PRIME_SIGN_BATCH_SIZE];
+            FastPrimeField::Value orderPrefixes[FAST_PRIME_SIGN_BATCH_SIZE];
+
+            ~SigningScratch() {
+                CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(this), sizeof(*this)));
+            }
+        } scratch;
+        for (size_t i = 0; i < count; ++i) {
+            if (nonces[i].isZero() || nonces[i].bitLength() > 256) {
+                return false;
+            }
+            scratch.points[i] = fastP256BaseProjective(
+                nonces[i], comb, coordinateField, aMont, coordinateOne, aMinusThree);
+            if (coordinateField.isZero(scratch.points[i].z)) {
+                return false;
+            }
+        }
+        fastBatchNormalizeX(
+            scratch.points, count, coordinateField, coordinateOne,
+            scratch.coordinatePrefixes);
+        for (size_t i = 0; i < count; ++i) {
+            outR[i] = coordinateMontgomery.fromMont(
+                coordinateField.store(scratch.points[i].x));
+            outR[i].mod(curve.n);
+            if (outR[i].isZero()) {
+                return false;
+            }
+        }
+
+        const CMontgomery orderMontgomery(curve.n);
+        const FastPrimeField orderField(curve.n);
+        FastPrimeField::Value orderOne;
+        if (!orderMontgomery.isValid() || !orderField.valid()
+            || !orderField.load(orderMontgomery.one(), orderOne)) {
+            return false;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if (!orderField.load(
+                    orderMontgomery.toMont(nonces[i]), scratch.inverses[i])) {
+                return false;
+            }
+        }
+        fastBatchInverse(
+            scratch.inverses, count, orderField, orderOne, scratch.orderPrefixes);
+        for (size_t i = 0; i < count; ++i) {
+            outInverse[i] = orderMontgomery.fromMont(
+                orderField.store(scratch.inverses[i]));
+            if (outInverse[i].isZero()) {
+                return false;
+            }
+        }
+        return true;
+#else
+        (void)curve;
+        (void)nonces;
+        (void)count;
+        (void)outR;
+        (void)outInverse;
+        return false;
+#endif
+    }
+
+    bool FastPrimeSigningBatchSupported(const CEcCurve& curve) {
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        return isStandardP256(curve);
+#else
+        (void)curve;
+        return false;
+#endif
     }
 
     bool PreparePrimeVerifyTable(
@@ -1871,117 +2139,13 @@ namespace crypto {
             const size_t scalarBits = k.bitLength();
             const size_t orderBits = n.bitLength();
             const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
-            if (iterations <= 256) {
-                const CEcCurve& standard = _knownCurves[ECURVE_P256 - 1];
-                const bool standardP256 = p == standard.p && a == standard.a
-                    && b == standard.b && n == standard.n && g.equals(standard.g);
-                if (standardP256) {
-                    static const FastP256CombTable comb = [&] {
-                        FastP256CombTable built;
-                        constexpr size_t POINTS =
-                            FastP256CombTable::ROWS * FastP256CombTable::ENTRIES;
-                        TArray<FastEcPoint> projective;
-                        TArray<FastPrimeField::Value> prefixes;
-                        if (!projective.resize(POINTS) || !prefixes.resize(POINTS)) {
-                            return built;
-                        }
-                        FastEcPoint windowBase = fastBase;
-                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                            FastEcPoint* row = projective.begin()
-                                + window * FastP256CombTable::ENTRIES;
-                            row[0] = fastInfinity(fastField, fastOne);
-                            row[1] = windowBase;
-                            for (size_t digit = 2; digit < FastP256CombTable::ENTRIES; ++digit) {
-                                row[digit] = fastAdd(
-                                    row[digit - 1], windowBase,
-                                    fastField, fastA, fastOne, fastAMinusThree);
-                            }
-                            for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
-                                windowBase = fastDouble(
-                                    windowBase, fastField, fastA, fastOne, fastAMinusThree);
-                            }
-                        }
-                        fastBatchNormalize(
-                            projective.begin(), POINTS,
-                            fastField, fastOne, prefixes.begin());
-                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                            for (size_t digit = 0; digit < FastP256CombTable::ENTRIES; ++digit) {
-                                const FastEcPoint& source = projective[
-                                    window * FastP256CombTable::ENTRIES + digit];
-                                for (size_t limb = 0; limb < 4; ++limb) {
-                                    built.points[window][digit].x[limb] = source.x.limbs[limb];
-                                    built.points[window][digit].y[limb] = source.y.limbs[limb];
-                                }
-                            }
-                        }
-                        built.valid = true;
-                        return built;
-                    }();
-
-                    if (comb.valid) {
-#if defined(CERTPP_P256_COMB_AVX512)
-                        const bool useAvx512Selection = hasP256CombAvx512();
-#endif
-                        FastEcPoint accumulator = fastInfinity(fastField, fastOne);
-                        size_t carry = 0;
-                        for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                            size_t byte = 0;
-                            for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
-                                byte |= size_t(k.testBit(
-                                    window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
-                            }
-                            // Center each radix-256 digit in [-127, 128]. The fixed extra row
-                            // consumes a final carry, and selection still scans every magnitude.
-                            const size_t rawDigit = byte + carry;
-                            carry = (rawDigit + 127) >> FastP256CombTable::WINDOW_BITS;
-                            const size_t negativeMask = size_t(0) - carry;
-                            const size_t digit = (rawDigit & ~negativeMask)
-                                | (((size_t(1) << FastP256CombTable::WINDOW_BITS) - rawDigit)
-                                    & negativeMask);
-                            const size_t nonZero =
-                                (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
-                            const size_t tableDigit = digit | (nonZero ^ size_t(1));
-                            FastEcPoint selected;
-#if defined(CERTPP_P256_COMB_AVX512)
-                            if (useAvx512Selection) {
-                                FastP256CombTable::AffinePoint packed;
-                                selectP256CombAvx512(
-                                    comb.points[window], tableDigit, packed);
-                                std::memcpy(selected.x.limbs, packed.x, sizeof(packed.x));
-                                std::memcpy(selected.y.limbs, packed.y, sizeof(packed.y));
-                            } else
-#endif
-                            {
-                                for (size_t limb = 0; limb < 4; ++limb) {
-                                    selected.x.limbs[limb] = comb.points[window][1].x[limb];
-                                    selected.y.limbs[limb] = comb.points[window][1].y[limb];
-                                }
-                                for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
-                                    const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
-                                    for (size_t limb = 0; limb < 4; ++limb) {
-                                        selected.x.limbs[limb] ^=
-                                            (selected.x.limbs[limb]
-                                                ^ comb.points[window][i].x[limb]) & mask;
-                                        selected.y.limbs[limb] ^=
-                                            (selected.y.limbs[limb]
-                                                ^ comb.points[window][i].y[limb]) & mask;
-                                    }
-                                }
-                            }
-                            selected.z = fastOne;
-                            FastPrimeField::Value negatedY = fastField.sub(
-                                FastPrimeField::Value(), selected.y);
-                            fastField.conditionalAssign(
-                                uint64_t(carry & nonZero), selected.y, negatedY);
-                            FastEcPoint sum = fastAddMixed(
-                                accumulator, selected,
-                                fastField, fastA, fastOne, fastAMinusThree);
-                            fastConditionalAssign(
-                                fastField, uint64_t(nonZero ^ size_t(1)), sum, accumulator);
-                            accumulator = sum;
-                        }
-                        return fastToAffine(accumulator, fastField, fastOne, field);
-                    }
+            if (iterations <= 256 && isStandardP256(*this)) {
+                const FastP256CombTable& comb = p256BaseComb(
+                    fastBase, fastField, fastA, fastOne, fastAMinusThree);
+                if (comb.valid) {
+                    const FastEcPoint product = fastP256BaseProjective(
+                        k, comb, fastField, fastA, fastOne, fastAMinusThree);
+                    return fastToAffine(product, fastField, fastOne, field);
                 }
             }
             const FastEcPoint product = fastWindowMultiply(
