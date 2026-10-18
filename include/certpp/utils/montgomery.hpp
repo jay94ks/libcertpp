@@ -6,6 +6,8 @@
 
 namespace certpp {
 
+    struct MontgomeryParallel;
+
     /**
      * A fixed, odd modulus together with the constants that let modular arithmetic against it
      * run without any big-number division: Montgomery's n' = -m^-1 mod 2^32 and R^2 mod m,
@@ -39,6 +41,7 @@ namespace certpp {
      * it first. The modulus itself is immutable, so an instance is safe to share across threads.
      */
     class CERTPP_API CMontgomery {
+        friend struct MontgomeryParallel;
     private:
         CBigNum _m;      // the modulus; odd, with _count limbs.
         CBigNum _rr;     // R^2 mod m -- toMont()'s multiplier.

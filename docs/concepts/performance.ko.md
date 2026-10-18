@@ -285,6 +285,12 @@ context 바인딩이 residue 1,920개를 만듭니다. 이 최적화는 키 생�
 구현 간 키 생성 비율이 같은 구현의 변경 전후 결과보다 훨씬 크게 흔들립니다. 따라서 아래
 RSA 표는 해당 Windows 구성을 다시 측정할 때까지 내부 조건이 일치하는 최신 Windows
 snapshot을 유지합니다.
+RSA CRT 지수승은 이제 두 1024비트 branch를 하나의 고정 5비트 schedule로 함께 진행하고,
+같은 thread에서 서로 독립인 CIOS carry chain을 교차 배치합니다. WSL Clang 18에서 한 코어에
+고정해 변경 전후를 번갈아 15회 실행한 결과 certpp RSA-2048 서명 중앙값은 0.811 ms에서
+0.772 ms로 4.8% 줄었습니다. 같은 실행의 OpenSSL 대비 비율 중앙값은 0.324배로 높아졌습니다.
+아래 Windows 표는 RSA 세 행을 그 구성에서 모두 다시 측정할 때까지 최신 동일 구성 snapshot을
+유지합니다.
 
 | 연산(별도 표기가 없으면 64 KiB) | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

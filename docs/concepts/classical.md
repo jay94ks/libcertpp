@@ -73,7 +73,12 @@
   retain the runtime-count kernel. Squaring steps use matching fixed-count wrappers that pass one
   packed operand to both sides of the same CIOS body. This preserves the multiplication and
   reduction schedule while letting the compiler remove the independent right-operand address
-  chain. These paths do not change `CBigNum`'s documented variable-time boundary.
+  chain. RSA-2048 private operations additionally advance the two 1024-bit CRT exponentiations
+  through one fixed five-bit window schedule. Its paired CIOS kernel interleaves the independent
+  `p` and `q` product and reduction carries on one thread, exposing instruction-level parallelism
+  without the scheduler and affinity cost of worker threads. Unsupported widths and toolchains
+  retain the two ordinary exponentiations. These paths do not change `CBigNum`'s documented
+  variable-time boundary.
 
   `decryptBlock()`'s EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2) scans the
   decrypted block for its `0x00`/`0x02` lead bytes and `0x00` separator in

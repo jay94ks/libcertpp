@@ -114,6 +114,12 @@ Montgomery context로 보내는 방법은 기존 나눗셈 경로보다 약 4% �
 window도 5비트 기준을 개선하지 못했습니다. `2q`씩 DSA 후보를 순회하는 방법은 작은 소수
 나머지를 증분 갱신한 경우에도 키 생성 중앙값을 개선하지 못했습니다. 따라서 다음 RSA 산술
 방향은 register에 맞춰 배치한 고정 폭 제곱 또는 ADCX/ADOX kernel입니다.
+채택한 다음 변경은 통합 CIOS를 유지하면서 두 1024비트 RSA CRT branch를 하나의 고정 5비트
+schedule로 함께 진행합니다. paired kernel이 한 thread에서 서로 독립인 product·reduction carry
+chain을 교차 배치합니다. WSL Clang 18에서 한 코어에 고정해 변경 전후를 번갈아 15회 실행한 결과
+RSA-2048 서명 중앙값은 0.811에서 0.772 ms로 4.8% 줄었고 OpenSSL 대비 비율 중앙값은
+0.324배였습니다. KAT, RSA 단위 테스트, Montgomery 단언 914,917개, SIMD 비활성 fallback은
+같은 결과를 유지했습니다.
 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로

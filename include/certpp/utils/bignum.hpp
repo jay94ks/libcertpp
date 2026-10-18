@@ -14,6 +14,7 @@ namespace certpp {
     // --> Forward declaration for the friendship granted below; defined in utils/montgomery.hpp,
     // which includes this header rather than the other way round.
     class CMontgomery;
+    struct MontgomeryParallel;
 
     /**
      * An arbitrary-precision, non-negative integer, stored as a little-endian array of 32-bit
@@ -27,8 +28,9 @@ namespace certpp {
         // little-endian limb buffer rather than going through the value-level API, which would
         // re-introduce the per-operation copying it exists to avoid. Friendship rather than public
         // limb accessors: the representation stays an implementation detail of this class, and
-        // nothing outside the pair can reach it.
+        // only the Montgomery arithmetic implementation can reach it.
         friend class CMontgomery;
+        friend struct MontgomeryParallel;
 
     private:
         TArray<uint32_t> _limbs; // little-endian limbs; canonical (no leading zero limb); empty == 0.

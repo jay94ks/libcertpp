@@ -5,6 +5,7 @@
 #include <certpp/crypto/rng.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/io/buffer.hpp>
+#include "../../utils/montgomeryparallel.hpp"
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -455,8 +456,14 @@ namespace crypto {
                 const CBigNum& qInv = priv.qInv();
 
                 if (!p.isZero() && !q.isZero() && !dp.isZero() && !dq.isZero() && !qInv.isZero()) {
-                    CBigNum m1 = modExpCached(x, dp, p, priv.montgomeryP());
-                    CBigNum m2 = modExpCached(x, dq, q, priv.montgomeryQ());
+                    CBigNum m1;
+                    CBigNum m2;
+                    if (!MontgomeryParallel::modExp(
+                            priv.montgomeryP(), x, dp, m1,
+                            priv.montgomeryQ(), x, dq, m2)) {
+                        m1 = modExpCached(x, dp, p, priv.montgomeryP());
+                        m2 = modExpCached(x, dq, q, priv.montgomeryQ());
+                    }
 
                     CBigNum h(m1);
                     h.modSub(m2, p);

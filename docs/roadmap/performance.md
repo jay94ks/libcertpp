@@ -147,8 +147,10 @@ keeps an internal before/after baseline and an explicit unavailable result.
   repeatable 2.5--4.2% improvement across RSA and DSA sign/verify. A later AVX-512 IFMA
   full-product prototype, single-CPU CRT `std::async`, Montgomery CRT recombination, and a six-bit
   exponent window were also measured and rejected; none improved the fixed-count CIOS baseline.
-  The current WSL RSA sign/verify ratios remain 0.310/0.628, so further RSA work still needs a
-  generated ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or a generic full-product
+  Interleaving the two 1024-bit CRT branches through one fixed-window paired CIOS chain subsequently
+  reduced the signing median from 0.811 to 0.772 ms and raised its WSL ratio to 0.324; the last WSL
+  verification ratio remains 0.628. Further RSA work still needs a generated ADCX/ADOX dual-carry
+  schedule rather than either intrinsic chaining or a generic full-product
   buffer. DSA's context-bound position tables subsequently raised its repeated sign/verify ratios
   to 1.667/1.103, so the remaining work here is RSA plus RSA/DSA key generation. Keep the existing
   CRT fault check and documented variable-time boundary intact.

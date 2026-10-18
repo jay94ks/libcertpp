@@ -123,6 +123,12 @@ was about 4% slower than the existing division path, and a six-bit long-exponent
 improve the five-bit baseline. DSA candidate walking by `2q`, with and without incremental
 small-prime residues, likewise failed to improve its key-generation median. These results leave a
 register-scheduled fixed-width square or ADCX/ADOX kernel as the next RSA arithmetic direction.
+The accepted follow-up instead kept integrated CIOS and advanced the two 1024-bit RSA CRT branches
+through one fixed five-bit schedule. A paired kernel interleaves their independent product and
+reduction carry chains on one thread. Fifteen alternating pinned WSL Clang 18 runs reduced the
+RSA-2048 signing median from 0.811 to 0.772 ms, or 4.8%, and produced a 0.324 median OpenSSL ratio.
+The KAT, RSA unit tests, 914,917 Montgomery assertions, and the SIMD-disabled fallback retained
+their results.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

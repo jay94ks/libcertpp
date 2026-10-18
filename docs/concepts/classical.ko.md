@@ -71,8 +71,12 @@
   않고 통합 곱·reduction loop를 전개할 수 있습니다. 다른 크기는 runtime-count kernel을
   유지합니다. 제곱 단계는 같은 packed 피연산자를 동일한 CIOS body의 양쪽 입력으로 넘기는
   고정 count wrapper를 사용합니다. 곱·reduction schedule은 유지하면서 compiler가 독립적인
-  오른쪽 피연산자 주소 chain을 제거할 수 있게 합니다. 이 경로들은 `CBigNum`의 문서화된
-  variable-time 경계를 바꾸지 않습니다.
+  오른쪽 피연산자 주소 chain을 제거할 수 있게 합니다. RSA-2048 개인키 연산은 두 1024비트
+  CRT 지수승을 하나의 고정 5비트 window schedule로 함께 진행합니다. paired CIOS kernel은 한
+  thread에서 서로 독립인 `p`, `q` 곱·reduction carry를 교차 배치해 worker thread의 scheduler와
+  affinity 비용 없이 instruction-level parallelism을 노출합니다. 지원하지 않는 폭과 toolchain은
+  기존 지수승 두 번을 유지합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를
+  바꾸지 않습니다.
 
   `decryptBlock()`의 EME-PKCS1-v1_5 unpadding(RFC 8017 7.2.2)은 복호된
   블록에서 `0x00`/`0x02` 선두 바이트와 `0x00` 구분자를 constant-time으로

@@ -285,6 +285,11 @@ improvement. The current runs had a 1.824 median OpenSSL ratio, but the table re
 internally consistent pinned Windows RSA snapshot until that configuration is remeasured; randomized
 prime search makes cross-implementation key-generation ratios substantially noisier than the
 within-implementation before/after result.
+RSA CRT exponentiation now advances the two 1024-bit branches through one fixed five-bit schedule
+and interleaves their independent CIOS carry chains on the same thread. Fifteen alternating pinned
+WSL Clang 18 runs reduced the certpp RSA-2048 signing median from 0.811 to 0.772 ms, a 4.8%
+latency reduction. The paired-run median OpenSSL ratio rose to 0.324. The pinned Windows table below
+remains the last complete same-configuration snapshot until all three RSA rows are remeasured there.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
