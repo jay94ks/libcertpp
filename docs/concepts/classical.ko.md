@@ -64,8 +64,10 @@
   고정 폭 64비트 Montgomery 저장소에 머뭅니다. 더 긴 지수는 4비트 sliding window를
   사용하고 512비트를 넘으면 5비트로 넓히며, 누산기와 홀수 거듭제곱을 전체 체인 동안
   packed 형식에 유지합니다. 캐시된 런타임 기능 검사 뒤 BMI2/ADX와 정확한 Tiger Lake
-  tuning target을 선택합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를
-  바꾸지 않습니다.
+  tuning target을 선택합니다. 흔한 1024비트·2048비트 modulus는 지수승마다 별도 16-limb·
+  32-limb kernel을 한 번 선택하므로, compiler가 매 inner 반복에 limb-count 분기를 추가하지
+  않고 통합 곱·reduction loop를 전개할 수 있습니다. 다른 크기는 runtime-count kernel을
+  유지합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를 바꾸지 않습니다.
 
   `decryptBlock()`의 EME-PKCS1-v1_5 unpadding(RFC 8017 7.2.2)은 복호된
   블록에서 `0x00`/`0x02` 선두 바이트와 `0x00` 구분자를 constant-time으로
@@ -101,7 +103,8 @@
   `CMontgomery::modExp()`의 4비트 sliding window를 사용합니다. 검증은
   `CMontgomery::modExpProduct()`를 호출해 하나의 공유 제곱 체인과 16항 2비트 곱 표로
   `g^u1*y^u2 mod p`를 계산합니다. 네이티브 Clang x86-64 빌드는 그 표와 모든
-  중간값을 마지막 변환까지 packed 형식에 유지합니다. 홀수 부분군 위수에 대한
+  중간값을 마지막 변환까지 packed 형식에 유지합니다. 2048비트 modulus는 RSA 공개
+  modulus와 같은 고정 32-limb kernel을 사용합니다. 홀수 부분군 위수에 대한
   `CBigNum::modInverse()`는 binary extended GCD를 사용해 서명과 검증의 몫 크기
   곱셈·나눗셈을 피합니다. 검증 지수는 공개값이므로 그 경로의 지수 비트 분기는
   허용됩니다. 서명 경로도 `CBigNum`이 가변 길이 저장소를 사용하며 constant-time

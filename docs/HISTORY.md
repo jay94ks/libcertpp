@@ -61,7 +61,10 @@ the CRT fault check and portable fallbacks.
 Grouping small-prime trial divisors into 32-bit products then reduced a fixed 2048-bit worst-sieve
 case from a nine-run median of 86.687 to 16.790 microseconds per call. Fresh eleven-run pinned
 ratios became 0.41/0.27/0.61 for RSA and 0.75/0.65/0.48 for DSA; key-generation ratios retain wide
-random-prime-search variance.
+random-prime-search variance. Separate 16- and 32-limb CIOS kernels with up to 32-way loop unrolling
+then reduced RSA sign/verify from 0.948/0.027 to 0.805/0.025 ms and DSA sign/verify from
+0.514/0.616 to 0.471/0.558 ms. Their paired ratios rose to 0.316/0.668 and 0.720/0.535;
+key-generation ratios remained dominated by random prime-search variance.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

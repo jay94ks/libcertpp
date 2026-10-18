@@ -65,8 +65,11 @@
   64-bit Montgomery storage for the complete square-and-multiply chain. Longer exponents use a
   four-bit sliding window, widened to five bits above 512 bits, and keep the accumulator and odd
   powers packed for the whole chain. BMI2/ADX and an exact Tiger Lake tuning target are selected
-  only after cached runtime feature checks. These paths do not change `CBigNum`'s documented
-  variable-time boundary.
+  only after cached runtime feature checks. The common 1024- and 2048-bit moduli select separate
+  16- and 32-limb kernels once per exponentiation, so the compiler can unroll the integrated
+  product/reduction loop without adding a limb-count branch to every inner iteration. Other sizes
+  retain the runtime-count kernel. These paths do not change `CBigNum`'s documented variable-time
+  boundary.
 
   `decryptBlock()`'s EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2) scans the
   decrypted block for its `0x00`/`0x02` lead bytes and `0x00` separator in
@@ -103,7 +106,8 @@
   `CMontgomery::modExpProduct()` to compute `g^u1*y^u2 mod p` with one shared
   squaring chain and a 16-entry two-bit product table; native Clang x86-64
   builds keep that table and every intermediate packed until the final
-  conversion. `CBigNum::modInverse()`
+  conversion. The 2048-bit modulus uses the same fixed 32-limb kernel as RSA's public modulus.
+  `CBigNum::modInverse()`
   uses binary extended GCD for the odd subgroup order, avoiding quotient-sized
   multiplication and division in signing and verification. The verification
   exponents are public; the exponent-bit branches are therefore acceptable

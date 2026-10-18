@@ -112,22 +112,23 @@ Montgomery-backed Miller--Rabin, sliding windows, and joint public-exponent veri
 the initial measurements substantially. Cached RSA modulus contexts, packed 64-bit chains for both
 short and long exponents, a packed two-base DSA verifier, and binary modular inversion first raised
 the comparison substantially. An integrated CIOS pass now advances product and reduction carries
-together, while a two-bit simultaneous DSA window reduces verification multiplications. Fresh
-eleven-run pinned Windows medians are about 0.41/0.27/0.61 for RSA and 0.75/0.65/0.48 for DSA
-keygen/sign/verify. Grouping the small-prime sieve divisors into 32-bit products made its worst
+together, while a two-bit simultaneous DSA window reduces verification multiplications. Separate
+16- and 32-limb kernels with up to 32-way loop unrolling then raised stable sign/verify medians to
+0.316/0.668 for RSA and 0.720/0.535 for DSA. The same eleven runs measured key-generation ratios
+of 0.393 and 0.594. Grouping the small-prime sieve divisors into 32-bit products made its worst
 2048-bit path 5.16x faster locally; randomized prime search still gives the key-generation rows much wider run-to-run
 variance than signing and verification. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
 
-- **Profile the remaining RSA/DSA arithmetic gap.** Packed chains removed the repeated 32/64-bit
-  conversion cost, integrated CIOS removed the second accumulator pass, and binary inversion removed
-  quotient-sized extended-Euclidean work, but OpenSSL still has much faster Montgomery multiplication
-  and prime-generation arithmetic. Profile the
-  current native GCC build before changing the reduction kernel. The rejected full-square REDC
-  experiment was correct but made RSA signing more than twice as slow, so further work needs a
-  carry-chain design rather than a generic full-product buffer. Keep the existing CRT fault check
-  and the documented variable-time boundary intact.
+- **Profile the remaining RSA/DSA arithmetic gap.** Packed chains removed repeated 32/64-bit
+  conversion, integrated CIOS removed the second accumulator pass, fixed-count kernels exposed the
+  common 1024/2048-bit loops to the compiler, and binary inversion removed quotient-sized
+  extended-Euclidean work. OpenSSL still has faster Montgomery multiplication and prime-generation
+  arithmetic. The rejected full-square REDC experiment was correct but made RSA signing more than
+  twice as slow, so further work needs a generated dual-carry chain rather than a generic
+  full-product buffer. Keep the existing CRT fault check and the documented variable-time boundary
+  intact.
 - **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
   unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
   masked private-table selection, and width-eight prepared verification tables raised the four

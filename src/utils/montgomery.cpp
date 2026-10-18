@@ -13,7 +13,7 @@ namespace certpp {
          * once instead of being written by a product pass and read again by a reduction pass.
          * Keeping operands packed across repeated squares also avoids converting every intermediate
          * through CBigNum's 32-bit storage. out may alias either input; scratch holds count+2 digits. */
-        template<bool Accelerated>
+        template<bool Accelerated, size_t FixedCount = 0>
 #if defined(__clang__)
         __attribute__((always_inline))
 #endif
@@ -23,9 +23,10 @@ namespace certpp {
         ) {
             (void)Accelerated;
             using Wide = unsigned __int128;
-            std::memset(scratch, 0, (count + 2) * sizeof(uint64_t));
+            const size_t digitCount = FixedCount == 0 ? count : FixedCount;
+            std::memset(scratch, 0, (digitCount + 2) * sizeof(uint64_t));
 
-            for (size_t i = 0; i < count; ++i) {
+            for (size_t i = 0; i < digitCount; ++i) {
                 const uint64_t bi = b[i];
                 Wide product = Wide(scratch[0]) + Wide(a[0]) * bi;
                 uint64_t productDigit = uint64_t(product);
@@ -36,9 +37,9 @@ namespace certpp {
                 Wide reductionCarry = reduction >> 64;
 
 #if defined(__clang__)
-#pragma clang loop unroll_count(4)
+#pragma clang loop unroll_count(32)
 #endif
-                for (size_t j = 1; j < count; ++j) {
+                for (size_t j = 1; j < digitCount; ++j) {
                     product = Wide(scratch[j]) + Wide(a[j]) * bi + productCarry;
                     productDigit = uint64_t(product);
                     productCarry = product >> 64;
@@ -49,15 +50,15 @@ namespace certpp {
                     reductionCarry = reduction >> 64;
                 }
 
-                const Wide productTop = Wide(scratch[count]) + productCarry;
+                const Wide productTop = Wide(scratch[digitCount]) + productCarry;
                 const Wide reductionTop = Wide(uint64_t(productTop)) + reductionCarry;
-                scratch[count - 1] = uint64_t(reductionTop);
-                scratch[count] = uint64_t(productTop >> 64)
+                scratch[digitCount - 1] = uint64_t(reductionTop);
+                scratch[digitCount] = uint64_t(productTop >> 64)
                     + uint64_t(reductionTop >> 64);
             }
 
-            auto compare = [count](const uint64_t* lhs, const uint64_t* rhs) {
-                for (size_t i = count; i-- > 0; ) {
+            auto compare = [digitCount](const uint64_t* lhs, const uint64_t* rhs) {
+                for (size_t i = digitCount; i-- > 0; ) {
                     if (lhs[i] != rhs[i]) {
                         return lhs[i] < rhs[i] ? -1 : 1;
                     }
@@ -65,9 +66,9 @@ namespace certpp {
                 return 0;
             };
 
-            while (scratch[count] != 0 || compare(scratch, modulus) >= 0) {
+            while (scratch[digitCount] != 0 || compare(scratch, modulus) >= 0) {
                 uint64_t borrow = 0;
-                for (size_t i = 0; i < count; ++i) {
+                for (size_t i = 0; i < digitCount; ++i) {
                     const uint64_t first = scratch[i] - modulus[i];
                     const uint64_t borrow1 = scratch[i] < modulus[i];
                     const uint64_t second = first - borrow;
@@ -75,17 +76,30 @@ namespace certpp {
                     scratch[i] = second;
                     borrow = borrow1 | borrow2;
                 }
-                scratch[count] -= borrow;
+                scratch[digitCount] -= borrow;
             }
 
-            std::memcpy(out, scratch, count * sizeof(uint64_t));
+            std::memcpy(out, scratch, digitCount * sizeof(uint64_t));
         }
+
+        using MulWideChain = void(*)(
+            const uint64_t*, const uint64_t*, const uint64_t*, size_t,
+            uint64_t, uint64_t*, uint64_t*);
 
         void mulWideChainPortable(
             const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
             size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
         ) {
             mulWideChainBody<false>(a, b, modulus, count, n0inv, out, scratch);
+        }
+
+        template<size_t Count>
+        void mulWideChainPortableFixed(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<false, Count>(
+                a, b, modulus, count, n0inv, out, scratch);
         }
 
 #if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
@@ -106,6 +120,16 @@ namespace certpp {
             mulWideChainBody<true>(a, b, modulus, count, n0inv, out, scratch);
         }
 
+        template<size_t Count>
+        __attribute__((target("bmi2,adx")))
+        void mulWideChainAcceleratedFixed(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true, Count>(
+                a, b, modulus, count, n0inv, out, scratch);
+        }
+
 #if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
         bool hasTigerLakeMontgomery() {
             static const bool supported = [] {
@@ -123,8 +147,48 @@ namespace certpp {
             mulWideChainBody<true>(a, b, modulus, count, n0inv, out, scratch);
         }
 
+        template<size_t Count>
+        __attribute__((target("arch=tigerlake")))
+        void mulWideChainTigerLakeFixed(
+            const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
+            size_t count, uint64_t n0inv, uint64_t* out, uint64_t* scratch
+        ) {
+            mulWideChainBody<true, Count>(
+                a, b, modulus, count, n0inv, out, scratch);
+        }
+
 #endif
 #endif
+
+        MulWideChain selectMulWideChain(size_t count) {
+            MulWideChain multiply = mulWideChainPortable;
+            if (count == 16) {
+                multiply = mulWideChainPortableFixed<16>;
+            } else if (count == 32) {
+                multiply = mulWideChainPortableFixed<32>;
+            }
+#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
+            if (hasAdxBmi2Montgomery()) {
+                multiply = mulWideChainAccelerated;
+                if (count == 16) {
+                    multiply = mulWideChainAcceleratedFixed<16>;
+                } else if (count == 32) {
+                    multiply = mulWideChainAcceleratedFixed<32>;
+                }
+            }
+#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+            if (hasTigerLakeMontgomery()) {
+                multiply = mulWideChainTigerLake;
+                if (count == 16) {
+                    multiply = mulWideChainTigerLakeFixed<16>;
+                } else if (count == 32) {
+                    multiply = mulWideChainTigerLakeFixed<32>;
+                }
+            }
+#endif
+#endif
+            return multiply;
+        }
 
     } // namespace
 #endif
@@ -761,20 +825,7 @@ namespace certpp {
             std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
             ordinaryOne[0] = 1;
 
-            using MulWideChain = void(*)(
-                const uint64_t*, const uint64_t*, const uint64_t*, size_t,
-                uint64_t, uint64_t*, uint64_t*);
-            MulWideChain multiply = mulWideChainPortable;
-#if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
-            if (hasAdxBmi2Montgomery()) {
-                multiply = mulWideChainAccelerated;
-            }
-#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
-            if (hasTigerLakeMontgomery()) {
-                multiply = mulWideChainTigerLake;
-            }
-#endif
-#endif
+            const MulWideChain multiply = selectMulWideChain(_wideCount);
 
             // bitLength() guarantees the top exponent bit is one. Seeding with base consumes that
             // bit directly instead of squaring Montgomery one and multiplying by base first.
@@ -857,20 +908,7 @@ namespace certpp {
             }
         };
 
-        using MulWideChain = void(*)(
-            const uint64_t*, const uint64_t*, const uint64_t*, size_t,
-            uint64_t, uint64_t*, uint64_t*);
-        MulWideChain multiply = mulWideChainPortable;
-#if !defined(CERTPP_DISABLE_HWACCEL_SIMD)
-        if (hasAdxBmi2Montgomery()) {
-            multiply = mulWideChainAccelerated;
-        }
-#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
-        if (hasTigerLakeMontgomery()) {
-            multiply = mulWideChainTigerLake;
-        }
-#endif
-#endif
+        const MulWideChain multiply = selectMulWideChain(_wideCount);
 
         pack(baseMont, table);
         multiply(table, table, _modulus64.begin(), _wideCount,
@@ -1017,20 +1055,7 @@ namespace certpp {
             }
         };
 
-        using MulWideChain = void(*)(
-            const uint64_t*, const uint64_t*, const uint64_t*, size_t,
-            uint64_t, uint64_t*, uint64_t*);
-        MulWideChain multiply = mulWideChainPortable;
-#if !defined(CERTPP_DISABLE_HWACCEL_SIMD)
-        if (hasAdxBmi2Montgomery()) {
-            multiply = mulWideChainAccelerated;
-        }
-#if !defined(CERTPP_DISABLE_HWACCEL_AVX512)
-        if (hasTigerLakeMontgomery()) {
-            multiply = mulWideChainTigerLake;
-        }
-#endif
-#endif
+        const MulWideChain multiply = selectMulWideChain(_wideCount);
 
         pack(_one, firstPowers);
         std::memcpy(secondPowers, firstPowers, _wideCount * sizeof(uint64_t));

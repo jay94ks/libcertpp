@@ -257,12 +257,15 @@ implementations as one continuous stream; the earlier harness reset only OpenSSL
 charging it context setup and overstating certpp's relative result. The table reports the median
 per-run ratio from three complete runs. Latency ratios use `OpenSSL latency / certpp latency`, so
 every ratio has the same direction and 1.00x means parity.
-The RSA and DSA rows were refreshed from eleven targeted `--rsa` or `--dsa` runs in a static Clang
+The RSA and DSA rows were refreshed from eleven targeted `--classic-signatures` runs in a static Clang
 22.1.8 Release build against OpenSSL 3.6.4, with the process pinned to one logical processor at high
 priority. Each side still uses the same setup and warm-up rules. The displayed latencies are the
 per-side medians, while the ratio is the median of the eleven paired run ratios; randomized prime
 search makes the key-generation ratio differ from the quotient of the two displayed medians. Both
 directions verify across the implementation boundary and reject an altered digest before timing.
+The packed Montgomery engine now dispatches 16- and 32-limb chains to separately compiled kernels,
+letting Clang unroll the product/reduction loop by up to 32 without imposing either modulus
+width on the generic fallback.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
@@ -288,12 +291,12 @@ directions verify across the implementation boundary and reject an altered diges
 | ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
 | ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
 | ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
-| RSA-2048 keygen | 62.170 ms | 24.380 ms | 0.409x |
-| RSA-2048 sign | 0.948 ms | 0.255 ms | 0.269x |
-| RSA-2048 verify | 0.027 ms | 0.016 ms | 0.605x |
-| DSA-2048 keygen, including fresh parameters | 199.772 ms | 154.290 ms | 0.746x |
-| DSA-2048 sign | 0.514 ms | 0.335 ms | 0.654x |
-| DSA-2048 verify | 0.616 ms | 0.298 ms | 0.483x |
+| RSA-2048 keygen | 58.127 ms | 21.197 ms | 0.393x |
+| RSA-2048 sign | 0.805 ms | 0.255 ms | 0.316x |
+| RSA-2048 verify | 0.025 ms | 0.016 ms | 0.668x |
+| DSA-2048 keygen, including fresh parameters | 193.242 ms | 129.481 ms | 0.594x |
+| DSA-2048 sign | 0.471 ms | 0.337 ms | 0.720x |
+| DSA-2048 verify | 0.558 ms | 0.299 ms | 0.535x |
 | GOST R 34.10-2012 |  | unavailable |  |
 | Ed25519 sign, 32-byte message | 0.024 ms | 0.036 ms | 1.53x |
 | Ed25519 verify, 32-byte message | 0.077 ms | 0.098 ms | 1.28x |

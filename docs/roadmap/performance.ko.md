@@ -98,21 +98,21 @@ kernel, 높은 word부터 접는 축약, 혼합 Lopez-Dahab 덧셈, 생성 키�
 최초 측정을 크게 개선했습니다. 이어 RSA modulus context 캐시, 짧고 긴 지수를 위한
 packed 64비트 체인, packed 두 밑수 DSA 검증, binary 모듈러 역원이 비교 결과를 먼저
 크게 높였습니다. 이제 통합 CIOS 순회가 곱과 축약 캐리를 함께 진행하고 2비트 동시 DSA
-window가 검증 곱셈 횟수를 줄입니다. 새 Windows 단일 코어 고정 11회 중앙값은 키
-생성/서명/검증 기준 RSA 약 0.41/0.27/0.61배, DSA 약 0.75/0.65/0.48배입니다. 작은
+window가 검증 곱셈 횟수를 줄입니다. 이어 16-limb·32-limb 별도 kernel과 최대 32-way loop
+전개가 안정적인 서명/검증 중앙값을 RSA 0.316/0.668배, DSA 0.720/0.535배로
+높였습니다. 같은 11회 실행의 키 생성 비율은 0.393배와 0.594배였습니다. 작은
 소수 체의 제수를 32비트 곱으로 묶어 로컬 최악 2048비트 경로를 5.16배 빠르게 했습니다. 무작위
 소수 탐색 때문에 키 생성 행은 서명과 검증보다 실행 간 편차가 훨씬 큽니다. OpenSSL
 3.6.4의 시험한 default와 legacy provider는 GOST 서명 구현을 제공하지 않으므로,
 GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 유지합니다.
 
 - **남은 RSA/DSA 산술 격차를 프로파일링합니다.** packed 체인이 반복 32/64비트 변환을
-  제거하고 통합 CIOS가 두 번째 누산기 순회를 없앴으며 binary 역원이 몫 크기 확장
-  유클리드 작업을 제거했지만 OpenSSL의 Montgomery 곱셈과 소수 생성 산술은 여전히
-  훨씬 빠릅니다. reduction kernel을 더 바꾸기 전에 현재
-  네이티브 GCC 빌드를 프로파일링합니다. 기각한 full-square REDC 실험은 정확했지만 RSA
-  서명을 두 배 넘게 느리게 했으므로 다음 시도에는 일반 full-product buffer가 아닌 carry-chain
-  설계가 필요합니다. 기존 CRT fault 검사와 문서화된 variable-time
-  경계를 보존합니다.
+  제거하고 통합 CIOS가 두 번째 누산기 순회를 없앴으며, 고정 count kernel이 흔한
+  1024/2048비트 loop를 compiler에 노출하고 binary 역원이 몫 크기 확장 유클리드 작업을
+  제거했습니다. 그래도 OpenSSL의 Montgomery 곱셈과 소수 생성 산술은 더 빠릅니다.
+  기각한 full-square REDC 실험은 정확했지만 RSA 서명을 두 배 넘게 느리게 했으므로 다음
+  시도에는 일반 full-product buffer가 아닌 생성한 dual-carry chain이 필요합니다. 기존 CRT
+  fault 검사와 문서화된 variable-time 경계를 보존합니다.
 - **남은 P-256 행을 문턱까지 높입니다.** OpenSSL은 고도로 특화한 구현을 사용합니다.
   희소·완전 전개 4-limb Montgomery kernel, 압축한 batch-normalized 7비트 기저 표,
   한쪽 방향 private 표 mask 선택, 폭 8 준비 검증 표가 네 비율을 0.318--0.614배로
