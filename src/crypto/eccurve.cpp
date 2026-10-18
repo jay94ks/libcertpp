@@ -688,8 +688,8 @@ namespace crypto {
         return CBigNum::modInverse(value, prime, out);
     }
 
-    bool PreparePrimeWnafTable(
-        const CEcCurve& curve, const SEcPoint& point, FastPrimeWnafTable& out
+    bool PreparePrimeVerifyTable(
+        const CEcCurve& curve, const SEcPoint& point, FastPrimeVerifyTable& out
     ) {
         out.clear();
         if (point.infinity) {
@@ -697,7 +697,7 @@ namespace crypto {
         }
 
 #if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
-        constexpr size_t TABLE_SIZE = FastPrimeWnafTable::TABLE_SIZE;
+        constexpr size_t TABLE_SIZE = FastPrimeVerifyTable::WNAF_ENTRIES;
         const CMontgomery montgomery(curve.p);
         const FastPrimeField field(curve.p);
         CBigNum pMinusThree(curve.p);
@@ -715,6 +715,64 @@ namespace crypto {
         }
         base.z = one;
 
+        static const CEcCurve standardP256 = [] {
+            CEcCurve result;
+            CEcCurve::knownCurves(ECURVE_P256, result);
+            return result;
+        }();
+        const bool useP256Comb = curve.p == standardP256.p
+            && curve.a == standardP256.a && curve.b == standardP256.b
+            && curve.n == standardP256.n && curve.g.equals(standardP256.g);
+        if (useP256Comb) {
+            constexpr size_t ROWS = FastPrimeVerifyTable::P256_COMB_ROWS;
+            constexpr size_t ENTRIES = FastPrimeVerifyTable::P256_COMB_ENTRIES;
+            constexpr size_t WINDOW_BITS = FastPrimeVerifyTable::P256_COMB_WINDOW_BITS;
+            constexpr size_t POINTS = ROWS * ENTRIES;
+            const auto buildP256Comb = [&](FastPrimeVerifyTable& destination) {
+                TArray<FastEcPoint> projective;
+                TArray<FastPrimeField::Value> prefixes;
+                if (!projective.resize(POINTS) || !prefixes.resize(POINTS)) {
+                    return false;
+                }
+                FastEcPoint windowBase = base;
+                for (size_t rowIndex = 0; rowIndex < ROWS; ++rowIndex) {
+                    FastEcPoint* row = projective.begin() + rowIndex * ENTRIES;
+                    row[0] = windowBase;
+                    for (size_t digit = 1; digit < ENTRIES; ++digit) {
+                        row[digit] = fastAdd(
+                            row[digit - 1], windowBase, field, aMont, one, aMinusThree);
+                    }
+                    for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                        windowBase = fastDouble(windowBase, field, aMont, one, aMinusThree);
+                    }
+                }
+                fastBatchNormalize(projective.begin(), POINTS, field, one, prefixes.begin());
+                if (!destination.resizeP256Comb(field.count())) {
+                    return false;
+                }
+                for (size_t i = 0; i < POINTS; ++i) {
+                    std::memcpy(destination.x(i), projective[i].x.limbs,
+                        field.count() * sizeof(uint64_t));
+                    std::memcpy(destination.y(i), projective[i].y.limbs,
+                        field.count() * sizeof(uint64_t));
+                }
+                return true;
+            };
+            if (point.equals(standardP256.g)) {
+                static const FastPrimeVerifyTable sharedBase = [&] {
+                    FastPrimeVerifyTable built;
+                    buildP256Comb(built);
+                    return built;
+                }();
+                if (!sharedBase.validFor(field.count())) {
+                    return false;
+                }
+                out.reference(sharedBase);
+                return true;
+            }
+            return buildP256Comb(out);
+        }
+
         FastEcPoint table[TABLE_SIZE];
         table[0] = base;
         const FastEcPoint twice = fastDouble(base, field, aMont, one, aMinusThree);
@@ -724,8 +782,8 @@ namespace crypto {
         FastPrimeField::Value prefixes[TABLE_SIZE];
         fastBatchNormalize(table, TABLE_SIZE, field, one, prefixes);
 
-        static_assert(TABLE_SIZE == FastPrimeWnafTable::TABLE_SIZE, "table size mismatch");
-        if (!out.resize(field.count())) {
+        static_assert(TABLE_SIZE == FastPrimeVerifyTable::WNAF_ENTRIES, "table size mismatch");
+        if (!out.resizeWnaf(field.count())) {
             return false;
         }
         for (size_t i = 0; i < TABLE_SIZE; ++i) {
@@ -741,8 +799,8 @@ namespace crypto {
 
     bool FastPrimeLinearCombinationPrepared(
         const CEcCurve& curve,
-        const CBigNum& firstScalar, const FastPrimeWnafTable& firstTable,
-        const CBigNum& secondScalar, const FastPrimeWnafTable& secondTable,
+        const CBigNum& firstScalar, const FastPrimeVerifyTable& firstTable,
+        const CBigNum& secondScalar, const FastPrimeVerifyTable& secondTable,
         SEcPoint& out
     ) {
 #if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
@@ -763,11 +821,51 @@ namespace crypto {
             return false;
         }
 
+        if (firstTable.p256Comb != secondTable.p256Comb) {
+            return false;
+        }
+        if (firstTable.p256Comb && secondTable.p256Comb) {
+            if (firstScalar.bitLength() > 256 || secondScalar.bitLength() > 256) {
+                return false;
+            }
+            constexpr size_t ROWS = FastPrimeVerifyTable::P256_COMB_ROWS;
+            constexpr size_t ENTRIES = FastPrimeVerifyTable::P256_COMB_ENTRIES;
+            constexpr size_t WINDOW_BITS = FastPrimeVerifyTable::P256_COMB_WINDOW_BITS;
+            const CBigNum* scalars[2] = { &firstScalar, &secondScalar };
+            const FastPrimeVerifyTable* tables[2] = { &firstTable, &secondTable };
+            FastEcPoint accumulator = fastInfinity(field, one);
+            // Both scalars are derived from the public signature and digest. Direct lookup is
+            // therefore appropriate here; private scalar paths continue to scan every candidate.
+            for (size_t row = 0; row < ROWS; ++row) {
+                for (size_t which = 0; which < 2; ++which) {
+                    size_t digit = 0;
+                    for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                        digit |= size_t(scalars[which]->testBit(
+                            row * WINDOW_BITS + bit)) << bit;
+                    }
+                    if (digit == 0) {
+                        continue;
+                    }
+                    const size_t index = row * ENTRIES + digit - 1;
+                    FastEcPoint addend;
+                    std::memcpy(addend.x.limbs, tables[which]->x(index),
+                        field.count() * sizeof(uint64_t));
+                    std::memcpy(addend.y.limbs, tables[which]->y(index),
+                        field.count() * sizeof(uint64_t));
+                    addend.z = one;
+                    accumulator = fastAddMixed(
+                        accumulator, addend, field, aMont, one, aMinusThree);
+                }
+            }
+            out = fastToAffine(accumulator, field, one, montgomery);
+            return true;
+        }
+
         const TArray<int8_t> firstDigits = computeWnaf(firstScalar, 8);
         const TArray<int8_t> secondDigits = computeWnaf(secondScalar, 8);
         const size_t iterations = firstDigits.size() > secondDigits.size()
             ? firstDigits.size() : secondDigits.size();
-        const FastPrimeWnafTable* tables[2] = { &firstTable, &secondTable };
+        const FastPrimeVerifyTable* tables[2] = { &firstTable, &secondTable };
         FastEcPoint accumulator = fastInfinity(field, one);
         for (size_t i = iterations; i-- > 0; ) {
             accumulator = fastDouble(accumulator, field, aMont, one, aMinusThree);

@@ -135,7 +135,11 @@
   comb 표도 사용합니다. batch-normalized affine 좌표는 좌표마다 field limb 4개만
   보관하고 모든 항을 한쪽 방향 mask 대입으로 스캔합니다. 이 표는 호출마다 점을 배가하지
   않고 mixed 덧셈을 허용합니다. P-256은 Montgomery reduction에서
-  희소 modulus와 `a == -3` 배가 공식을 사용합니다. 다른 빌드는 mask 기반 R0/R1
+  희소 modulus와 `a == -3` 배가 공식을 사용합니다. 재사용 P-256 검증 context는 두 검증
+  scalar가 모두 공개값이므로 별도의 위치별 4비트 comb를 사용합니다. 60 KiB 기저 표는
+  프로세스 전체에서 공유하고 바인딩 공개키마다 60 KiB 표 하나를 보관하며, 직접 조회로
+  점 배가 256회를 최대 128회 mixed 덧셈으로 바꿉니다. 다른 소수 곡선은 폭 8 wNAF 검증
+  표를 유지합니다. 다른 빌드는 mask 기반 R0/R1
   `CBigNum` Montgomery ladder를 유지합니다. 두 경로 모두 스칼라 비트마다 하나가
   아니라 마지막 역원 하나만 계산합니다. 모듈러스별 컨텍스트는 `CEcCurve`
   인스턴스에 캐시되지 않고 `scalarMul()`/`scalarMulBase()`의 앞머리에서

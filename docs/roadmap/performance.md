@@ -103,8 +103,10 @@ curves. Fixed-width Montgomery fields and private windows first brought 72 of th
 rows to the threshold. Fixed-count multiplication kernels and key-bound width-six verification
 tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit P-256 base table,
 one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
-the four P-256 rows to five-run medians of 0.318--0.614. They remain the only four prime-curve rows
-below the gate. Fixed-count PCLMUL product and square kernels, descending word reduction, mixed
+the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining and a four-bit
+public-verification comb later raised verification to 0.999; keygen, signing, and ECDH remain the
+only three prime-curve rows below the gate. Fixed-count PCLMUL product and square kernels,
+descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
 binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
 and DSA-2048 with bidirectional signature interoperability and altered-digest rejection.
@@ -139,7 +141,8 @@ keeps an internal before/after baseline and an explicit unavailable result.
   remain 0.310/0.628 for RSA and 0.758/0.562 for DSA, so further work still needs a generated
   ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or a generic full-product
   buffer. Keep the existing CRT fault check and documented variable-time boundary intact.
-- **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
+- **Close the remaining P-256 private-operation rows.** OpenSSL uses a highly specialized
+  implementation. A sparse,
   unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
   masked private-table selection, and width-eight prepared verification tables raised the four
   ratios to 0.318--0.614, but all remain below the gate. A symmetric full-product squaring path was
@@ -151,7 +154,10 @@ keeps an internal before/after baseline and an explicit unavailable result.
   2.21% to mixed addition, and only 2.62% to field inversion. This rules out more inversion-window
   tuning as the main route. Forcing the field selector and sparse multiply into the point formulas
   then improved single-CPU 15-run keygen/sign/verify/ECDH medians by 15.6/9.3/5.7/5.2%, but the
-  OpenSSL ratios remain only 0.797/0.477/0.406/0.322. Further work needs a generated carry-chain or
+  OpenSSL ratios remained only 0.797/0.477/0.406/0.322. A position-dependent four-bit comb then
+  removed all 256 point doublings from public verification. Its 21-run median fell from 0.142 to
+  0.058 ms and reached 0.999 of OpenSSL, so verification is complete. Keygen, signing, and ECDH
+  remain at 0.793/0.474/0.321. Further work on those private paths needs a generated carry-chain or
   a whole point-operation
   Tiger Lake target that compiles the field products together with doubling and addition, rather
   than another generic full-product buffer or an isolated leaf-function dispatch.

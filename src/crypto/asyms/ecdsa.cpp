@@ -138,12 +138,12 @@ namespace crypto {
 
         class EcContext : public IAsymmetricContext {
         private:
-            FastPrimeWnafTable _verifyBaseTable;
-            FastPrimeWnafTable _verifyPublicTable;
+            FastPrimeVerifyTable _verifyBaseTable;
+            FastPrimeVerifyTable _verifyPublicTable;
 
             void prepareVerificationTables(const CEcCurve& curve, const SEcPoint& publicPoint) {
-                if (!PreparePrimeWnafTable(curve, curve.g, _verifyBaseTable)
-                    || !PreparePrimeWnafTable(curve, publicPoint, _verifyPublicTable)) {
+                if (!PreparePrimeVerifyTable(curve, curve.g, _verifyBaseTable)
+                    || !PreparePrimeVerifyTable(curve, publicPoint, _verifyPublicTable)) {
                     _verifyBaseTable.clear();
                     _verifyPublicTable.clear();
                 }

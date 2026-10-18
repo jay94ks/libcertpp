@@ -345,7 +345,7 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 |---|---:|---:|---:|---:|
 | P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
 | P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.797x | 0.477x | 0.406x | 0.322x |
+| P-256 | 0.793x | 0.474x | 0.999x | 0.321x |
 | P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
 | P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
 | secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
@@ -384,18 +384,24 @@ five-run medians for B-163 keygen/sign/verify are 0.099/0.148/0.219 ms against O
 Public verification remains deliberately variable-time because both verification scalars are
 public; private scalar paths retain their existing control-flow policy.
 
-The prime-field refresh puts 76 of 80 directly comparable operations at or above the 0.90 gate;
-only the four P-256 operations remain. A later 15-run, single-CPU, alternating comparison forced
+The prime-field refresh first put 76 of 80 directly comparable operations at or above the 0.90
+gate. A later 15-run, single-CPU, alternating comparison forced
 the fixed-width field selector and sparse P-256 multiplication body into each point formula. The
 certpp key-generation/signing/verification/ECDH medians fell from 0.037/0.047/0.149/0.141 ms to
 0.032/0.043/0.141/0.134 ms, improvements of 15.6/9.3/5.7/5.2%. The paired OpenSSL ratios are now
-0.797/0.477/0.406/0.322; all four rows therefore remain open. The benchmark executable's text grew
+0.797/0.477/0.406/0.322. The benchmark executable's text grew
 by 81,060 bytes, or 7.6%, which is the measured code-size cost of exposing the field body to the
 optimizer. P-256 also uses a compact 37-row, seven-bit affine base table. One-way
 masked assignment halves the selection writes relative to swapping both operands, and the wider
-table reduces private fixed-base additions while still scanning every entry. Verification contexts
-cache width-eight affine odd multiples directly as Montgomery limbs, so repeated verification does
-not reconstruct or normalize either public table or convert its coordinates through `CBigNum`.
+table reduces private fixed-base additions while still scanning every entry. P-256 verification
+contexts now use position-dependent four-bit public-scalar combs: a process-wide 60 KiB base table
+and one 60 KiB public-key table per context. Direct public lookup removes all 256 point doublings
+and performs at most 128 mixed additions; private scalar paths retain full-scan selection. In 21
+single-CPU alternating runs, verification fell from 0.142 to 0.058 ms, a 2.45x improvement, and
+reached 0.999 of OpenSSL. The current P-256 keygen/sign/verify/ECDH ratios are therefore
+0.793/0.474/0.999/0.321, putting 77 of 80 prime-field rows above the gate and leaving three open.
+Other prime curves retain width-eight affine odd-multiple tables stored directly as Montgomery
+limbs, so repeated verification does not reconstruct, normalize, or reconvert their coordinates.
 
 Ed448 now uses fixed-width Fe448 arithmetic and 10-column comb tables for the base point and each
 public key. The current matched result and its validation are recorded in

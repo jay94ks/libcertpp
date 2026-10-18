@@ -43,7 +43,10 @@ and width-eight verification tables stored directly as Montgomery limbs raised i
 keygen/sign/verify/ECDH ratios from 0.403/0.345/0.315/0.302 to
 0.614/0.434/0.361/0.318. Forcing the fixed-width field selector and sparse P-256 product into the
 point formulas then reduced their single-CPU 15-run latencies by 5.2--15.6%, producing ratios of
-0.797/0.477/0.406/0.322; 76 of 80 prime-field rows still pass.
+0.797/0.477/0.406/0.322. A position-dependent four-bit P-256 public-verification comb subsequently
+removed 256 point doublings. The base table is shared process-wide while each bound public key keeps
+one 60 KiB table. Twenty-one alternating runs reduced verification from 0.142 to 0.058 ms and raised
+its OpenSSL ratio to 0.999; 77 of 80 prime-field rows now pass.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,
