@@ -345,7 +345,7 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 |---|---:|---:|---:|---:|
 | P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
 | P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.838x | 0.497x | 1.007x | 0.322x |
+| P-256 | 0.959x | 0.535x | 0.971x | 0.311x |
 | P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
 | P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
 | secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
@@ -391,9 +391,9 @@ certpp key-generation/signing/verification/ECDH medians fell from 0.037/0.047/0.
 0.032/0.043/0.141/0.134 ms, improvements of 15.6/9.3/5.7/5.2%. The paired OpenSSL ratios are now
 0.797/0.477/0.406/0.322. The benchmark executable's text grew
 by 81,060 bytes, or 7.6%, which is the measured code-size cost of exposing the field body to the
-optimizer. P-256 also uses a compact 37-row, seven-bit affine base table. One-way
-masked assignment halves the selection writes relative to swapping both operands, and the wider
-table reduces private fixed-base additions while still scanning every entry. P-256 verification
+optimizer. P-256 also uses a compact 33-row signed radix-256 affine base table. Centered digits use
+magnitudes at most 128, one extra row consumes the final carry, and masked Y negation handles their
+sign. Every private lookup still scans all candidate magnitudes. P-256 verification
 contexts now use position-dependent four-bit public-scalar combs: a process-wide 60 KiB base table
 and one 60 KiB public-key table per context. Direct public lookup removes all 256 point doublings
 and performs at most 128 mixed additions; private scalar paths retain full-scan selection. In 21
@@ -405,13 +405,20 @@ point. The scalar full-scan selector remains the fallback. Against the immediate
 binary, 21 alternating pinned runs improved certpp key generation from 0.044 to 0.038 ms and
 signing from 0.060 to 0.055 ms, or 15.8% and 8.3%, without changing verification or ECDH.
 
+Replacing the preceding unsigned seven-bit comb with signed radix-256 reduced the table from about
+296 KiB to 266 KiB, reduced the expected mixed additions from 36.7 to 32.4, and lowered the number
+of scanned nonzero entries from 4,699 to 4,224. Seven alternating pinned before/after runs reduced
+the certpp key-generation median from 0.027 to 0.025 ms and signing from 0.039 to 0.037 ms. Their
+median OpenSSL ratios rose from 0.890 to 0.959 and from 0.514 to 0.535 respectively. Crafted scalar
+tests cover the positive 128 boundary, carry propagation between every byte, and the final carry.
+
 The current P-256 row uses 1,000 operations per batch and seven complete single-CPU runs. Each
 measurement warms both implementations and alternates which independent batch runs first, avoiding
 the frequency bias observed when every certpp batch preceded every OpenSSL batch. Median
-keygen/sign/verify/ECDH ratios are 0.838/0.497/1.007/0.322; their per-run ranges are
-0.793--0.889, 0.465--0.529, 0.897--1.050, and 0.307--0.326 respectively. This leaves 77 of 80
-prime-field rows above the gate and three private-operation rows open. Verification meets the
-median gate but remains close enough to require remeasurement after related changes.
+keygen/sign/verify/ECDH ratios are 0.959/0.535/0.971/0.311; their per-run ranges are
+0.834--0.981, 0.517--0.557, 0.956--1.022, and 0.291--0.327 respectively. This leaves 78 of 80
+prime-field rows above the gate and two private-operation rows open. Key generation and verification
+meet the median gate but remain close enough to require remeasurement after related changes.
 Other prime curves retain width-eight affine odd-multiple tables stored directly as Montgomery
 limbs, so repeated verification does not reconstruct, normalize, or reconvert their coordinates.
 

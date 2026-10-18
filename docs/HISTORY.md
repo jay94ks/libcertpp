@@ -51,7 +51,11 @@ and retained the requested point with masks, preserving the full-row scan while 
 generation and signing by 15.8% and 8.3% against the preceding binary. The comparison harness now
 warms both sides and alternates independent batch order; seven pinned runs with 1,000 operations per
 batch measured P-256 keygen/sign/verify/ECDH medians of 0.838/0.497/1.007/0.322. Seventy-seven of
-80 prime-field rows pass.
+80 prime-field rows passed at that point. Replacing the unsigned seven-bit base comb with 33-row
+signed radix-256 then reduced its table from about 296 to 266 KiB and its expected mixed additions
+from 36.7 to 32.4. Seven alternating before/after runs reduced certpp keygen/sign medians from
+0.027/0.039 to 0.025/0.037 ms and produced current OpenSSL ratios of
+0.959/0.535/0.971/0.311. Key generation now passes, raising the prime-field count to 78 of 80.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,

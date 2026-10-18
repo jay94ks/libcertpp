@@ -64,6 +64,22 @@ TEST_CASE("CEcCurve: scalarMul(G, 2) matches doubling G") {
     CHECK(viaScalar.equals(viaDouble));
 }
 
+TEST_CASE("CEcCurve: P-256 fixed-base multiplication handles signed-comb carry boundaries") {
+    const CEcCurve& curve = testCurve();
+    const char* scalars[] = {
+        "8080808080808080808080808080808080808080808080808080808080808080",
+        "8181818181818181818181818181818181818181818181818181818181818181",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    };
+
+    for (const char* hex : scalars) {
+        CBigNum scalar;
+        REQUIRE(CBigNum::fromHex(hex, scalar));
+        CAPTURE(hex);
+        CHECK(curve.scalarMulBase(scalar).equals(curve.scalarMul(curve.g, scalar)));
+    }
+}
+
 TEST_CASE("CEcCurve: linearCombination matches separate public-scalar multiplications") {
     const CEcCurve& curve = testCurve();
     const CBigNum k1(uint64_t(17));

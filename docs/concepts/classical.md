@@ -135,12 +135,14 @@
   multiplication kernel for each supported limb width, letting the compiler unroll product and
   reduction loops. Four-bit
   private-scalar windows scan all 16 candidates and select with masks; the
-  exact standard P-256 parameters additionally use a process-wide 37-row, seven-bit comb
+  exact standard P-256 parameters additionally use a process-wide 33-row signed radix-256 comb
   table. Its batch-normalized affine coordinates retain only four field limbs per coordinate,
   and selection scans every entry. On supported x86-64 Clang builds, direct CPUID and XCR0 checks
   enable an AVX-512F selector that loads each 64-byte affine entry into one ZMM register and retains
   the requested point through masks; other targets use the one-way scalar masked selector. Both
-  implementations perform the same full-row scan for the private digit. The comb removes per-call
+  implementations perform the same full-row scan for the private digit. An extra row consumes the
+  final carry, and masked Y negation handles negative digits without a secret-dependent lookup or
+  branch. The comb removes per-call
   point doublings and permits mixed additions. P-256 uses its sparse
   modulus during Montgomery reduction and the `a == -3` doubling formula.
   Reusable P-256 verification contexts use a separate position-dependent four-bit comb because

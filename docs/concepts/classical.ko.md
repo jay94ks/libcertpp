@@ -131,12 +131,14 @@
   64비트 Montgomery limb에 머뭅니다. 체는 지원하는 limb 폭마다 고정 count 곱셈
   kernel을 선택해 compiler가 곱과 reduction loop를 펼칠 수 있게 합니다. 4비트
   private-scalar window는 16개 후보를
-  모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 프로세스 전역 37행 7비트
-  comb 표도 사용합니다. batch-normalized affine 좌표는 좌표마다 field limb 4개만
+  모두 스캔해 mask로 선택하며, 정확한 표준 P-256 파라미터는 프로세스 전역 33행 signed
+  radix-256 comb 표도 사용합니다. batch-normalized affine 좌표는 좌표마다 field limb 4개만
   보관하고 모든 항을 스캔합니다. 지원하는 x86-64 Clang 빌드에서는 직접 CPUID와 XCR0를
   검사한 뒤 각 64바이트 affine 항목을 ZMM register 하나로 읽고 mask로 요청한 점을 남기는
   AVX-512F 선택기를 사용합니다. 다른 대상은 한쪽 방향 scalar mask 선택기를 사용합니다.
-  두 구현 모두 private digit에 대해 같은 전체 행 스캔을 수행합니다. 이 표는 호출마다 점을
+  두 구현 모두 private digit에 대해 같은 전체 행 스캔을 수행합니다. 추가 행 하나가 마지막
+  carry를 소비하고 mask 기반 Y 부호 반전이 비밀 의존 조회나 분기 없이 음수 digit을
+  처리합니다. 이 표는 호출마다 점을
   배가하지 않고 mixed 덧셈을 허용합니다. P-256은 Montgomery reduction에서
   희소 modulus와 `a == -3` 배가 공식을 사용합니다. 재사용 P-256 검증 context는 두 검증
   scalar가 모두 공개값이므로 별도의 위치별 4비트 comb를 사용합니다. 60 KiB 기저 표는

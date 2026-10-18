@@ -104,9 +104,9 @@ rows to the threshold. Fixed-count multiplication kernels and key-bound width-si
 tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit P-256 base table,
 one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
 the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining, a four-bit
-public-verification comb, and AVX-512 full-scan private-comb selection later raised the current
-balanced medians to 0.838/0.497/1.007/0.322; keygen, signing, and ECDH remain the
-only three prime-curve rows below the gate. Fixed-count PCLMUL product and square kernels,
+public-verification comb, AVX-512 full-scan private-comb selection, and a signed radix-256 base
+comb later raised the current balanced medians to 0.959/0.535/0.971/0.311; signing and ECDH remain
+the only two prime-curve rows below the gate. Fixed-count PCLMUL product and square kernels,
 descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
 binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
@@ -161,8 +161,12 @@ keeps an internal before/after baseline and an explicit unavailable result.
   entry and retained the requested point with masks, preserving the full-row scan while improving
   keygen and signing by 15.8% and 8.3% against the preceding binary. The current benchmark uses
   1,000-operation batches, alternates which independently timed implementation runs first, and
-  reports seven-run medians of 0.838/0.497/1.007/0.322. Verification is complete but close enough
-  to remeasure; keygen, signing, and ECDH remain open. Further work on those private paths needs a generated carry-chain or
+  first reported seven-run medians of 0.838/0.497/1.007/0.322. Replacing the unsigned seven-bit
+  base comb with 33-row signed radix-256 reduced the table and the expected mixed additions. Seven
+  alternating before/after runs reduced certpp keygen/sign medians from 0.027/0.039 to
+  0.025/0.037 ms; the current four ratios are 0.959/0.535/0.971/0.311. Key generation and
+  verification are complete but close enough to remeasure; signing and ECDH remain open. Further
+  work on those private paths needs a generated carry-chain or
   a whole point-operation
   Tiger Lake target that compiles the field products together with doubling and addition, rather
   than another generic full-product buffer or an isolated leaf-function dispatch.

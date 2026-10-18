@@ -365,9 +365,10 @@ namespace crypto {
         };
 
         struct FastP256CombTable {
-            static constexpr size_t WINDOW_BITS = 7;
-            static constexpr size_t ROWS = (256 + WINDOW_BITS - 1) / WINDOW_BITS;
-            static constexpr size_t ENTRIES = size_t(1) << WINDOW_BITS;
+            static constexpr size_t WINDOW_BITS = 8;
+            static constexpr size_t SCALAR_ROWS = 256 / WINDOW_BITS;
+            static constexpr size_t ROWS = SCALAR_ROWS + 1;
+            static constexpr size_t ENTRIES = (size_t(1) << (WINDOW_BITS - 1)) + 1;
             struct AffinePoint {
                 uint64_t x[4] = {};
                 uint64_t y[4] = {};
@@ -1765,7 +1766,8 @@ namespace crypto {
     }
 
     /* Fixed-base multiplication with full-scan tables, so secret scalar bits never become memory
-     * indexes. The native fixed-width path caches a compact 37-row, seven-bit comb only after every
+     * indexes. The native fixed-width path caches a compact 33-row signed radix-256 comb only after
+     * every
      * standard P-256 parameter and the generator compare equal; mutable or other parameters build
      * a four-bit table per call. The portable CBigNum path always builds that per-call four-bit
      * table. */
@@ -1852,12 +1854,21 @@ namespace crypto {
                         const bool useAvx512Selection = hasP256CombAvx512();
 #endif
                         FastEcPoint accumulator = fastInfinity(fastField, fastOne);
+                        size_t carry = 0;
                         for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
-                            size_t digit = 0;
+                            size_t byte = 0;
                             for (size_t bit = 0; bit < FastP256CombTable::WINDOW_BITS; ++bit) {
-                                digit |= size_t(k.testBit(
+                                byte |= size_t(k.testBit(
                                     window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
                             }
+                            // Center each radix-256 digit in [-127, 128]. The fixed extra row
+                            // consumes a final carry, and selection still scans every magnitude.
+                            const size_t rawDigit = byte + carry;
+                            carry = (rawDigit + 127) >> FastP256CombTable::WINDOW_BITS;
+                            const size_t negativeMask = size_t(0) - carry;
+                            const size_t digit = (rawDigit & ~negativeMask)
+                                | (((size_t(1) << FastP256CombTable::WINDOW_BITS) - rawDigit)
+                                    & negativeMask);
                             const size_t nonZero =
                                 (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
                             const size_t tableDigit = digit | (nonZero ^ size_t(1));
@@ -1889,6 +1900,10 @@ namespace crypto {
                                 }
                             }
                             selected.z = fastOne;
+                            FastPrimeField::Value negatedY = fastField.sub(
+                                FastPrimeField::Value(), selected.y);
+                            fastField.conditionalAssign(
+                                uint64_t(carry & nonZero), selected.y, negatedY);
                             FastEcPoint sum = fastAddMixed(
                                 accumulator, selected,
                                 fastField, fastA, fastOne, fastAMinusThree);
