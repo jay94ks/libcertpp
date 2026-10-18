@@ -98,6 +98,13 @@ namespace crypto {
     bool PreparePrimeVerifyTable(
         const CEcCurve& curve, const SEcPoint& point, FastPrimeVerifyTable& out);
 
+    /* Multiplies a private scalar by a standard P-256 point using a prepared position-dependent
+     * comb. Every row scans all fifteen non-zero candidates and selects with masks. Returns false
+     * when the fixed-width engine is unavailable or the table is not a P-256 comb. */
+    bool FastPrimePrivateMultiplyPrepared(
+        const CEcCurve& curve, const CBigNum& scalar,
+        const FastPrimeVerifyTable& table, SEcPoint& out);
+
     /* Uses two tables prepared by PreparePrimeVerifyTable() for a public two-scalar product. Returns
      * false when the fixed-width engine is unavailable or either table is malformed. */
     bool FastPrimeLinearCombinationPrepared(

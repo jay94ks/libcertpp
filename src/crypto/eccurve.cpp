@@ -863,6 +863,75 @@ namespace crypto {
 #endif
     }
 
+    bool FastPrimePrivateMultiplyPrepared(
+        const CEcCurve& curve, const CBigNum& scalar,
+        const FastPrimeVerifyTable& table, SEcPoint& out
+    ) {
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const CMontgomery montgomery(curve.p);
+        const FastPrimeField field(curve.p);
+        if (!montgomery.isValid() || !field.valid() || !table.p256Comb
+            || !table.validFor(field.count()) || scalar.bitLength() > 256) {
+            return false;
+        }
+
+        CBigNum pMinusThree(curve.p);
+        pMinusThree.sub(CBigNum(uint64_t(3)));
+        const bool aMinusThree = curve.a == pMinusThree;
+        FastPrimeField::Value one;
+        FastPrimeField::Value aMont;
+        if (!field.load(montgomery.one(), one)
+            || !field.load(montgomery.toMont(curve.a), aMont)) {
+            return false;
+        }
+
+        constexpr size_t ROWS = FastPrimeVerifyTable::P256_COMB_ROWS;
+        constexpr size_t ENTRIES = FastPrimeVerifyTable::P256_COMB_ENTRIES;
+        constexpr size_t WINDOW_BITS = FastPrimeVerifyTable::P256_COMB_WINDOW_BITS;
+        FastEcPoint accumulator = fastInfinity(field, one);
+        for (size_t row = 0; row < ROWS; ++row) {
+            size_t digit = 0;
+            for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                digit |= size_t(scalar.testBit(row * WINDOW_BITS + bit)) << bit;
+            }
+            const size_t nonZero =
+                (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+            const size_t tableDigit = digit | (nonZero ^ size_t(1));
+            const size_t rowBase = row * ENTRIES;
+            FastEcPoint selected;
+            std::memcpy(selected.x.limbs, table.x(rowBase),
+                field.count() * sizeof(uint64_t));
+            std::memcpy(selected.y.limbs, table.y(rowBase),
+                field.count() * sizeof(uint64_t));
+            for (size_t candidate = 2; candidate <= ENTRIES; ++candidate) {
+                FastEcPoint candidatePoint;
+                std::memcpy(candidatePoint.x.limbs, table.x(rowBase + candidate - 1),
+                    field.count() * sizeof(uint64_t));
+                std::memcpy(candidatePoint.y.limbs, table.y(rowBase + candidate - 1),
+                    field.count() * sizeof(uint64_t));
+                field.conditionalAssign(
+                    uint64_t(candidate == tableDigit), selected.x, candidatePoint.x);
+                field.conditionalAssign(
+                    uint64_t(candidate == tableDigit), selected.y, candidatePoint.y);
+            }
+            selected.z = one;
+            FastEcPoint sum = fastAddMixed(
+                accumulator, selected, field, aMont, one, aMinusThree);
+            fastConditionalAssign(
+                field, uint64_t(nonZero ^ size_t(1)), sum, accumulator);
+            accumulator = sum;
+        }
+        out = fastToAffine(accumulator, field, one, montgomery);
+        return true;
+#else
+        (void)curve;
+        (void)scalar;
+        (void)table;
+        (void)out;
+        return false;
+#endif
+    }
+
     bool FastPrimeLinearCombinationPrepared(
         const CEcCurve& curve,
         const CBigNum& firstScalar, const FastPrimeVerifyTable& firstTable,

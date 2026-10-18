@@ -315,6 +315,32 @@ TEST_CASE("ECDH agree: two freshly generated P-256 key pairs derive the same sec
     CHECK(anyNonZero);
 }
 
+TEST_CASE("ECDH agree: one P-256 context updates its prepared table when the peer changes") {
+    IAsymmetricPtr p256 = IAsymmetric::builtIn(EASYM_P256);
+    REQUIRE(p256);
+
+    SKeyPair alice, bob, carol;
+    REQUIRE(p256->generateKeyPair(256, alice) == ERET_OK);
+    REQUIRE(p256->generateKeyPair(256, bob) == ERET_OK);
+    REQUIRE(p256->generateKeyPair(256, carol) == ERET_OK);
+
+    IAsymmetricContextPtr aliceContext = p256->createContext();
+    REQUIRE(aliceContext);
+    aliceContext->keyPair(alice);
+
+    std::vector<uint8_t> withBob(32);
+    SByteSpan withBobSpan(withBob.data(), withBob.size());
+    REQUIRE(aliceContext->deriveSharedSecret(bob.publicKey, withBobSpan) == ERET_OK);
+
+    std::vector<uint8_t> withCarol(32);
+    SByteSpan withCarolSpan(withCarol.data(), withCarol.size());
+    REQUIRE(aliceContext->deriveSharedSecret(carol.publicKey, withCarolSpan) == ERET_OK);
+
+    CHECK(withBob == derive(p256, bob.privateKey, alice.publicKey, 32));
+    CHECK(withCarol == derive(p256, carol.privateKey, alice.publicKey, 32));
+    CHECK(withBob != withCarol);
+}
+
 TEST_CASE("ECDH agree: two freshly generated P-384 key pairs derive the same secret") {
     IAsymmetricPtr p384 = IAsymmetric::builtIn(EASYM_P384);
     REQUIRE(p384);

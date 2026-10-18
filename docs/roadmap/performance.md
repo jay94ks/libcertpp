@@ -105,8 +105,9 @@ tables then raised every remaining non-P-256 row above 0.90. A compact seven-bit
 one-way masked selection, and width-eight Montgomery-limb verification tables subsequently raised
 the four P-256 rows to five-run medians of 0.318--0.614. Field-product inlining, a four-bit
 public-verification comb, AVX-512 full-scan private-comb selection, and a signed radix-256 base
-comb later raised the current balanced medians to 0.959/0.535/0.971/0.311; signing and ECDH remain
-the only two prime-curve rows below the gate. Fixed-count PCLMUL product and square kernels,
+comb later raised the fixed-base rows. A peer-bound private full-scan comb then raised repeated ECDH;
+the current balanced medians are 0.959/0.543/0.994/1.164, leaving signing as the only prime-curve
+row below the gate. Fixed-count PCLMUL product and square kernels,
 descending word reduction, mixed
 Lopez-Dahab addition, and removal of redundant generated-key validation then raised all 30
 binary-curve keygen/sign/verify rows to five-run median ratios of 1.12--1.83. The next inventory stage added RSA-2048
@@ -164,11 +165,13 @@ keeps an internal before/after baseline and an explicit unavailable result.
   first reported seven-run medians of 0.838/0.497/1.007/0.322. Replacing the unsigned seven-bit
   base comb with 33-row signed radix-256 reduced the table and the expected mixed additions. Seven
   alternating before/after runs reduced certpp keygen/sign medians from 0.027/0.039 to
-  0.025/0.037 ms; the current four ratios are 0.959/0.535/0.971/0.311. Key generation and
-  verification are complete but close enough to remeasure; signing and ECDH remain open. Further
-  work on those private paths needs a generated carry-chain or
+  0.025/0.037 ms. A context-cached, position-dependent four-bit peer comb then replaced repeated
+  ECDH's 256 doublings and 64 general additions with 64 full-scan mixed additions. Seven alternating
+  runs reduced certpp derive from 0.140 to 0.039 ms and raised its ratio from 0.315 to 1.164. The
+  current four ratios are 0.959/0.543/0.994/1.164. Key generation, verification, and repeated ECDH
+  are complete; signing remains open. Further work on signing needs a generated carry-chain or
   a whole point-operation
-  Tiger Lake target that compiles the field products together with doubling and addition, rather
+  Tiger Lake target that compiles the field products together with mixed addition and inversion, rather
   than another generic full-product buffer or an isolated leaf-function dispatch.
 - **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
   multiples with each public key, while Ed448 stores a larger comb table. Measure the same

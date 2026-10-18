@@ -56,6 +56,11 @@ signed radix-256 then reduced its table from about 296 to 266 KiB and its expect
 from 36.7 to 32.4. Seven alternating before/after runs reduced certpp keygen/sign medians from
 0.027/0.039 to 0.025/0.037 ms and produced current OpenSSL ratios of
 0.959/0.535/0.971/0.311. Key generation now passes, raising the prime-field count to 78 of 80.
+A context-cached, position-dependent four-bit comb for the current P-256 ECDH peer then replaced
+256 doublings and 64 general additions with 64 mixed additions whose private digit scans all
+fifteen candidates. Seven alternating runs reduced repeated certpp derive from 0.140 to 0.039 ms
+and raised its OpenSSL ratio from 0.315 to 1.164. The current P-256 ratios are
+0.959/0.543/0.994/1.164, so 79 of 80 prime-field rows pass and only signing remains.
 fixed-count PCLMUL product and square kernels plus descending word reduction subsequently removed
 the shared GF(2^m) bottleneck. Mixed Lopez-Dahab additions and eliminating redundant validation of
 freshly generated keys brought all 30 binary-curve keygen/sign/verify rows above the OpenSSL gate,

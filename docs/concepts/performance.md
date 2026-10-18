@@ -345,7 +345,7 @@ ECDH is unavailable because `CEcdsa2` implements signatures only.
 |---|---:|---:|---:|---:|
 | P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
 | P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.959x | 0.535x | 0.971x | 0.311x |
+| P-256 | 0.959x | 0.543x | 0.994x | 1.164x |
 | P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
 | P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
 | secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
@@ -412,13 +412,22 @@ the certpp key-generation median from 0.027 to 0.025 ms and signing from 0.039 t
 median OpenSSL ratios rose from 0.890 to 0.959 and from 0.514 to 0.535 respectively. Crafted scalar
 tests cover the positive 128 boundary, carry propagation between every byte, and the final carry.
 
+P-256 ECDH contexts now prepare a position-dependent four-bit comb for the current peer on first
+use and retain its 60 KiB Montgomery-limb table while that peer remains selected. Private digits
+scan all fifteen nonzero candidates in each row and select with masks. The repeated derive path
+therefore performs 64 mixed additions and no point doublings; changing the peer rebuilds the table,
+and unsupported curves retain the ordinary private window. Seven alternating pinned runs reduced
+the repeated certpp derive median from 0.140 to 0.039 ms and raised its OpenSSL ratio from 0.315 to
+1.164. The comparison performs peer binding and its interoperability check before the timed row, as
+both implementations reuse a context already configured with that peer.
+
 The current P-256 row uses 1,000 operations per batch and seven complete single-CPU runs. Each
 measurement warms both implementations and alternates which independent batch runs first, avoiding
 the frequency bias observed when every certpp batch preceded every OpenSSL batch. Median
-keygen/sign/verify/ECDH ratios are 0.959/0.535/0.971/0.311; their per-run ranges are
-0.834--0.981, 0.517--0.557, 0.956--1.022, and 0.291--0.327 respectively. This leaves 78 of 80
-prime-field rows above the gate and two private-operation rows open. Key generation and verification
-meet the median gate but remain close enough to require remeasurement after related changes.
+keygen/sign/verify/ECDH ratios are 0.959/0.543/0.994/1.164; their per-run ranges are
+0.918--0.979, 0.501--0.587, 0.957--1.047, and 1.126--1.223 respectively. This leaves 79 of 80
+prime-field rows above the gate, with signing still open. Key generation and verification meet the
+median gate but remain close enough to require remeasurement after related changes.
 Other prime curves retain width-eight affine odd-multiple tables stored directly as Montgomery
 limbs, so repeated verification does not reconstruct, normalize, or reconvert their coordinates.
 

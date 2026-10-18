@@ -148,7 +148,11 @@
   Reusable P-256 verification contexts use a separate position-dependent four-bit comb because
   both verification scalars are public. Its 60 KiB base table is shared process-wide and each
   bound public key retains one 60 KiB table; direct lookup replaces 256 point doublings with at
-  most 128 mixed additions. Other prime curves retain width-eight wNAF verification tables.
+  most 128 mixed additions. A P-256 ECDH context lazily retains the same 60 KiB position-dependent
+  table format for its current peer. Unlike public verification, private ECDH scans all fifteen
+  entries per row and selects with masks; the prepared path uses 64 mixed additions and no point
+  doublings. Changing the peer replaces the cached table. Other prime curves retain width-eight
+  wNAF verification tables and their ordinary private scalar path.
   Other builds retain the masked R0/R1 `CBigNum` Montgomery ladder. Both paths
   pay for one final inversion rather than one per scalar bit.
   The per-modulus context is built at the top of `scalarMul()`/

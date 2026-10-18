@@ -140,6 +140,8 @@ namespace crypto {
         private:
             FastPrimeVerifyTable _verifyBaseTable;
             FastPrimeVerifyTable _verifyPublicTable;
+            IPublicKeyPtr _derivePeerKey;
+            FastPrimeVerifyTable _derivePeerTable;
 
             void prepareVerificationTables(const CEcCurve& curve, const SEcPoint& publicPoint) {
                 if (!PreparePrimeVerifyTable(curve, curve.g, _verifyBaseTable)
@@ -153,6 +155,8 @@ namespace crypto {
             void onReset() override {
                 _verifyBaseTable.clear();
                 _verifyPublicTable.clear();
+                _derivePeerKey.reset();
+                _derivePeerTable.clear();
                 auto priv = std::dynamic_pointer_cast<EcPrivateKey>(privateKey());
                 if (priv) {
                     size_t orderBytes = (priv->curve().n.bitLength() + 7) / 8;
@@ -414,7 +418,19 @@ namespace crypto {
                     return ERET_NOSPC;
                 }
 
-                SEcPoint shared = curve.scalarMul(q, priv->d());
+                // The peer has already passed the full public-key validation above. Keep its
+                // position-dependent comb with this context so repeated derives amortize setup.
+                if (_derivePeerKey != peerPublicKey) {
+                    _derivePeerTable.clear();
+                    PreparePrimeVerifyTable(curve, q, _derivePeerTable);
+                    _derivePeerKey = peerPublicKey;
+                }
+
+                SEcPoint shared;
+                if (!FastPrimePrivateMultiplyPrepared(
+                        curve, priv->d(), _derivePeerTable, shared)) {
+                    shared = curve.scalarMul(q, priv->d());
+                }
 
                 // Unreachable for a d in [1, n-1] against a point of order n (the two checked
                 // conditions above), but a d outside that range -- a key built by
