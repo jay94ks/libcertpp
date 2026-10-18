@@ -129,6 +129,12 @@ reduction carry chains on one thread. Fifteen alternating pinned WSL Clang 18 ru
 RSA-2048 signing median from 0.811 to 0.772 ms, or 4.8%, and produced a 0.324 median OpenSSL ratio.
 The KAT, RSA unit tests, 914,917 Montgomery assertions, and the SIMD-disabled fallback retained
 their results.
+The short-exponent chain then fused its final multiply by an odd base with the Montgomery-domain
+exit: multiplying the last Montgomery residue by the ordinary-domain base produces the ordinary
+answer directly. Eleven alternating pinned runs reduced RSA-2048 verification from a 0.024 ms
+median to 0.023 ms and its median OpenSSL ratio rose from 0.640 to 0.676; signing, whose CRT fault
+check performs the same re-encryption, fell from 0.793 to 0.782 ms. A separate seven-run current
+snapshot measured sign/verify ratios of 0.328/0.673. The same Montgomery and RSA checks passed.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

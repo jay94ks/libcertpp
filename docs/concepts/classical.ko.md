@@ -75,8 +75,10 @@
   CRT 지수승을 하나의 고정 5비트 window schedule로 함께 진행합니다. paired CIOS kernel은 한
   thread에서 서로 독립인 `p`, `q` 곱·reduction carry를 교차 배치해 worker thread의 scheduler와
   affinity 비용 없이 instruction-level parallelism을 노출합니다. 지원하지 않는 폭과 toolchain은
-  기존 지수승 두 번을 유지합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를
-  바꾸지 않습니다.
+  기존 지수승 두 번을 유지합니다. 짧은 홀수 지수는 마지막 Montgomery residue에
+  ordinary-domain base를 곱해 최하위 비트 곱과 domain 이탈도 한 product로 합치며 RSA 공개 지수
+  65537이 이 경로를 사용합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를 바꾸지
+  않습니다.
 
   `decryptBlock()`의 EME-PKCS1-v1_5 unpadding(RFC 8017 7.2.2)은 복호된
   블록에서 `0x00`/`0x02` 선두 바이트와 `0x00` 구분자를 constant-time으로

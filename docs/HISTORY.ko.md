@@ -120,6 +120,12 @@ chain을 교차 배치합니다. WSL Clang 18에서 한 코어에 고정해 변�
 RSA-2048 서명 중앙값은 0.811에서 0.772 ms로 4.8% 줄었고 OpenSSL 대비 비율 중앙값은
 0.324배였습니다. KAT, RSA 단위 테스트, Montgomery 단언 914,917개, SIMD 비활성 fallback은
 같은 결과를 유지했습니다.
+이어 짧은 지수 chain의 마지막 홀수 base 곱과 Montgomery domain 이탈을 합쳤습니다. 마지막
+Montgomery residue에 ordinary-domain base를 곱하면 ordinary 결과가 바로 나옵니다. 한 코어에
+고정한 11회 교대 실행에서 RSA-2048 검증 중앙값은 0.024에서 0.023 ms로 줄었고 OpenSSL 비율
+중앙값은 0.640배에서 0.676배로 올랐습니다. 같은 재암호화를 CRT fault 검사에 쓰는 서명도
+0.793에서 0.782 ms로 줄었습니다. 별도 7회 현재 snapshot의 서명/검증 비율은
+0.328/0.673배였고 같은 Montgomery·RSA 검사를 통과했습니다.
 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로

@@ -290,6 +290,11 @@ and interleaves their independent CIOS carry chains on the same thread. Fifteen 
 WSL Clang 18 runs reduced the certpp RSA-2048 signing median from 0.811 to 0.772 ms, a 4.8%
 latency reduction. The paired-run median OpenSSL ratio rose to 0.324. The pinned Windows table below
 remains the last complete same-configuration snapshot until all three RSA rows are remeasured there.
+The public-exponent path now combines its last odd-base multiply with the Montgomery-domain exit.
+Eleven alternating pinned runs reduced verification from 0.024 to 0.023 ms and raised its median
+OpenSSL ratio from 0.640 to 0.676; the private operation's re-encryption check gave signing a smaller
+0.793 to 0.782 ms reduction. A separate seven-run current-source snapshot measured median RSA
+sign/verify ratios of 0.328/0.673.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

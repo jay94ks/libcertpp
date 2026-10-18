@@ -77,8 +77,10 @@
   through one fixed five-bit window schedule. Its paired CIOS kernel interleaves the independent
   `p` and `q` product and reduction carries on one thread, exposing instruction-level parallelism
   without the scheduler and affinity cost of worker threads. Unsupported widths and toolchains
-  retain the two ordinary exponentiations. These paths do not change `CBigNum`'s documented
-  variable-time boundary.
+  retain the two ordinary exponentiations. Short odd exponents also multiply the last Montgomery
+  residue by the ordinary-domain base, combining the low-bit multiply and domain exit into one
+  product; RSA's public exponent 65537 takes this path. These paths do not change `CBigNum`'s
+  documented variable-time boundary.
 
   `decryptBlock()`'s EME-PKCS1-v1_5 unpadding (RFC 8017 7.2.2) scans the
   decrypted block for its `0x00`/`0x02` lead bytes and `0x00` separator in

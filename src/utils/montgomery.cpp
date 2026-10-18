@@ -898,26 +898,50 @@ namespace certpp {
 
             pack(baseMont, baseWide);
             std::memcpy(resultWide, baseWide, _wideCount * sizeof(uint64_t));
-            std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
-            ordinaryOne[0] = 1;
+
+            // An odd exponent ends with a multiply by base. Feeding that final Montgomery product
+            // the ordinary-domain base produces the ordinary-domain answer directly, combining
+            // the low-bit multiply with the reduction that would otherwise follow it. Preserve
+            // modExp() semantics for a base outside [0, m) by reducing that uncommon case first.
+            const bool fuseFinalMultiply = exponentBits > 1 && exponent.testBit(0);
+            if (fuseFinalMultiply) {
+                CBigNum reducedBase;
+                const CBigNum* ordinaryBase = &base;
+                if (needsReduce(base)) {
+                    reducedBase = base;
+                    reducedBase.mod(_m);
+                    ordinaryBase = &reducedBase;
+                }
+                pack(*ordinaryBase, ordinaryOne);
+            } else {
+                std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
+                ordinaryOne[0] = 1;
+            }
 
             const MulWideChain multiply = selectMulWideChain(_wideCount);
             const MulWideChain square = selectSquareWideChain(_wideCount);
 
             // bitLength() guarantees the top exponent bit is one. Seeding with base consumes that
             // bit directly instead of squaring Montgomery one and multiplying by base first.
+            bool leftMontgomeryDomain = false;
             for (size_t i = exponentBits - 1; i-- > 0; ) {
                 square(resultWide, resultWide, _modulus64.begin(), _wideCount,
                     _n0inv64, resultWide, scratch);
                 if (exponent.testBit(i)) {
-                    multiply(resultWide, baseWide, _modulus64.begin(), _wideCount,
+                    const bool lastBit = fuseFinalMultiply && i == 0;
+                    multiply(resultWide, lastBit ? ordinaryOne : baseWide,
+                        _modulus64.begin(), _wideCount,
                         _n0inv64, resultWide, scratch);
+                    leftMontgomeryDomain = lastBit;
                 }
             }
 
-            // One final Montgomery reduction returns to the ordinary domain.
-            multiply(resultWide, ordinaryOne, _modulus64.begin(), _wideCount,
-                _n0inv64, resultWide, scratch);
+            if (!leftMontgomeryDomain) {
+                std::memset(ordinaryOne, 0, _wideCount * sizeof(uint64_t));
+                ordinaryOne[0] = 1;
+                multiply(resultWide, ordinaryOne, _modulus64.begin(), _wideCount,
+                    _n0inv64, resultWide, scratch);
+            }
 
             CBigNum result;
             if (!result._limbs.resize(2 * _wideCount)) {
