@@ -1,6 +1,14 @@
 #include "fe25519.hpp"
 #include <cstring>
 
+#if defined(CERTPP_ARCH_HAS_MULX)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
 namespace certpp {
 namespace crypto {
 
@@ -972,6 +980,41 @@ namespace crypto {
             TigerLake,
         };
 
+        bool hasX25519GenericAcceleration() {
+#if defined(_MSC_VER)
+            int info[4] = { 0, 0, 0, 0 };
+            __cpuid(info, 0);
+            if (info[0] < 7) {
+                return false;
+            }
+            __cpuidex(info, 1, 0);
+            if ((info[2] & (1 << 27)) == 0 || (info[2] & (1 << 28)) == 0
+                || (_xgetbv(0) & 0x6) != 0x6) {
+                return false;
+            }
+            __cpuidex(info, 7, 0);
+            const uint32_t ebx = static_cast<uint32_t>(info[1]);
+#else
+            unsigned int eax, ebx, ecx, edx;
+            if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)
+                || (ecx & (1u << 27)) == 0 || (ecx & (1u << 28)) == 0) {
+                return false;
+            }
+            uint32_t xcr0Low, xcr0High;
+            __asm__ volatile("xgetbv" : "=a"(xcr0Low), "=d"(xcr0High) : "c"(0));
+            (void)xcr0High;
+            if ((xcr0Low & 0x6) != 0x6) {
+                return false;
+            }
+            if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                return false;
+            }
+#endif
+            return (ebx & (1u << 5)) != 0
+                && (ebx & (1u << 8)) != 0
+                && (ebx & (1u << 19)) != 0;
+        }
+
         EX25519Acceleration x25519Acceleration() {
             static const EX25519Acceleration detected = [] {
                 __builtin_cpu_init();
@@ -980,9 +1023,7 @@ namespace crypto {
                     return EX25519Acceleration::TigerLake;
                 }
 #endif
-                if (__builtin_cpu_supports("avx2") != 0 &&
-                    __builtin_cpu_supports("bmi2") != 0 &&
-                    __builtin_cpu_supports("adx") != 0) {
+                if (hasX25519GenericAcceleration()) {
                     return EX25519Acceleration::Generic;
                 }
                 return EX25519Acceleration::None;

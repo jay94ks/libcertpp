@@ -65,7 +65,9 @@
   64-bit Montgomery storage for the complete square-and-multiply chain. Longer exponents use a
   four-bit sliding window, widened to five bits above 512 bits, and keep the accumulator and odd
   powers packed for the whole chain. BMI2/ADX and an exact Tiger Lake tuning target are selected
-  only after cached runtime feature checks. The common 1024- and 2048-bit moduli select separate
+  only after cached runtime feature checks. The generic BMI2/ADX gate decodes CPUID directly, so it
+  does not depend on the compiler accepting a particular `__builtin_cpu_supports` feature string.
+  The common 1024- and 2048-bit moduli select separate
   16- and 32-limb kernels once per exponentiation, so the compiler can unroll the integrated
   product/reduction loop without adding a limb-count branch to every inner iteration. Other sizes
   retain the runtime-count kernel. These paths do not change `CBigNum`'s documented variable-time

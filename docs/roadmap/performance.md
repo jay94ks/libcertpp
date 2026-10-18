@@ -121,14 +121,18 @@ variance than signing and verification. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
 
-- **Profile the remaining RSA/DSA arithmetic gap.** Packed chains removed repeated 32/64-bit
+- **Generate a dual-carry RSA/DSA Montgomery kernel.** Packed chains removed repeated 32/64-bit
   conversion, integrated CIOS removed the second accumulator pass, fixed-count kernels exposed the
   common 1024/2048-bit loops to the compiler, and binary inversion removed quotient-sized
-  extended-Euclidean work. OpenSSL still has faster Montgomery multiplication and prime-generation
-  arithmetic. The rejected full-square REDC experiment was correct but made RSA signing more than
-  twice as slow, so further work needs a generated dual-carry chain rather than a generic
-  full-product buffer. Keep the existing CRT fault check and the documented variable-time boundary
-  intact.
+  extended-Euclidean work. A Clang 18 `perf` run attributed 35.85% of the combined RSA comparison's
+  self cycles to the 16-limb Montgomery kernel; its call tree covered both prime testing and private
+  CRT exponentiation. Replacing the wide-integer expression with `_mulx_u64` plus `_addcarryx_u64`
+  remained correct but made seven-run RSA signing and DSA signing/verification medians 5--8% slower,
+  because it serialized carries that Clang had interleaved across the product and reduction chains.
+  The earlier full-square REDC experiment made RSA signing more than twice as slow. Further work
+  therefore needs a generated ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or
+  a generic full-product buffer. Keep the existing CRT fault check and documented variable-time
+  boundary intact.
 - **Close the remaining P-256 rows.** OpenSSL uses a highly specialized implementation. A sparse,
   unrolled four-limb Montgomery kernel, compact batch-normalized seven-bit base table, one-way
   masked private-table selection, and width-eight prepared verification tables raised the four

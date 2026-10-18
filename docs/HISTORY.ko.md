@@ -57,7 +57,13 @@ RSA 0.41/0.27/0.61배, DSA 0.75/0.65/0.48배이며 키 생성 비율에는 무�
 RSA 서명/검증을 0.948/0.027 ms에서 0.805/0.025 ms로, DSA 서명/검증을
 0.514/0.616 ms에서 0.471/0.558 ms로 줄였습니다. 쌍별 비율은 각각
 0.316/0.668배와 0.720/0.535배로 높아졌고 키 생성 비율은 계속 무작위 소수 탐색 편차의
-영향이 큽니다. 이어 edwards448 전용 배가,
+영향이 큽니다.
+X25519와 packed Montgomery의 BMI2/ADX gate는 compiler별 기능 문자열 대신 직접 CPUID
+검사로 전환했고, X25519는 AVX2 body에 들어가기 전에 OSXSAVE/XCR0도 확인합니다. 이로써
+cached dispatch와 portable fallback을 보존하면서 Clang 18에서도 최적화 경로를 빌드할 수
+있습니다. 프로파일은 RSA 전체 비교 self cycle의 35.85%를 16-limb kernel에 귀속했습니다.
+명시적인 `_mulx_u64`/`_addcarryx_u64` 재작성은 Montgomery 단언 914,917개를 통과했지만
+안정적인 RSA/DSA 연산을 5--8% 늦춰 기각했습니다. 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로
 동일 조건 WSL 비교의 서명/검증을 0.139/0.191 ms까지 줄여 OpenSSL의

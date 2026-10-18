@@ -106,13 +106,17 @@ window가 검증 곱셈 횟수를 줄입니다. 이어 16-limb·32-limb 별도 k
 3.6.4의 시험한 default와 legacy provider는 GOST 서명 구현을 제공하지 않으므로,
 GOST는 내부 변경 전후 기준값과 명시적인 사용 불가 결과를 유지합니다.
 
-- **남은 RSA/DSA 산술 격차를 프로파일링합니다.** packed 체인이 반복 32/64비트 변환을
+- **RSA/DSA Montgomery용 dual-carry kernel을 생성합니다.** packed 체인이 반복 32/64비트 변환을
   제거하고 통합 CIOS가 두 번째 누산기 순회를 없앴으며, 고정 count kernel이 흔한
   1024/2048비트 loop를 compiler에 노출하고 binary 역원이 몫 크기 확장 유클리드 작업을
-  제거했습니다. 그래도 OpenSSL의 Montgomery 곱셈과 소수 생성 산술은 더 빠릅니다.
-  기각한 full-square REDC 실험은 정확했지만 RSA 서명을 두 배 넘게 느리게 했으므로 다음
-  시도에는 일반 full-product buffer가 아닌 생성한 dual-carry chain이 필요합니다. 기존 CRT
-  fault 검사와 문서화된 variable-time 경계를 보존합니다.
+  제거했습니다. Clang 18 `perf` 실행은 RSA 전체 비교 self cycle의 35.85%를 16-limb
+  Montgomery kernel에 귀속했고, 호출 트리는 소수 판정과 private CRT 지수승을 모두
+  포함했습니다. wide-integer 표현을 `_mulx_u64`와 `_addcarryx_u64`로 바꾼 실험은 정확했지만
+  compiler가 곱·reduction chain 사이에서 교차 배치하던 carry를 직렬화해 7회 RSA 서명과
+  DSA 서명/검증 중앙값을 5--8% 늦췄습니다. 이전 full-square REDC 실험도 RSA 서명을 두 배
+  넘게 느리게 했습니다. 따라서 다음 시도에는 intrinsic chain이나 일반 full-product buffer가
+  아니라 생성한 ADCX/ADOX dual-carry schedule이 필요합니다. 기존 CRT fault 검사와
+  문서화된 variable-time 경계를 보존합니다.
 - **남은 P-256 행을 문턱까지 높입니다.** OpenSSL은 고도로 특화한 구현을 사용합니다.
   희소·완전 전개 4-limb Montgomery kernel, 압축한 batch-normalized 7비트 기저 표,
   한쪽 방향 private 표 mask 선택, 폭 8 준비 검증 표가 네 비율을 0.318--0.614배로

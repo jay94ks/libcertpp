@@ -394,7 +394,9 @@ Ed448은 이제 고정 폭 Fe448 산술과 기준점·각 공개키용 10열 com
 X25519 키 생성은 새로 유도한 공개값에 cofactor를 곱하던 두 번째 255단계 ladder를
 더는 실행하지 않습니다. 네이티브 radix-51 경로는 독립 carry chain, 10-product 제곱
 schedule, 더 짧은 ladder live range, 그리고 generic AVX2/BMI2/ADX 또는 정확한 Tiger Lake
-tuning으로 가는 캐시된 런타임 dispatch를 사용합니다. 개인키는 clamp된 scalar를 보관하고
+tuning으로 가는 캐시된 런타임 dispatch를 사용합니다. generic gate는 CPUID와 OS가 활성화한
+XCR0 vector 상태를 직접 읽어 compiler 버전별 기능 문자열을 피하면서 필요한 AVX 운영체제
+검사를 유지합니다. 개인키는 clamp된 scalar를 보관하고
 context는 검사를 통과한 바인딩 키를 보관합니다. portable radix-2^25.5 경로도 유지합니다.
 현재 동일 조건 측정과 검증은 [현재 X25519 비교](#현재-x25519-비교)에 기록합니다.
 
@@ -514,7 +516,9 @@ OpenSSL 3.6.4를 사용한 정적 Windows x86-64 Release 빌드에서 다시 측
 이전 portable 측정 0.139/0.136 ms와 비교하면 radix-51은 먼저 WSL에서 0.049/0.048 ms에
 도달했습니다. 이어 두 carry chain reduction과 전용 square schedule이 필드 연산을 줄였고,
 전체 ladder 런타임 dispatch가 generic AVX2/BMI2/ADX body 또는 정확한 Tiger Lake body를
-선택하며 portable fallback도 유지합니다. 키 생성 때 한 번 clamp하고 context가 검증된
+선택하며 portable fallback도 유지합니다. generic 결정은 CPUID와 OSXSAVE/XCR0를 사용하므로
+`adx`를 builtin 기능 문자열로 허용하지 않는 Clang release도 이 경로를 컴파일할 수 있습니다.
+키 생성 때 한 번 clamp하고 context가 검증된
 바인딩 개인키와 상대 공개키 객체를 재사용합니다. 현재 키 생성과 유도 중앙값은 모두
 90% 완료 문턱을 충족합니다. RFC 7748 기지 응답과 반복 벡터, exact-arithmetic 필드 검사,
 교차 구현 공유 secret, 비정규 u 처리, 저차수 상대 거부는 이후 변경의 승인 경계로

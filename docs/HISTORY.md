@@ -65,6 +65,12 @@ random-prime-search variance. Separate 16- and 32-limb CIOS kernels with up to 3
 then reduced RSA sign/verify from 0.948/0.027 to 0.805/0.025 ms and DSA sign/verify from
 0.514/0.616 to 0.471/0.558 ms. Their paired ratios rose to 0.316/0.668 and 0.720/0.535;
 key-generation ratios remained dominated by random prime-search variance.
+The X25519 and packed-Montgomery BMI2/ADX gates then moved from compiler-specific feature strings
+to direct CPUID checks; X25519 additionally verifies OSXSAVE/XCR0 before entering its AVX2 body.
+This keeps the optimized paths buildable with Clang 18 while preserving cached dispatch and the
+portable fallback. A profile attributed 35.85% of a combined RSA comparison's self cycles to the
+16-limb kernel. An explicit `_mulx_u64`/`_addcarryx_u64` rewrite passed 914,917 Montgomery assertions
+but was rejected after making stable RSA/DSA operations 5--8% slower.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

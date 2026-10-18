@@ -64,7 +64,9 @@
   고정 폭 64비트 Montgomery 저장소에 머뭅니다. 더 긴 지수는 4비트 sliding window를
   사용하고 512비트를 넘으면 5비트로 넓히며, 누산기와 홀수 거듭제곱을 전체 체인 동안
   packed 형식에 유지합니다. 캐시된 런타임 기능 검사 뒤 BMI2/ADX와 정확한 Tiger Lake
-  tuning target을 선택합니다. 흔한 1024비트·2048비트 modulus는 지수승마다 별도 16-limb·
+  tuning target을 선택합니다. generic BMI2/ADX gate는 CPUID를 직접 해석하므로 compiler가
+  특정 `__builtin_cpu_supports` 기능 문자열을 허용하는지에 의존하지 않습니다. 흔한
+  1024비트·2048비트 modulus는 지수승마다 별도 16-limb·
   32-limb kernel을 한 번 선택하므로, compiler가 매 inner 반복에 limb-count 분기를 추가하지
   않고 통합 곱·reduction loop를 전개할 수 있습니다. 다른 크기는 runtime-count kernel을
   유지합니다. 이 경로들은 `CBigNum`의 문서화된 variable-time 경계를 바꾸지 않습니다.

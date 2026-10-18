@@ -2,6 +2,14 @@
 #include <cstring>
 #include <utility>
 
+#if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
 namespace certpp {
 
 #if defined(__clang__) && defined(__SIZEOF_INT128__) && \
@@ -105,9 +113,23 @@ namespace certpp {
 #if !defined(CERTPP_DISABLE_HWACCEL_SIMD) && defined(__clang__)
         bool hasAdxBmi2Montgomery() {
             static const bool supported = [] {
-                __builtin_cpu_init();
-                return __builtin_cpu_supports("bmi2") != 0
-                    && __builtin_cpu_supports("adx") != 0;
+#if defined(_MSC_VER)
+                int info[4] = { 0, 0, 0, 0 };
+                __cpuid(info, 0);
+                if (info[0] < 7) {
+                    return false;
+                }
+                __cpuidex(info, 7, 0);
+                return ((info[1] & (1 << 8)) != 0)
+                    && ((info[1] & (1 << 19)) != 0);
+#else
+                unsigned int eax, ebx, ecx, edx;
+                if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+                    return false;
+                }
+                return ((ebx & (1u << 8)) != 0)
+                    && ((ebx & (1u << 19)) != 0);
+#endif
             }();
             return supported;
         }

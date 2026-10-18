@@ -394,7 +394,9 @@ public key. The current matched result and its validation are recorded in
 X25519 key generation no longer runs a second 255-step ladder to multiply its freshly derived
 public value by the cofactor. The native radix-51 path now uses independent carry chains, a
 ten-product squaring schedule, shorter ladder live ranges, and cached runtime dispatch to generic
-AVX2/BMI2/ADX or exact Tiger Lake tuning. Private keys retain a clamped scalar and contexts retain
+AVX2/BMI2/ADX or exact Tiger Lake tuning. The generic gate reads CPUID and the OS-enabled XCR0
+vector state directly, avoiding compiler-version-specific feature strings while retaining the
+required AVX operating-system check. Private keys retain a clamped scalar and contexts retain
 successfully checked bound keys. The portable radix-2^25.5 path remains available. Current matched
 measurements and validation are recorded in
 [Current X25519 comparison](#current-x25519-comparison).
@@ -516,7 +518,9 @@ ratios.
 Relative to the earlier 0.139/0.136 ms portable measurements, radix-51 first reached
 0.049/0.048 ms in WSL. Two-chain carry reduction and a dedicated square schedule then shortened
 the field work; whole-ladder runtime dispatch selects a generic AVX2/BMI2/ADX body or an exact
-Tiger Lake body, with a portable fallback. Key construction clamps once, and a context reuses its
+Tiger Lake body, with a portable fallback. The generic decision uses CPUID plus OSXSAVE/XCR0, so
+Clang releases that do not accept `adx` as a builtin feature string can still compile the path.
+Key construction clamps once, and a context reuses its
 validated bound private and peer key objects. The current keygen and derive medians both meet the
 90% completion threshold. RFC 7748 known-answer and repeated-iteration vectors, exact-arithmetic
 field checks, cross-implementation shared-secret checks, non-canonical-u handling, and low-order
