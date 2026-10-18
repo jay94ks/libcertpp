@@ -105,12 +105,18 @@
   doesn't model yet). Signatures serialize as the standard
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 3279).
 
-  `sign()`'s `g^k mod p` term uses a Montgomery context cached with the private
-  key and `CMontgomery::modExp()`'s four-bit sliding window. Verification calls
-  `CMontgomery::modExpProduct()` to compute `g^u1*y^u2 mod p` with one shared
-  squaring chain and a 16-entry two-bit product table; native Clang x86-64
-  builds keep that table and every intermediate packed until the final
-  conversion. The 2048-bit modulus uses the same fixed 32-limb kernel as RSA's public modulus.
+  Binding a key to a context prepares position-dependent four-bit tables for
+  `g` and `y`. Each row stores the 15 non-zero values of
+  `base^(digit * 16^row)` in Montgomery form. Repeated signing therefore computes
+  `g^k mod p` with at most 64 Montgomery multiplications and no squarings; it scans
+  all 15 candidates in every row and uses masked `CBigNum` swaps before consuming
+  the selected value. Verification uses the same representation for the public
+  exponents `u1` and `u2`, where direct table lookup is permitted, then multiplies
+  the two Montgomery-domain results before one final conversion. A DSA-2048
+  context holds 1,920 residues, about 480 KiB of raw limb data, across its two
+  tables. If preparation fails, signing falls back to `CMontgomery::modExp()` and
+  verification to `CMontgomery::modExpProduct()`. The 2048-bit modulus uses the
+  same fixed 32-limb kernel as RSA's public modulus.
   `CBigNum::modInverse()`
   uses binary extended GCD for the odd subgroup order, avoiding quotient-sized
   multiplication and division in signing and verification. The verification

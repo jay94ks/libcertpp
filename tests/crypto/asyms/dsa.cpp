@@ -158,6 +158,11 @@ TEST_CASE("DSA: verify rejects a signature produced by a different key pair") {
     IAsymmetricContextPtr verifyCtx = dsa->createContext();
     verifyCtx->keyPair(pair);
     CHECK(verifyCtx->verify(digestSpan, SReadOnlyByteSpan(signature.begin(), signature.size())) != ERET_OK);
+
+    // Rebinding must rebuild the position-dependent verification tables for the replacement key.
+    verifyCtx->keyPair(otherPair);
+    CHECK(verifyCtx->verify(
+        digestSpan, SReadOnlyByteSpan(signature.begin(), signature.size())) == ERET_OK);
 }
 
 TEST_CASE("DSA: createEncrypter()/createDecrypter() are unsupported") {

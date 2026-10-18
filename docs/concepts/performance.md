@@ -257,11 +257,12 @@ implementations as one continuous stream; the earlier harness reset only OpenSSL
 charging it context setup and overstating certpp's relative result. The table reports the median
 per-run ratio from three complete runs. Latency ratios use `OpenSSL latency / certpp latency`, so
 every ratio has the same direction and 1.00x means parity.
-The RSA and DSA rows were refreshed from eleven targeted `--classic-signatures` runs in a static Clang
+The RSA and DSA rows were initially refreshed from eleven targeted `--classic-signatures` runs in a static Clang
 22.1.8 Release build against OpenSSL 3.6.4, with the process pinned to one logical processor at high
-priority. Each side still uses the same setup and warm-up rules. The displayed latencies are the
-per-side medians, while the ratio is the median of the eleven paired run ratios; randomized prime
-search makes the key-generation ratio differ from the quotient of the two displayed medians. Both
+priority. Each side still uses the same setup and warm-up rules. In that snapshot, displayed
+latencies are the per-side medians, while the ratio is the median of the eleven paired run ratios;
+randomized prime search makes the key-generation ratio differ from the quotient of the two
+displayed medians. Both
 directions verify across the implementation boundary and reject an altered digest before timing.
 The packed Montgomery engine now dispatches 16- and 32-limb chains to separately compiled kernels,
 letting Clang unroll the product/reduction loop by up to 32 without imposing either modulus
@@ -269,12 +270,15 @@ width on the generic fallback. A later fixed-count square dispatch reuses one in
 both operands of the same CIOS body. Seven alternating WSL Clang 18 runs measured internal median
 latencies changing from 0.829 to 0.797 ms for RSA signing, 0.025 to 0.024 ms for RSA verification,
 0.447 to 0.436 ms for DSA signing, and 0.543 to 0.529 ms for DSA verification, improvements of
-2.5--4.2%. A separate seven-run current-source comparison on that WSL build measured sign/verify
-ratios of 0.310/0.628 for RSA and 0.758/0.562 for DSA. Its randomized key-generation rows varied
-too widely to replace the pinned Windows key-generation results below. The table therefore retains
-the latest internally consistent pinned Windows snapshot while the WSL figures isolate this newer
-optimization. Enabling the exact Tiger Lake target on the same source changed seven-run DSA
-sign/verify medians from 0.438/0.529 to 0.428/0.521 ms (2.3%/1.5%); RSA medians were unchanged.
+2.5--4.2%. A separate seven-run current-source comparison on that WSL build measured RSA
+sign/verify ratios of 0.310/0.628. DSA contexts now prepare position-dependent four-bit Montgomery
+tables for the bound generator and public key. Seven pinned runs measured DSA sign/verify medians
+of 0.196/0.263 ms against OpenSSL's 0.330/0.289 ms. The paired median ratios are 1.667/1.103, with
+per-run ranges of 1.603--1.726 and 1.083--1.143. Context binding builds 1,920 residues before the
+timed repeated-operation rows; the table below retains the pinned Windows DSA key-generation row
+because randomized prime search varied from 0.573 to 1.838 of OpenSSL in these seven runs and this
+optimization does not change key generation. RSA rows likewise retain the latest internally
+consistent pinned Windows snapshot while the WSL figures isolate newer optimizations.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
@@ -304,8 +308,8 @@ sign/verify medians from 0.438/0.529 to 0.428/0.521 ms (2.3%/1.5%); RSA medians 
 | RSA-2048 sign | 0.805 ms | 0.255 ms | 0.316x |
 | RSA-2048 verify | 0.025 ms | 0.016 ms | 0.668x |
 | DSA-2048 keygen, including fresh parameters | 193.242 ms | 129.481 ms | 0.594x |
-| DSA-2048 sign | 0.471 ms | 0.337 ms | 0.720x |
-| DSA-2048 verify | 0.558 ms | 0.299 ms | 0.535x |
+| DSA-2048 sign | 0.196 ms | 0.330 ms | 1.667x |
+| DSA-2048 verify | 0.263 ms | 0.289 ms | 1.103x |
 | GOST R 34.10-2012 |  | unavailable |  |
 | Ed25519 sign, 32-byte message | 0.024 ms | 0.036 ms | 1.53x |
 | Ed25519 verify, 32-byte message | 0.077 ms | 0.098 ms | 1.28x |
@@ -472,9 +476,10 @@ exponents produced most of the reduction. The small-prime sieve now groups prime
 that fit 32 bits, scans the candidate once per product, and tests the product remainder against
 its factors. On a fixed 2048-bit composite whose first divisor in the sieve is 997, the nine-run
 median fell from 86.687 to 16.790 microseconds per call, a 5.16x local before/after improvement.
-The final eleven-run OpenSSL comparison is reported above. Key generation still varies with how
-quickly random prime candidates are found, while repeated signing and verification are stable.
-The remaining gap is tracked in
+The original eleven-run OpenSSL comparison and the current focused DSA refresh are reported above.
+Key generation still varies with how quickly random prime candidates are found, while repeated
+signing and verification are stable. DSA's repeated-operation rows now exceed the gate; its key
+generation and the RSA rows remain tracked in
 [the performance roadmap](../roadmap/performance.md#openssl-90-program).
 
 ### Current ML-KEM comparison

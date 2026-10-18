@@ -158,6 +158,9 @@ mask 기반 `CBigNum` swap을 사용합니다. 어느 경로도 private 스칼�
 않습니다. 예외 점 처리는 여전히 데이터 의존 제어 흐름을 가지며 fallback에는 가변 폭
 산술도 남아 있으므로 소수체 곡선 ECDSA와 ECDH에는 타이밍 위험이 있습니다. 프로토콜이
 허용한다면 고정 폭 `Fe25519`를 쓰는 X25519를 권합니다.
+DSA의 private 고정 기저 표도 각 행의 후보 15개를 모두 훑지만, `CBigNum` 선택·곱셈·역원은
+계속 variable-time입니다. 전체 표 스캔만으로 DSA 서명기가 constant-time이라고 판단하면
+안 됩니다.
 
 **`CEcCurve::linearCombination()`과 `CEc2Curve::linearCombination()`에는 공개
 스칼라만 전달해야 합니다.** 이 메서드들은 서명 검증을 가속하려고 스칼라 비트에 따라

@@ -102,6 +102,12 @@ but was rejected after making stable RSA/DSA operations 5--8% slower. Fixed-coun
 then kept the existing integrated CIOS arithmetic but exposed the shared operand to the compiler.
 Seven alternating WSL runs improved RSA sign/verify and DSA sign/verify medians by 2.5--4.2%, while
 the accelerated full suite and the SIMD-disabled Montgomery/RSA/DSA tests retained their answers.
+Position-dependent four-bit Montgomery tables prepared when a DSA key is bound then replaced each
+repeated signing exponentiation with at most 64 multiplications and each verification with two
+table evaluations plus one product. The signing selector scans all 15 non-zero candidates per row;
+public verification indexes directly. Seven pinned runs reduced DSA sign/verify medians from the
+previous 0.471/0.558 ms snapshot to 0.196/0.263 ms and reached 1.667/1.103 of OpenSSL, completing
+the repeated DSA rows while leaving its randomized key generation open.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

@@ -94,6 +94,95 @@ namespace crypto {
 
         using asn1::CDer;
 
+        /* A position-dependent fixed-base table for DSA exponents of up to 256 bits. Each four-bit
+         * row stores base^(digit * 16^row) in Montgomery form, so a bound context can evaluate a
+         * new exponent with at most 64 multiplications and no squarings. Signing scans every
+         * non-zero row entry before using the selected value; verification exponents are public
+         * and may index the same representation directly. */
+        class DsaFixedBaseTable {
+        private:
+            static constexpr size_t WINDOW_BITS = 4;
+            static constexpr size_t ENTRIES = (size_t(1) << WINDOW_BITS) - 1;
+
+            TArray<CBigNum> _powers;
+            size_t _rows = 0;
+
+        public:
+            void clear() {
+                _powers.resize(0);
+                _rows = 0;
+            }
+
+            bool prepare(
+                const CMontgomery& montgomery, const CBigNum& base, size_t exponentBits
+            ) {
+                clear();
+                if (!montgomery.isValid() || exponentBits == 0) {
+                    return false;
+                }
+
+                const size_t rows = (exponentBits + WINDOW_BITS - 1) / WINDOW_BITS;
+                if (!_powers.resize(rows * ENTRIES)) {
+                    return false;
+                }
+
+                CBigNum rowBase = montgomery.toMont(base);
+                for (size_t row = 0; row < rows; ++row) {
+                    CBigNum multiple(rowBase);
+                    for (size_t digit = 1; digit <= ENTRIES; ++digit) {
+                        _powers[row * ENTRIES + digit - 1] = multiple;
+                        if (digit != ENTRIES) {
+                            montgomery.mul(multiple, rowBase);
+                        }
+                    }
+                    for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                        montgomery.mul(rowBase, rowBase);
+                    }
+                }
+                _rows = rows;
+                return true;
+            }
+
+            bool valid() const {
+                return _rows != 0 && _powers.size() == _rows * ENTRIES;
+            }
+
+            CBigNum evaluateMontgomery(
+                const CMontgomery& montgomery, const CBigNum& exponent, bool secret
+            ) const {
+                if (!valid()) {
+                    return CBigNum();
+                }
+
+                CBigNum result(montgomery.one());
+                for (size_t row = 0; row < _rows; ++row) {
+                    size_t digit = 0;
+                    for (size_t bit = 0; bit < WINDOW_BITS; ++bit) {
+                        digit |= size_t(exponent.testBit(row * WINDOW_BITS + bit)) << bit;
+                    }
+
+                    if (!secret) {
+                        if (digit != 0) {
+                            montgomery.mul(result, _powers[row * ENTRIES + digit - 1]);
+                        }
+                        continue;
+                    }
+
+                    const size_t tableDigit = digit | size_t(digit == 0);
+                    CBigNum selected(_powers[row * ENTRIES]);
+                    for (size_t candidateDigit = 2; candidateDigit <= ENTRIES; ++candidateDigit) {
+                        CBigNum candidate(_powers[
+                            row * ENTRIES + candidateDigit - 1]);
+                        CBigNum::condSwap(candidateDigit == tableDigit, selected, candidate);
+                    }
+                    CBigNum product(result);
+                    montgomery.mul(product, selected);
+                    CBigNum::condSwap(digit != 0, result, product);
+                }
+                return result;
+            }
+        };
+
         class DsaPublicKey : public IPublicKey {
         private:
             CBigNum _p, _q, _g, _y;
@@ -150,8 +239,10 @@ namespace crypto {
             const CBigNum& q() const { return _q; }
             const CBigNum& g() const { return _g; }
             const CBigNum& y() const { return _y; }
+            const CMontgomery& montgomery() const { return _montgomery; }
 
-            /* Computes g^u1 * y^u2 mod p with one shared squaring chain. Both exponents are
+            /* Fallback that computes g^u1 * y^u2 mod p with one shared squaring chain when a
+             * context could not prepare its position-dependent tables. Both exponents are
              * public verification values, so selecting one of g/y/g*y from their bits does not
              * expose private key material. Keeping the accumulator and table in Montgomery form
              * avoids every division in the loop and converts only the final result back. */
@@ -230,10 +321,12 @@ namespace crypto {
             const CBigNum& g() const { return _g; }
             const CBigNum& y() const { return _y; }
             const CBigNum& x() const { return _x; }
+            const CMontgomery& montgomery() const { return _montgomery; }
 
-            /* Uses the key's cached Montgomery context so each signing exponentiation avoids a
-             * long division per square/multiply. CBigNum storage and exponent-bit branches mean
-             * this remains variable-time, matching the library's documented big-number limit. */
+            /* Fallback that uses the key's cached Montgomery context when a context could not
+             * prepare its position-dependent generator table. CBigNum storage and exponent-bit
+             * branches mean this remains variable-time, matching the documented big-number
+             * limit. */
             CBigNum fixedBaseModExpG(const CBigNum& k) const {
                 return _montgomery.isValid()
                     ? _montgomery.modExp(_g, k)
@@ -242,21 +335,37 @@ namespace crypto {
         };
 
         class DsaContext : public IAsymmetricContext {
+        private:
+            DsaFixedBaseTable _generatorTable;
+            DsaFixedBaseTable _publicTable;
+
         protected:
             void onReset() override {
+                _generatorTable.clear();
+                _publicTable.clear();
                 auto priv = std::dynamic_pointer_cast<DsaPrivateKey>(privateKey());
                 if (priv) {
                     size_t qBytes = (priv->q().bitLength() + 7) / 8;
                     sizeOfSign(CDer::maxSignatureSize(qBytes));
                     sizeOfDigest(qBytes);
-                    return;
+                    _generatorTable.prepare(
+                        priv->montgomery(), priv->g(), priv->q().bitLength());
                 }
 
                 auto pub = std::dynamic_pointer_cast<DsaPublicKey>(publicKey());
+                if (!pub && priv) {
+                    pub = std::dynamic_pointer_cast<DsaPublicKey>(priv->publicKey());
+                }
                 if (pub) {
                     size_t qBytes = (pub->q().bitLength() + 7) / 8;
                     sizeOfSign(CDer::maxSignatureSize(qBytes));
                     sizeOfDigest(qBytes);
+                    if (!_generatorTable.valid()) {
+                        _generatorTable.prepare(
+                            pub->montgomery(), pub->g(), pub->q().bitLength());
+                    }
+                    _publicTable.prepare(
+                        pub->montgomery(), pub->y(), pub->q().bitLength());
                 }
             }
 
@@ -291,7 +400,13 @@ namespace crypto {
                     }
                     k.add(CBigNum(uint64_t(1))); // k in [1, q-1]
 
-                    r = priv->fixedBaseModExpG(k);
+                    if (_generatorTable.valid()) {
+                        r = priv->montgomery().fromMont(
+                            _generatorTable.evaluateMontgomery(
+                                priv->montgomery(), k, true));
+                    } else {
+                        r = priv->fixedBaseModExpG(k);
+                    }
                     r.mod(q);
                     if (r.isZero()) {
                         k.secureClear();
@@ -387,7 +502,17 @@ namespace crypto {
                 CBigNum u2(r);
                 u2.mulMod(w, q);
 
-                CBigNum v = pub->jointModExp(u1, u2);
+                CBigNum v;
+                if (_generatorTable.valid() && _publicTable.valid()) {
+                    CBigNum first = _generatorTable.evaluateMontgomery(
+                        pub->montgomery(), u1, false);
+                    CBigNum second = _publicTable.evaluateMontgomery(
+                        pub->montgomery(), u2, false);
+                    pub->montgomery().mul(first, second);
+                    v = pub->montgomery().fromMont(first);
+                } else {
+                    v = pub->jointModExp(u1, u2);
+                }
                 v.mod(q);
 
                 return v == r ? ERET_OK : ERET_BADREQ;

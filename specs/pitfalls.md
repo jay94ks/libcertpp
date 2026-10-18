@@ -156,6 +156,9 @@ scalar as a table index. Exceptional point cases still have data-dependent
 control flow, and the fallback retains variable-width arithmetic, so
 prime-curve ECDSA and ECDH still carry timing risk. Prefer X25519, whose ladder
 uses the fixed-width `Fe25519` backend, where the protocol permits it.
+DSA's private fixed-base table likewise scans all 15 candidates in every row,
+but its `CBigNum` selection, multiplication, and inversion remain variable-time;
+do not infer a constant-time DSA signer from the full table scan.
 
 **`CEcCurve::linearCombination()` and `CEc2Curve::linearCombination()` accept
 public scalars only.** They branch on scalar bits to accelerate signature

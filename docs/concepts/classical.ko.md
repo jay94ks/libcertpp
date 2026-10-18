@@ -104,12 +104,15 @@
   `Dss-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }`(RFC 3279)로
   직렬화됩니다.
 
-  `sign()`의 `g^k mod p` 항은 개인키와 함께 캐시한 Montgomery context와
-  `CMontgomery::modExp()`의 4비트 sliding window를 사용합니다. 검증은
-  `CMontgomery::modExpProduct()`를 호출해 하나의 공유 제곱 체인과 16항 2비트 곱 표로
-  `g^u1*y^u2 mod p`를 계산합니다. 네이티브 Clang x86-64 빌드는 그 표와 모든
-  중간값을 마지막 변환까지 packed 형식에 유지합니다. 2048비트 modulus는 RSA 공개
-  modulus와 같은 고정 32-limb kernel을 사용합니다. 홀수 부분군 위수에 대한
+  키를 context에 바인딩할 때 `g`와 `y`의 위치별 4비트 표를 준비합니다. 각 행은
+  `base^(digit * 16^row)`의 0이 아닌 값 15개를 Montgomery 형식으로 보관합니다. 따라서
+  반복 서명은 제곱 없이 최대 Montgomery 곱 64회로 `g^k mod p`를 계산합니다. 각 행의 후보
+  15개를 모두 훑고 mask 기반 `CBigNum` swap으로 선택한 값을 사용합니다. 검증은 공개 지수
+  `u1`, `u2`에 같은 표현을 사용하므로 직접 표 조회가 가능하며, 두 Montgomery-domain 결과를
+  곱한 뒤 마지막 변환을 한 번 수행합니다. DSA-2048 context는 두 표에 걸쳐 residue 1,920개,
+  원시 limb 자료 약 480 KiB를 보관합니다. 준비에 실패하면 서명은
+  `CMontgomery::modExp()`로, 검증은 `CMontgomery::modExpProduct()`로 fallback합니다.
+  2048비트 modulus는 RSA 공개 modulus와 같은 고정 32-limb kernel을 사용합니다. 홀수 부분군 위수에 대한
   `CBigNum::modInverse()`는 binary extended GCD를 사용해 서명과 검증의 몫 크기
   곱셈·나눗셈을 피합니다. 검증 지수는 공개값이므로 그 경로의 지수 비트 분기는
   허용됩니다. 서명 경로도 `CBigNum`이 가변 길이 저장소를 사용하며 constant-time

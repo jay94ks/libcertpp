@@ -119,8 +119,9 @@ short and long exponents, a packed two-base DSA verifier, and binary modular inv
 the comparison substantially. An integrated CIOS pass now advances product and reduction carries
 together, while a two-bit simultaneous DSA window reduces verification multiplications. Separate
 16- and 32-limb kernels with up to 32-way loop unrolling then raised stable sign/verify medians to
-0.316/0.668 for RSA and 0.720/0.535 for DSA. The same eleven runs measured key-generation ratios
-of 0.393 and 0.594. Grouping the small-prime sieve divisors into 32-bit products made its worst
+0.316/0.668 for RSA and 0.720/0.535 for DSA. Context-bound DSA position tables subsequently raised
+its repeated sign/verify ratios to 1.667/1.103. The original eleven runs measured key-generation
+ratios of 0.393 and 0.594. Grouping the small-prime sieve divisors into 32-bit products made its worst
 2048-bit path 5.16x faster locally; randomized prime search still gives the key-generation rows much wider run-to-run
 variance than signing and verification. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
@@ -140,14 +141,12 @@ keeps an internal before/after baseline and an explicit unavailable result.
   because it serialized carries that Clang had interleaved across the product and reduction chains.
   The earlier full-square REDC experiment made RSA signing more than twice as slow. Reusing one
   operand pointer in fixed-count square wrappers preserved the CIOS body and produced a smaller but
-  repeatable 2.5--4.2% improvement across RSA and DSA sign/verify. The current WSL sign/verify ratios
-  remain 0.310/0.628 for RSA and 0.758/0.562 for DSA, so further work still needs a generated
+  repeatable 2.5--4.2% improvement across RSA and DSA sign/verify. The current WSL RSA sign/verify
+  ratios remain 0.310/0.628, so further RSA work still needs a generated
   ADCX/ADOX dual-carry schedule rather than either intrinsic chaining or a generic full-product
-  buffer. Keep the existing CRT fault check and documented variable-time boundary intact.
-- **Evaluate verify-time public-key tables for the remaining curves.** Ed25519 stores eight odd
-  multiples with each public key, while Ed448 stores a larger comb table. Measure the same
-  setup-time, memory, and repeated-verification tradeoff for ECDSA, DSA, and other remaining
-  variable-base signature implementations.
+  buffer. DSA's context-bound position tables subsequently raised its repeated sign/verify ratios
+  to 1.667/1.103, so the remaining work here is RSA plus RSA/DSA key generation. Keep the existing
+  CRT fault check and documented variable-time boundary intact.
 
 Any optimization begins with a reproducible baseline and a profile. Changes
 smaller than the benchmark machine's run-to-run spread are not treated as
