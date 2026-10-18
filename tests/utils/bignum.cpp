@@ -253,12 +253,15 @@ TEST_CASE("CBigNum: isProbablePrime") {
 }
 
 TEST_CASE("CBigNum: generatePrime produces a probable prime of the requested bit length") {
-    CBigNum p;
-    REQUIRE(CBigNum::generatePrime(64, p));
-
-    CHECK(p.bitLength() == 64);
-    CHECK_FALSE(p.isEven());
-    CHECK(p.isProbablePrime());
+    const size_t bitLengths[] = { 2, 3, 4, 5, 10, 11, 32, 64, 128 };
+    for (size_t bits : bitLengths) {
+        CBigNum p;
+        CAPTURE(bits);
+        REQUIRE(CBigNum::generatePrime(bits, p));
+        CHECK(p.bitLength() == bits);
+        CHECK_FALSE(p.isEven());
+        CHECK(p.isProbablePrime());
+    }
 }
 
 namespace {

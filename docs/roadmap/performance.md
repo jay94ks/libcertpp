@@ -122,8 +122,11 @@ together, while a two-bit simultaneous DSA window reduces verification multiplic
 0.316/0.668 for RSA and 0.720/0.535 for DSA. Context-bound DSA position tables subsequently raised
 its repeated sign/verify ratios to 1.667/1.103. The original eleven runs measured key-generation
 ratios of 0.393 and 0.594. Grouping the small-prime sieve divisors into 32-bit products made its worst
-2048-bit path 5.16x faster locally; randomized prime search still gives the key-generation rows much wider run-to-run
-variance than signing and verification. OpenSSL
+2048-bit path 5.16x faster locally. Reusing one random seed's grouped residues while walking nearby
+odd candidates subsequently reduced a 15-run WSL RSA-2048 key-generation median from 63.937 to
+54.471 ms without reducing the 20 Miller--Rabin rounds. Randomized prime search still gives the
+key-generation rows much wider run-to-run variance than signing and verification, and the pinned
+Windows RSA/DSA key-generation rows remain below the gate. OpenSSL
 3.6.4's tested default and legacy providers expose no GOST signature implementation, so GOST
 keeps an internal before/after baseline and an explicit unavailable result.
 

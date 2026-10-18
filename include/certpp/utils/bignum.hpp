@@ -115,6 +115,10 @@ namespace certpp {
         static SignedBig signedSub(const SignedBig& x, const SignedBig& y);
         static SignedBig signedMul(const CBigNum& q, const SignedBig& s);
 
+        /* Runs Miller--Rabin after the caller has already ruled out every SMALL_PRIMES divisor.
+         * generatePrime() uses this to reuse one seed's sieve residues across nearby candidates. */
+        bool isProbablePrimeAfterSieve(size_t rounds) const;
+
     public:
         /**
          * Default constructor; the value zero.

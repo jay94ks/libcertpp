@@ -277,8 +277,14 @@ of 0.196/0.263 ms against OpenSSL's 0.330/0.289 ms. The paired median ratios are
 per-run ranges of 1.603--1.726 and 1.083--1.143. Context binding builds 1,920 residues before the
 timed repeated-operation rows; the table below retains the pinned Windows DSA key-generation row
 because randomized prime search varied from 0.573 to 1.838 of OpenSSL in these seven runs and this
-optimization does not change key generation. RSA rows likewise retain the latest internally
-consistent pinned Windows snapshot while the WSL figures isolate newer optimizations.
+optimization does not change key generation. RSA prime generation now chooses one random seed and
+walks nearby odd candidates while reusing the seed's grouped small-prime residues. It preserves the
+existing 20 Miller--Rabin rounds. Against a separately built pre-change `HEAD`, 15 pinned WSL Clang
+18 runs reduced certpp RSA-2048 key generation from a 63.937 ms median to 54.471 ms, a 14.8%
+improvement. The current runs had a 1.824 median OpenSSL ratio, but the table retains the latest
+internally consistent pinned Windows RSA snapshot until that configuration is remeasured; randomized
+prime search makes cross-implementation key-generation ratios substantially noisier than the
+within-implementation before/after result.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

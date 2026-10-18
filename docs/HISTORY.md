@@ -108,6 +108,12 @@ table evaluations plus one product. The signing selector scans all 15 non-zero c
 public verification indexes directly. Seven pinned runs reduced DSA sign/verify medians from the
 previous 0.471/0.558 ms snapshot to 0.196/0.263 ms and reached 1.667/1.103 of OpenSSL, completing
 the repeated DSA rows while leaving its randomized key generation open.
+Prime generation then stopped drawing and trial-dividing a fresh full-width value for every
+candidate. It now draws one seed, computes grouped small-prime residues once, and walks nearby odd
+candidates by adjusting those residues before running the unchanged 20-round Miller--Rabin test.
+A separately built pre-change `HEAD` and the new binary were each measured in 15 pinned WSL Clang
+18 runs; the certpp RSA-2048 key-generation median fell from 63.937 to 54.471 ms, or 14.8%. Exact
+bit-length and probable-prime checks now cover both sides of the small-prime-walk boundary.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

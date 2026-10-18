@@ -1132,6 +1132,10 @@ namespace certpp {
             first = last;
         }
 
+        return isProbablePrimeAfterSieve(rounds);
+    }
+
+    bool CBigNum::isProbablePrimeAfterSieve(size_t rounds) const {
         CBigNum nMinus1(*this);
         nMinus1.sub(CBigNum(uint64_t(1)));
 
@@ -1194,19 +1198,85 @@ namespace certpp {
         }
 
         constexpr size_t MAX_ATTEMPTS = 100000;
-        for (size_t attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
-            CBigNum candidate;
-            if (!random(bits, candidate)) {
+        size_t attempts = 0;
+        while (attempts < MAX_ATTEMPTS) {
+            CBigNum seed;
+            if (!random(bits, seed)) {
                 return false;
             }
+            seed.setBit(bits - 1);
+            seed.setBit(bits - 2);
+            seed.setBit(0);
 
-            candidate.setBit(bits - 1);
-            candidate.setBit(bits - 2);
-            candidate.setBit(0);
+            // Small sizes can equal a sieve prime. The general predicate handles that exception
+            // directly; the residue walk below deliberately treats every small-prime multiple as
+            // composite and is intended for the cryptographic-size candidates that dominate keygen.
+            if (bits <= 10) {
+                ++attempts;
+                if (seed.isProbablePrime()) {
+                    out = seed;
+                    return true;
+                }
+                continue;
+            }
 
-            if (candidate.isProbablePrime()) {
-                out = candidate;
-                return true;
+            uint32_t products[SMALL_PRIME_COUNT] = {};
+            uint32_t remainders[SMALL_PRIME_COUNT] = {};
+            size_t groupFirst[SMALL_PRIME_COUNT] = {};
+            size_t groupLast[SMALL_PRIME_COUNT] = {};
+            size_t groups = 0;
+            size_t first = 0;
+            while (first < SMALL_PRIME_COUNT) {
+                uint64_t product = 1;
+                size_t last = first;
+                while (last < SMALL_PRIME_COUNT
+                    && product <= uint64_t(UINT32_MAX) / SMALL_PRIMES[last]) {
+                    product *= SMALL_PRIMES[last++];
+                }
+
+                uint64_t remainder = 0;
+                for (size_t i = seed._limbs.size(); i-- > 0; ) {
+                    remainder = ((remainder << 32) | seed._limbs[i]) % product;
+                }
+                products[groups] = uint32_t(product);
+                remainders[groups] = uint32_t(remainder);
+                groupFirst[groups] = first;
+                groupLast[groups] = last;
+                ++groups;
+                first = last;
+            }
+
+            // Reuse the seed residues for a bounded run of odd neighbours. A new random seed is
+            // chosen before delta can wrap or grow enough to bias a material fraction of the
+            // requested range.
+            constexpr uint32_t MAX_DELTA = uint32_t(1) << 20;
+            for (uint32_t delta = 0;
+                 delta < MAX_DELTA && attempts < MAX_ATTEMPTS;
+                 delta += 2, ++attempts) {
+                bool passesSieve = true;
+                for (size_t group = 0; group < groups && passesSieve; ++group) {
+                    const uint64_t adjusted =
+                        (uint64_t(remainders[group]) + delta) % products[group];
+                    for (size_t i = groupFirst[group]; i < groupLast[group]; ++i) {
+                        if (adjusted % SMALL_PRIMES[i] == 0) {
+                            passesSieve = false;
+                            break;
+                        }
+                    }
+                }
+                if (!passesSieve) {
+                    continue;
+                }
+
+                CBigNum candidate(seed);
+                candidate.add(CBigNum(uint64_t(delta)));
+                if (candidate.bitLength() != bits) {
+                    break;
+                }
+                if (candidate.isProbablePrimeAfterSieve(20)) {
+                    out = std::move(candidate);
+                    return true;
+                }
             }
         }
 
