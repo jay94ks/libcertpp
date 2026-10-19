@@ -10,41 +10,38 @@
 
 ### 비밀 메모리 페이지 잠금
 
-현재 `CSecure::zero()`는 명시적인 영점화를 컴파일러가 제거하지 못하게 하지만, 그
-메모리가 속한 페이지가 swap 또는 Windows page file에 기록되는 것은 막지 않습니다.
-개인키와 비밀 중간값도 일반 `COctet`, `TArray`, `CBigNum` 할당에 들어갑니다. 따라서
-호출자가 제공한 임의 span에 `lock()`과 `unlock()`을 적용하는 방식은 안전한 소유권
-경계를 만들지 못합니다. 메모리 잠금은 페이지 전체에 적용되고 서로 무관한 할당이 같은
-페이지를 공유할 수 있으며, 운영체제의 잠금 횟수로 독립적인 객체 수명을 안전하게 표현할
-수 없기 때문입니다.
+이제 `CSecure::alloc()`이 전용 페이지 기반 계층을 제공합니다. 정렬된 작은 할당들은
+보호된 OS mapping을 나눠 씁니다. 기본값에서는 먼저 OS large-page 크기(Windows의
+`MEM_LARGE_PAGES`, Linux의 `MAP_HUGETLB`)로 요청하고, 필요한 권한이나 예약 페이지가
+없으면 `VirtualLock` 또는 `mlock`으로 보호한 표준 페이지로 폴백합니다.
+`CERTPP_DISABLE_LARGE_PAGE=ON`이면 처음부터 표준 페이지를 사용합니다. Linux에서는
+kernel이 제공할 때 `MADV_DONTDUMP`도 적용합니다.
+반환된 블록은 재사용 전에 지우고 마지막 블록을 반환할 때 페이지 전체를 지운 뒤 표준
+페이지 mapping은 필요에 따라 잠금을 풀고 mapping을 해제합니다. best-effort 일반 heap
+fallback은 없습니다. 잠금 실패는
+`ERET_NOMEM`이고 키 생성 또는 가져오기 경로가 그 실패를 전달합니다. 모든 비대칭 및 KEM
+개인키 객체 본체도 이제 이 allocator를 사용합니다.
 
-임의 버퍼에 잠금 호출을 추가하는 대신 전용 페이지 기반 보안 할당 계층을 조사합니다.
-Windows에서는 `VirtualAlloc` 다음 `VirtualLock`, Linux에서는 익명 `mmap` 다음
-`mlock`을 사용하는 형태를 목표로 합니다. Linux mapping에는 `MADV_DONTDUMP`와 지원되는
-경우 `MADV_WIPEONFORK`도 적용합니다. 파괴할 때는 전체 할당을 먼저 영점화한 뒤 잠금을
-해제하고 mapping을 반환해야 합니다. 복사는 금지하거나 다른 보호된 할당으로 직접 깊은
-복사해야 하며, 크기를 늘릴 때 일반 heap buffer를 중간 경유지로 사용해서는 안 됩니다.
-
-보호 계약은 실패를 호출자에게 드러내야 합니다. best-effort 모드는 호환성을 위해 일반
-메모리로 계속 진행할 수 있지만 해당 할당이 잠기지 않았다는 상태를 알려야 합니다.
-required 모드는 플랫폼 API, Windows working-set 제한, Linux `RLIMIT_MEMLOCK` 때문에
-잠글 수 없으면 키 생성 또는 가져오기를 실패시켜야 합니다. 잠금 호출이 성공한 할당에
-대해서만 page-out되지 않는다고 문서화합니다.
+남은 작업은 그 객체들이 간접 소유하는 저장소입니다. `COctet`, `TArray`, `CBigNum`은
+여전히 payload를 일반 heap에 할당하므로 객체 본체만 잠그는 것으로 동적 byte까지 보호되지는
+않습니다. 향후 보호 container의 복사와 확장은 보호 저장소 안에서만 이루어져야 하며 비밀을
+일반 heap buffer에 중간 저장해서는 안 됩니다.
 
 다음 단계로 적용합니다.
 
-1. Ed25519, Ed448, X25519, ML-DSA, ML-KEM 키처럼 장기간 유지되는 byte 기반 개인
-   자료를 보호된 buffer로 옮깁니다.
+1. ML-DSA와 ML-KEM key payload처럼 동적으로 할당되는 장기 byte 기반 개인 자료를
+   보호된 buffer로 옮깁니다. 잠긴 객체 본체가 그 할당까지 잠근다고 가정하지 말고 다른
+   `COctet` 및 `TArray` 멤버도 점검합니다.
 2. 공개 산술까지 보안 allocator로 보내지 않으면서 RSA, DSA, ECDSA, GOST의 장기 보관
    private `CBigNum` 구성 요소에 보호된 limb 저장소를 추가합니다.
 3. nonce, seed, 파생 비밀, private 산술 임시값을 위한 연산 단위 secure arena를
    검토합니다. arena 또는 키 저장소를 한 번 준비해 재사용함으로써 page 잠금을 hot loop
    밖에 둡니다.
 
-테스트에서는 주입 가능한 플랫폼 backend를 사용해 복사 전 잠금, 잠금 해제 전 영점화,
-이동 및 크기 변경 동작, required 모드 실패, best-effort 상태 보고를 확인해야 합니다.
-Linux 통합 검증은 잠긴 byte 집계와 fork 동작을, Windows 검증은 대응하는 할당·잠금·잠금
-해제·반환 순서를 확인해야 합니다.
+주입 가능한 플랫폼 backend를 추가하여 host 잠금 제한에 의존하지 않고 사용 전 잠금,
+잠금 해제 전 영점화, required-mode 실패를 확인해야 합니다. Linux 통합 검증은 잠긴 byte
+집계와 fork 동작을, Windows 검증은 대응하는 할당·잠금·잠금 해제·반환 순서를 확인해야
+합니다.
 
 이 기능만으로 비밀 byte가 영구 저장소에 절대 도달하지 않는다고 보장할 수는 없습니다.
 호출자가 가진 사본, 보호 mapping 밖으로 나온 compiler spill, 최대 절전 이미지, 전체 메모리

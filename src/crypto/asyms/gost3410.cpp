@@ -1,6 +1,7 @@
 #include <certpp/crypto/asyms/gost3410.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -380,7 +381,10 @@ namespace crypto {
         }
 
         auto pub = std::make_shared<GostPublicKey>(_curve, q, _halfLen, _which);
-        auto priv = std::make_shared<GostPrivateKey>(_curve, d, pub, _halfLen, _which);
+        auto priv = CSecure::make<GostPrivateKey>(_curve, d, pub, _halfLen, _which);
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -504,8 +508,9 @@ namespace crypto {
         try {
             auto pub = std::make_shared<GostPublicKey>(
                 _curve, std::move(point), _halfLen, _which);
-            out = std::make_shared<GostPrivateKey>(
+            out = CSecure::make<GostPrivateKey>(
                 _curve, std::move(d), pub, _halfLen, _which);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

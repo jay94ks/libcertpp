@@ -144,7 +144,9 @@ src/
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::IRng
     montgomery.cpp                # CMontgomery: the -m^-1 mod 2^32 Newton iteration, R^2 mod m, and the CIOS Montgomery multiply over CBigNum's raw limbs
-    secure.cpp                    # CSecure: the zeroization the optimizer is not allowed to delete, and the constant-time compare/select primitives -- volatile writes and mask arithmetic, with no branch on a secret anywhere in the file
+    secure.cpp                    # CSecure public facade: non-elidable zero, compare/select, and locked-allocation entry points
+    securepool.hpp                # SecurePool private declaration; not installed or part of the public API
+    securepool.cpp                # large-page preference and locked standard-page fallback, aligned block splitting/coalescing, and wipe-before-release through CSecure::zero()
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
     buffer.cpp                # CBuffer::store()/resize()

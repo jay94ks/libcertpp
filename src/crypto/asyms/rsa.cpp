@@ -1018,7 +1018,10 @@ namespace crypto {
             }
 
             auto pub = std::make_shared<RsaPublicKey>(n, e);
-            auto priv = std::make_shared<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+            auto priv = CSecure::make<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+            if (!priv) {
+                return ERET_NOMEM;
+            }
 
             if (checkPrivateKey(priv) != ERET_OK) {
                 return ERET_AGAIN;
@@ -1173,7 +1176,8 @@ namespace crypto {
         }
         try {
             auto pub = std::make_shared<RsaPublicKey>(n, e);
-            out = std::make_shared<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+            out = CSecure::make<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

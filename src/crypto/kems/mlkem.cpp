@@ -1046,8 +1046,11 @@ namespace crypto {
 
         auto pub = std::make_shared<MlKemPublicKey>(
             _which, _params, SReadOnlyByteSpan(ek.toPtr(), ek.size()));
-        auto priv = std::make_shared<MlKemPrivateKey>(
+        auto priv = CSecure::make<MlKemPrivateKey>(
             _which, _params, SReadOnlyByteSpan(dk.toPtr(), dk.size()), pub);
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -1137,7 +1140,8 @@ namespace crypto {
         }
         try {
             auto pub = std::make_shared<MlKemPublicKey>(_which, _params, ek);
-            out = std::make_shared<MlKemPrivateKey>(_which, _params, keyData, pub);
+            out = CSecure::make<MlKemPrivateKey>(_which, _params, keyData, pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

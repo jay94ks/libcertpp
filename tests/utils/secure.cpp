@@ -1,4 +1,5 @@
-// CSecure: zeroization that survives the optimizer, and constant-time compare/select.
+// CSecure: locked page-backed allocation, zeroization that survives the optimizer, and
+// constant-time compare/select.
 //
 // What a test can and cannot establish here is worth being explicit about. The functional
 // contracts below -- which mask comes back, which bytes land where, that a buffer ends up zeroed
@@ -17,9 +18,27 @@
 #include <doctest/doctest.h>
 
 #include <certpp.hpp>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 using namespace certpp;
+
+namespace {
+
+    struct alignas(256) AlignedSecret {
+        int* destructions;
+        uint8_t bytes[31];
+
+        explicit AlignedSecret(int* destructions)
+            : destructions(destructions), bytes{} {}
+
+        ~AlignedSecret() {
+            ++*destructions;
+        }
+    };
+
+} // namespace
 
 TEST_CASE("CSecure::zero clears a buffer, and tolerates empty and null spans") {
     std::vector<uint8_t> buffer(64, 0xA5);
@@ -43,6 +62,69 @@ TEST_CASE("CSecure::zero clears a buffer, and tolerates empty and null spans") {
     CSecure::zero(SByteSpan(nullptr, 0));
     CSecure::zero(SByteSpan(nullptr, 32));
     CHECK(partial[3] == 0xFF);
+}
+
+TEST_CASE("CSecure::alloc validates arguments and honors explicit alignment") {
+    void* out = reinterpret_cast<void*>(std::uintptr_t(1));
+    CHECK(CSecure::alloc(nullptr, 32, 16) == ERET_INVAL);
+    CHECK(CSecure::alloc(&out, 0, 16) == ERET_INVAL);
+    CHECK(out == nullptr);
+
+    out = reinterpret_cast<void*>(std::uintptr_t(1));
+    CHECK(CSecure::alloc(&out, 32, 0) == ERET_INVAL);
+    CHECK(out == nullptr);
+
+    out = reinterpret_cast<void*>(std::uintptr_t(1));
+    CHECK(CSecure::alloc(&out, 32, 24) == ERET_INVAL);
+    CHECK(out == nullptr);
+
+    for (size_t alignment : {size_t(1), size_t(16), size_t(64), size_t(256), size_t(4096)}) {
+        REQUIRE(CSecure::alloc(&out, 37, alignment) == ERET_OK);
+        REQUIRE(out != nullptr);
+        CHECK(reinterpret_cast<std::uintptr_t>(out) % alignment == 0);
+        std::memset(out, 0xA5, 37);
+        CHECK(CSecure::dealloc(out) == ERET_OK);
+    }
+
+    CHECK(CSecure::dealloc(nullptr) == ERET_OK);
+}
+
+TEST_CASE("CSecure::alloc splits a locked page and wipes a returned block before reuse") {
+    void* anchor = nullptr;
+    void* secret = nullptr;
+    REQUIRE(CSecure::alloc(&anchor, 32, 32) == ERET_OK);
+    REQUIRE(CSecure::alloc(&secret, 64, 32) == ERET_OK);
+
+    const std::uintptr_t anchorAddress = reinterpret_cast<std::uintptr_t>(anchor);
+    const std::uintptr_t secretAddress = reinterpret_cast<std::uintptr_t>(secret);
+    const std::uintptr_t distance = anchorAddress < secretAddress
+        ? secretAddress - anchorAddress : anchorAddress - secretAddress;
+    CHECK(distance < 512); // two compact blocks came from the same page, not separate mappings
+
+    std::memset(secret, 0x5A, 64);
+    REQUIRE(CSecure::dealloc(secret) == ERET_OK);
+
+    void* reused = nullptr;
+    REQUIRE(CSecure::alloc(&reused, 64, 32) == ERET_OK);
+    CHECK(reused == secret);
+    const auto* bytes = static_cast<const uint8_t*>(reused);
+    for (size_t i = 0; i < 64; ++i) {
+        CHECK(bytes[i] == 0);
+    }
+
+    CHECK(CSecure::dealloc(reused) == ERET_OK);
+    CHECK(CSecure::dealloc(anchor) == ERET_OK);
+}
+
+TEST_CASE("CSecure::make aligns, constructs, and destroys its object") {
+    int destructions = 0;
+    {
+        auto secret = CSecure::make<AlignedSecret>(&destructions);
+        REQUIRE(secret != nullptr);
+        CHECK(reinterpret_cast<std::uintptr_t>(secret.get()) % alignof(AlignedSecret) == 0);
+        CHECK(destructions == 0);
+    }
+    CHECK(destructions == 1);
 }
 
 TEST_CASE("CSecure::equalsMask returns a full mask, not a boolean") {

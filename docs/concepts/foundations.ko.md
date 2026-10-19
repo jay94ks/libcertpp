@@ -94,8 +94,28 @@
   `crypto/asyms/` 구현에 거의 중복으로 있던 16진 파싱 보조 함수들에서 분리한
   것입니다. 이제 `CBigNum::fromHex()`/`CGf2m::fromHex()`는 그 위의 얇은
   래퍼입니다.
-- **`utils/secure.hpp` / `src/utils/secure.cpp`**는 `CSecure`를 정의합니다.
-  비밀 바이트에 대한, 당연해 보이는 방식으로는 쓸 수 없는 세 가지 연산입니다.
+- **`utils/secure.hpp` / `src/utils/secure.cpp`**는 공개 `CSecure` facade를
+  정의합니다. private 페이지 풀은 `src/utils/securepool.hpp` /
+  `securepool.cpp`에 있고 저장소를 지울 때 `CSecure::zero()`를 다시 호출합니다.
+  비밀 바이트에 대한, 당연해 보이는 방식으로는 쓸 수 없는 연산들입니다.
+  `alloc(size, alignment)`는 운영체제에서 직접 보호 페이지를 얻고 동시에 존재하는
+  작은 할당들이 페이지 하나를 나눠 쓰게 합니다. 기본값에서는 OS의 large-page 크기로
+  먼저 요청하고, 사용할 수 없으면 Windows의 `VirtualLock` 또는 POSIX의 `mlock`으로
+  잠근 표준 페이지로 폴백합니다. `CERTPP_DISABLE_LARGE_PAGE=ON`이면 처음부터 표준
+  페이지를 선택합니다. 일반 heap fallback은 없습니다. mapping 또는 잠금 실패는
+  `ERET_NOMEM`입니다. `dealloc()`은 블록을 재사용하기 전에 지우고, 다른
+  블록이 살아 있는 동안 페이지를 보호하며, 마지막 블록을 반환할 때 페이지 전체를
+  지운 다음 표준 페이지 mapping은 필요에 따라 잠금을 풀고 운영체제에 돌려줍니다.
+  명시적인 2의 거듭제곱 정렬을 사용하면
+  SIMD 친화적인 상태를 보호 저장소에 바로 놓을 수 있습니다. `make<T>()`는
+  `alignof(T)`를 사용하고 `shared_ptr` deleter에서 소멸자를 실행합니다.
+
+  모든 비대칭 및 KEM 개인키 객체는 `CSecure::make()`로 생성됩니다. 따라서 Ed25519,
+  Ed448, X25519의 비밀 배열을 포함한 inline 필드는 객체 수명 동안 보호됩니다. 그러나
+  `COctet`, `TArray`, `CBigNum` 또는 다른 heap container가 간접 소유하는 저장소까지
+  잠긴 페이지로 옮기지는 않습니다. 그 payload용 보호 allocator는 보안 roadmap에서
+  별도 작업으로 추적합니다.
+
   `zero()`는 `memset`을 가리키는 volatile 함수 포인터를 통해 버퍼를
   지우므로, 그 호출이 무효함을 증명할 수 없고 따라서 제거될 수 없습니다 —
   다시 읽히지 않는 지역 변수에 대한 평범한 `memset`은 죽은 코드이고, MSVC는

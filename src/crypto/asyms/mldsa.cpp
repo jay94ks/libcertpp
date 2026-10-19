@@ -329,10 +329,14 @@ namespace crypto {
         }
 
         auto pub = std::make_shared<MlDsaPublicKey>(_which, expected, COctet(pk.toSpan()));
-        auto priv = std::make_shared<MlDsaPrivateKey>(
+        auto priv = CSecure::make<MlDsaPrivateKey>(
             _which, expected, COctet(sk.toSpan()), pub);
 
         CSecure::zero(SByteSpan(sk.toPtr(), sk.size()));
+
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -443,7 +447,8 @@ namespace crypto {
             return ERET_KEY_ERROR;
         }
         try {
-            out = std::make_shared<MlDsaPrivateKey>(_which, keySize, COctet(keyData), pub);
+            out = CSecure::make<MlDsaPrivateKey>(_which, keySize, COctet(keyData), pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

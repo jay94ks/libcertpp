@@ -141,6 +141,28 @@ into the parameter block, so `BLAKE2s(16)` is not the first 16 bytes of
 *before* the input key material, which is the opposite of what the name
 "input key material" suggests reading left to right.
 
+## Locked secret memory
+
+**`CSecure::alloc()` is required-mode protected allocation.** It returns only
+after the operating system has made its backing nonpageable; there is no
+ordinary-heap fallback. Default builds prefer OS large pages and safely retry
+with explicitly locked standard pages when the large-page request is not
+available. Builds configured with `CERTPP_DISABLE_LARGE_PAGE=ON` use standard
+pages directly. Pass a nonzero power-of-two alignment when hardware or SIMD
+code needs one, release the exact returned address with `CSecure::dealloc()`,
+and handle `ERET_NOMEM` from page allocation or locking.
+Small live blocks can share one locked page. Releasing a block wipes it before
+reuse, and releasing the last block wipes the full page, unlocks a standard-
+page mapping when needed, and returns it to the operating system.
+
+**A private-key object's locked address does not lock every allocation it
+owns.** Asymmetric and KEM private-key objects are created through
+`CSecure::make()`, so inline fields remain in locked storage. Payloads held by
+`COctet`, `TArray`, `CBigNum`, and other dynamic containers still reside in
+their own ordinary-heap allocations. Caller-owned copies, compiler spills,
+hibernation images, full-memory dumps, debugger access, and virtual-machine
+snapshots also remain outside this contract.
+
 ## Big numbers and curves
 
 **`CBigNum`'s mutating methods change `*this` and return a reference for

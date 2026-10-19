@@ -33,6 +33,7 @@ option(CERTPP_DISABLE_HWACCEL_SIMD "Disable non-AES/SHA-extension CPU accelerati
 option(CERTPP_DISABLE_HWACCEL_AVX512 "Disable AVX-512 acceleration while retaining narrower or generic SIMD paths" OFF)
 option(CERTPP_DISABLE_HWACCEL_SHA "Disable CPU SHA-extension hardware acceleration (SHA-NI for SHA1/SHA256), always using the portable implementation instead" OFF)
 option(CERTPP_DISABLE_HWACCEL_AES "Disable CPU AES-extension hardware acceleration (AES-NI and VAES for AesCore, so both the AES block cipher and the AES-GCM AEAD), always using the portable implementation instead" OFF)
+option(CERTPP_DISABLE_LARGE_PAGE "Disable OS large-page allocation for CSecure and always use standard locked pages" OFF)
 
 file(GLOB_RECURSE CERTPP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
@@ -70,6 +71,7 @@ target_compile_definitions(certpp
         __COMPILES_LIBCERTPP__=1
         $<$<BOOL:${CERTPP_RNG_FALLBACK}>:CERTPP_RNG_FALLBACK=1>
         $<$<BOOL:${CERTPP_ENABLE_FE25519_RADIX51}>:CERTPP_ENABLE_FE25519_RADIX51=1>
+        $<$<BOOL:${CERTPP_DISABLE_LARGE_PAGE}>:CERTPP_DISABLE_LARGE_PAGE=1>
     PUBLIC
         $<$<BOOL:${CERTPP_BUILD_SHARED}>:__SHARED_LIBCERTPP__=1>
         $<$<BOOL:${CERTPP_WITHOUT_JSON}>:CERTPP_WITHOUT_JSON=1>

@@ -95,8 +95,31 @@
   hex-parsing helpers in `CBigNum`/`CGf2m` and several `crypto/asyms/`
   implementations; `CBigNum::fromHex()`/`CGf2m::fromHex()` are now thin
   wrappers over it.
-- **`utils/secure.hpp` / `src/utils/secure.cpp`** define `CSecure`: the three
-  operations on secret bytes that cannot be written the obvious way.
+- **`utils/secure.hpp` / `src/utils/secure.cpp`** define the public `CSecure`
+  facade; the private page pool lives in `src/utils/securepool.hpp` /
+  `securepool.cpp` and calls back to `CSecure::zero()` when it wipes storage.
+  These are operations on secret bytes that cannot be written the obvious way.
+  `alloc(size, alignment)` obtains protected pages directly from the operating
+  system and divides a page among simultaneous small allocations. By default
+  it first requests the OS large-page size, then falls back to standard pages
+  locked with `VirtualLock` on Windows or `mlock` on POSIX when the large-page
+  request is unavailable. `CERTPP_DISABLE_LARGE_PAGE=ON` selects standard
+  pages directly. It has no ordinary-heap fallback: mapping or lock failure is
+  `ERET_NOMEM`. `dealloc()`
+  wipes a block before reuse, keeps its page protected while another block is
+  live, then wipes the complete page, unlocks a standard-page mapping when
+  needed, and releases the last block. The explicit power-of-two alignment lets
+  callers place SIMD-friendly
+  state directly in protected storage; `make<T>()` uses `alignof(T)` and runs
+  the destructor through a `shared_ptr` deleter.
+
+  Every asymmetric and KEM private-key object is constructed with
+  `CSecure::make()`. This protects inline fields, including the Ed25519,
+  Ed448, and X25519 secret arrays, for the object's lifetime. It does not move
+  storage owned indirectly by `COctet`, `TArray`, `CBigNum`, or another heap
+  container into the locked page; protected allocators for those payloads are
+  tracked separately in the security roadmap.
+
   `zero()` clears a buffer through a volatile function pointer to `memset`,
   so the call cannot be proven ineffective and therefore cannot be removed
   -- a plain `memset` over a local nothing reads again is dead code, and

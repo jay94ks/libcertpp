@@ -144,7 +144,9 @@ src/
     base64.cpp                   # CBase64 스트리밍 push()/finish() + 정적 일괄 encode()/decode()
     bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin 소수 판정 + crypto::CRng를 통한 소수 생성
     montgomery.cpp                # CMontgomery: -m^-1 mod 2^32 Newton 반복, R^2 mod m, 그리고 CBigNum의 원시 limb 위의 CIOS Montgomery 곱셈
-    secure.cpp                    # CSecure: 최적화기가 지울 수 없는 영 소거, 그리고 constant-time 비교/선택 프리미티브 — volatile 쓰기와 mask 연산이고, 파일 어디에도 비밀에 대한 분기가 없습니다
+    secure.cpp                    # CSecure 공개 facade: 제거 불가능 영 소거, 비교/선택, 잠금 할당 진입점
+    securepool.hpp                # SecurePool private 선언. 설치되거나 공개 API에 포함되지 않습니다
+    securepool.cpp                # large-page 우선 사용과 잠긴 표준 페이지 폴백, 정렬 블록 분할/병합 및 CSecure::zero()를 통한 재사용/반환 전 영 소거
     gf2m.cpp                      # CGf2m: XOR 덧셈, shift-and-XOR 캐리 없는 곱셈 + 워드 단위 다항식 축약, 이진 확장 유클리드 역원. 다섯 개 알려진 체의 축약 다항식은 최초 사용 시 생성되는 접근자 뒤에 있습니다(이유는 이 모듈의 doc 주석 참고)
   io/
     buffer.cpp                # CBuffer::store()/resize()

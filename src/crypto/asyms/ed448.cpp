@@ -834,7 +834,10 @@ namespace crypto {
             return ERET_UNKNOWN;
         }
 
-        auto priv = std::make_shared<EdPrivateKey>(seed, pub);
+        auto priv = CSecure::make<EdPrivateKey>(seed, pub);
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -929,7 +932,8 @@ namespace crypto {
         try {
             IPublicKeyPtr pub = publicKeyFromSeed(seed);
             if (!pub) return ERET_KEY_ERROR;
-            out = std::make_shared<EdPrivateKey>(seed, pub);
+            out = CSecure::make<EdPrivateKey>(seed, pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

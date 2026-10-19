@@ -325,9 +325,13 @@ namespace crypto {
         }
 
         auto pub = std::make_shared<X25519PublicKey>(encoded);
-        auto priv = std::make_shared<X25519PrivateKey>(raw, pub);
+        auto priv = CSecure::make<X25519PrivateKey>(raw, pub);
 
         CSecure::zero(SByteSpan(raw, sizeof(raw)));
+
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         out = SKeyPair(pub, priv);
         return ERET_OK;
@@ -388,7 +392,8 @@ namespace crypto {
         try {
             IPublicKeyPtr pub = publicKeyFromRaw(keyData.data);
             if (!pub) return ERET_KEY_ERROR;
-            out = std::make_shared<X25519PrivateKey>(keyData.data, pub);
+            out = CSecure::make<X25519PrivateKey>(keyData.data, pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

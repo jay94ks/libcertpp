@@ -11,34 +11,31 @@ optimizations, investigations, and negative results are recorded in
 
 ### Locked secret memory
 
-`CSecure::zero()` currently prevents the compiler from removing an explicit
-wipe, but it does not keep the containing page out of swap or the Windows page
-file. Private keys and secret intermediates also occupy ordinary `COctet`,
-`TArray`, and `CBigNum` allocations, so locking an arbitrary caller-provided
-span would not provide a sound ownership boundary: memory locks operate on
-whole pages, unrelated allocations can share a page, and operating-system lock
-counts cannot safely represent independent object lifetimes.
+`CSecure::alloc()` now provides the dedicated page-backed layer: aligned small
+allocations share protected OS mappings. The default first tries the OS large-
+page size (`MEM_LARGE_PAGES` on Windows and `MAP_HUGETLB` on Linux), then falls
+back to standard pages protected by `VirtualLock` or `mlock` when the large-
+page request lacks privilege or reserved pages. `CERTPP_DISABLE_LARGE_PAGE=ON`
+uses standard pages directly. Linux applies `MADV_DONTDUMP` where the kernel
+exposes it. A released block is wiped before reuse; the last release wipes the
+complete page, unlocks a standard-page mapping when needed, and unmaps it.
+There is no best-effort ordinary
+heap fallback. Lock failure is `ERET_NOMEM`, and key generation or import
+propagates that failure. All asymmetric and KEM private-key object shells now
+use this allocator.
 
-Investigate a dedicated page-backed secure allocation layer rather than adding
-`lock()` and `unlock()` calls to arbitrary buffers. The intended platform shape
-is `VirtualAlloc` followed by `VirtualLock` on Windows and anonymous `mmap`
-followed by `mlock` on Linux. Linux mappings should also use
-`MADV_DONTDUMP` and, where supported, `MADV_WIPEONFORK`. Destruction must wipe
-the full allocation before unlocking and releasing it. Copying should either
-be disabled or make a deep copy directly into another protected allocation;
-growth must never stage the secret through an ordinary heap buffer.
-
-The protection contract must expose failure. A best-effort mode may preserve
-compatibility by continuing with ordinary memory while reporting that the
-allocation is not locked. A required mode must fail key generation or import
-when the platform API, Windows working-set limit, or Linux `RLIMIT_MEMLOCK`
-prevents locking. Documentation must claim non-pageability only for an
-allocation whose lock operation succeeded.
+The remaining work is the storage those objects own indirectly. `COctet`,
+`TArray`, and `CBigNum` still allocate their payloads on the ordinary heap, so
+locking only the object shell does not protect those dynamic bytes. Copying
+and growth of a future protected container must stay inside protected storage
+and must never stage the secret through an ordinary heap buffer.
 
 Apply the mechanism in stages:
 
-1. Move long-lived byte-oriented private material such as Ed25519, Ed448,
-   X25519, ML-DSA, and ML-KEM keys into the protected buffer.
+1. Move dynamically allocated, long-lived byte-oriented private material such
+   as ML-DSA and ML-KEM key payloads into a protected buffer. Audit other
+   `COctet` and `TArray` members rather than assuming the locked object shell
+   also locks their allocations.
 2. Add protected limb storage for the long-lived private `CBigNum` components
    used by RSA, DSA, ECDSA, and GOST without forcing public arithmetic into the
    secure allocator.
@@ -46,11 +43,11 @@ Apply the mechanism in stages:
    and private arithmetic temporaries. Keep page locking out of the hot loop by
    preparing the arena or key storage once and reusing it.
 
-Tests should use an injectable platform backend to verify lock-before-copy,
-wipe-before-unlock, move and resize behavior, required-mode failures, and
-best-effort status reporting. Linux integration coverage should check the
-locked-byte accounting and fork behavior; Windows coverage should check the
-corresponding allocation, lock, unlock, and release sequence.
+Add an injectable platform backend to verify lock-before-use,
+wipe-before-unlock, and required-mode failures without depending on host lock
+limits. Linux integration coverage should check locked-byte accounting and
+fork behavior; Windows coverage should check the corresponding allocation,
+lock, unlock, and release sequence.
 
 This feature cannot promise that no secret byte ever reaches persistent
 storage. Caller-owned copies, compiler spills outside the protected mapping,

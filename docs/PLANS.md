@@ -43,6 +43,6 @@ validation.
 
 ## Detailed pages
 
-- [Security and performance](roadmap/performance.md), including the reviewed
-  design for page-locked secret memory
+- [Security and performance](roadmap/performance.md), including the remaining
+  protected-container work for page-locked secret memory
 - [Not planned](roadmap/not-planned.md)

@@ -4,6 +4,7 @@
 #include <certpp/utils/montgomery.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/io/buffer.hpp>
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -568,7 +569,10 @@ namespace crypto {
         CBigNum y = montgomery.modExp(g, x);
 
         auto pub = std::make_shared<DsaPublicKey>(p, q, g, y, montgomery);
-        auto priv = std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub, montgomery);
+        auto priv = CSecure::make<DsaPrivateKey>(p, q, g, y, x, pub, montgomery);
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         if (checkPrivateKey(priv) != ERET_OK) {
             return ERET_AGAIN;
@@ -704,7 +708,8 @@ namespace crypto {
         }
         try {
             auto pub = std::make_shared<DsaPublicKey>(p, q, g, y);
-            out = std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub);
+            out = CSecure::make<DsaPrivateKey>(p, q, g, y, x, pub);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

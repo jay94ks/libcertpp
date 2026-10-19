@@ -3,6 +3,9 @@
 
 #include <certpp/common.hpp>
 #include <certpp/io/span.hpp>
+#include <cstddef>
+#include <new>
+#include <utility>
 
 namespace certpp {
 
@@ -95,6 +98,104 @@ namespace certpp {
             uint8_t mask, const SReadOnlyByteSpan& ifSet, const SReadOnlyByteSpan& ifClear,
             const SByteSpan& out
         );
+
+        /**
+         * Allocates an aligned block from a page-backed pool that the operating system has locked
+         * against paging. Small simultaneous allocations share locked pages; a larger allocation
+         * may span multiple pages. No ordinary-heap fallback is used when page allocation or
+         * locking fails. Default builds prefer OS large pages and retry with locked standard
+         * pages when unavailable; CERTPP_DISABLE_LARGE_PAGE selects standard pages directly.
+         *
+         * The alignment must be a nonzero power of two. The returned block remains nonpageable
+         * until dealloc() releases it, and must be released only through dealloc().
+         * @param out Receives the allocated block and is set to null on failure.
+         * @param sz Number of usable bytes to allocate; must be nonzero.
+         * @param alignment Required address alignment in bytes; must be a power of two.
+         * @return ERET_OK on success; ERET_INVAL for invalid arguments; ERET_NOMEM when a page
+         *         cannot be allocated or locked.
+         */
+        static ERetCode alloc(void** out, size_t sz, size_t alignment);
+
+        /**
+         * Allocates a block with the platform's fundamental object alignment.
+         * @param out Receives the allocated block and is set to null on failure.
+         * @param sz Number of usable bytes to allocate; must be nonzero.
+         * @return The result of the aligned alloc() overload.
+         */
+        static ERetCode alloc(void** out, size_t sz);
+
+        /**
+         * Allocates a block of memory of the specified size and returns a pointer to it.
+         * Memory blocks allocated by this function should be deallocated using the corresponding deallocation function.
+         * Because this locks the memory to prevent it from being swapped out, it may have performance implications.
+         * Returns nullptr if the allocation fails.
+         *
+         * @param sz The size of the memory block to allocate.
+         * @return Pointer to the allocated memory block, or nullptr on failure.
+         */
+        static inline void* alloc(size_t sz) {
+            return alloc(sz, alignof(std::max_align_t));
+        }
+
+        /**
+         * Allocates an aligned block from locked page-backed storage and returns its address.
+         * @param sz Number of usable bytes to allocate; must be nonzero.
+         * @param alignment Required address alignment in bytes; must be a power of two.
+         * @return Pointer to the allocated block, or nullptr on failure.
+         */
+        static inline void* alloc(size_t sz, size_t alignment) {
+            void* out = nullptr;
+
+            if (CSecure::alloc(&out, sz, alignment) != ERET_OK) {
+                return nullptr;
+            }
+
+            return out;
+        }
+
+        /**
+         * Wipes and releases a block returned by alloc(). Its page remains protected while
+         * another live block shares it; the last release wipes the complete page, unlocks a
+         * standard-page mapping when needed, and returns it to the operating system. Passing
+         * nullptr is a successful no-op.
+         *
+         * @param ptr Pointer to the memory block to deallocate.
+         * @return ERET_OK on success; an appropriate error code otherwise.
+         */
+        static ERetCode dealloc(void* ptr);
+
+        /**
+         * Creates a shared pointer to an object of type T, allocating it using CSecure::alloc.
+         * The object is constructed in-place with the provided arguments.
+         * The shared pointer will automatically deallocate the memory using CSecure::dealloc when it is no longer needed.
+         *
+         * @tparam T The type of the object to create.
+         * @tparam TArgs The types of the constructor arguments.
+         * @param args The constructor arguments.
+         * @return A shared pointer to the newly created object, or nullptr if allocation fails.
+         */
+        template<typename T, typename... TArgs>
+        static inline std::shared_ptr<T> make(TArgs&& ... args) {
+            void* raw = CSecure::alloc(sizeof(T), alignof(T));
+            if (!raw) {
+                return nullptr;
+            }
+
+            T* obj = nullptr;
+            try {
+                obj = new (raw) T(std::forward<TArgs>(args)...);
+            } catch (...) {
+                CSecure::dealloc(raw);
+                throw;
+            }
+
+            return std::shared_ptr<T>(obj, [](T* ptr) {
+                if (ptr) {
+                    ptr->~T();
+                    CSecure::dealloc(ptr);
+                }
+            });
+        }
     };
 
 } // namespace certpp

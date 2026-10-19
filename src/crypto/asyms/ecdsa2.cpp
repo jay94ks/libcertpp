@@ -3,6 +3,7 @@
 #include <certpp/asn1/der.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/io/buffer.hpp>
+#include <certpp/utils/secure.hpp>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -359,7 +360,10 @@ namespace crypto {
         }
 
         auto pub = std::make_shared<Ec2PublicKey>(_curve, q, _which);
-        auto priv = std::make_shared<Ec2PrivateKey>(_curve, d, pub, _which);
+        auto priv = CSecure::make<Ec2PrivateKey>(_curve, d, pub, _which);
+        if (!priv) {
+            return ERET_NOMEM;
+        }
 
         out = SKeyPair(pub, priv);
         return ERET_OK;
@@ -475,7 +479,8 @@ namespace crypto {
         }
         try {
             auto pub = std::make_shared<Ec2PublicKey>(_curve, q, _which);
-            out = std::make_shared<Ec2PrivateKey>(_curve, d, pub, _which);
+            out = CSecure::make<Ec2PrivateKey>(_curve, d, pub, _which);
+            if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }
