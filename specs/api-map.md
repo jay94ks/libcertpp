@@ -98,7 +98,8 @@ unless the caller deliberately manages an exactly sized output span.
 | Arbitrary-precision integers | `utils/bignum.hpp` | `CBigNum` |
 | Montgomery-domain modular arithmetic | `utils/montgomery.hpp` | `CMontgomery` |
 | Binary-field elements | `utils/gf2m.hpp` | `CGf2m` |
-| Constant-time compare / wipe | `utils/secure.hpp` | `CSecure::equals()`, `equalsMask()`, `select()`, `zero()` |
+| Secure allocation / constant-time compare / wipe | `utils/secure.hpp` | `CSecure::alloc()`, `dealloc()`, `equals()`, `equalsMask()`, `select()`, `zero()` |
+| Linked version and secure-memory mode | `version.hpp` | `GetLibraryVersion()`; compare with `HEADER_VERSION`, then use `SVersion::isSecureMemory()` if page-backed storage is required |
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | Hex | `utils/hex.hpp` | `CHex` |
 | Parse / build JSON values and BSON documents | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
@@ -110,9 +111,12 @@ unless the caller deliberately manages an exactly sized output span.
 | Type | Header | Use it when |
 | --- | --- | --- |
 | `SByteSpan`, `SReadOnlyByteSpan` | `io/span.hpp` | Borrowing memory you already have. Owns nothing. |
-| `TArray<T>` | `io/array.hpp` | A growable sequence; `add()`, `resize()`, `begin()`, `size()`. |
+| `TArray<T, TAllocator>` | `io/array.hpp` | A growable sequence; the allocator defaults to `SDefaultArrayAllocator`. |
+| `TSecureArray<T>` | `io/array.hpp` | A `TArray` whose owned dynamic buffers use `CSecure`; wrapped external buffers remain caller-managed. |
 | `CBuffer` | `io/buffer.hpp` | A resizable working byte buffer. |
+| `CSecureBuffer` | `io/buffer.hpp` | A resizable working byte buffer allocated through `CSecure`. |
 | `COctet` | `io/octet.hpp` | A fixed-size owning buffer for a finished result. |
+| `CSecureOctet` | `io/octet.hpp` | A fixed-size owner allocated through `CSecure`, for retained secret bytes. |
 | `IStream` | `io/stream.hpp` | Stream abstraction; `IStream::createMemory()` for an in-memory one. |
 | `CString` | `string.hpp` | The library's string type (`TString<char>`). |
 | `SDateTime`, `STimeSpan` | `time.hpp` | Certificate validity times. |

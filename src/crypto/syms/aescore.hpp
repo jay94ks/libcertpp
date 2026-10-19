@@ -75,7 +75,23 @@ namespace crypto {
          * @param nr Receives the round count.
          * @return true on success; false if keyBytes isn't a legal AES key length.
          */
-        static bool expandKey(const uint8_t* key, size_t keyBytes, TArray<uint8_t>& roundKeys, uint32_t& nr);
+        template<typename TAllocator>
+        static bool expandKey(
+            const uint8_t* key, size_t keyBytes, TArray<uint8_t, TAllocator>& roundKeys,
+            uint32_t& nr
+        ) {
+            nr = 0;
+            roundKeys.clear();
+
+            if (keyBytes != 16 && keyBytes != 24 && keyBytes != 32) {
+                return false;
+            }
+
+            if (!roundKeys.resize(16 * (keyBytes / 4 + 7))) {
+                return false;
+            }
+            return expandKey(key, keyBytes, roundKeys.begin(), nr);
+        }
 
         /**
          * Encrypts one block with the portable round functions, whatever this CPU supports --

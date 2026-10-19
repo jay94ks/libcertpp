@@ -28,9 +28,9 @@ include/
       gf2m.hpp                    # CGf2m: 고정 용량 GF(2^m) 이진체 원소(다항식 기저). EGf2mKnownField + CGf2m::knownField()/knownFieldPtr()가 B-*/K-* 이진 곡선들이 공유하는 다섯 가지 체 크기를 지칭합니다
     io/
       span.hpp              # TSpan<T> / TReadOnlySpan<T> (템플릿 전용, .cpp 없음). SByteSpan/SReadOnlyByteSpan 별칭
-      array.hpp               # TArray<T>: 소유하며 증가 가능한 배열 (템플릿 전용, .cpp 없음). EArrayType
-      buffer.hpp                # CBuffer: 소유하며 크기 조절 가능한 원시 바이트 버퍼 — COctet 결과를 만들어 내는 작업용 버퍼
-      octet.hpp                 # COctet: 소유하는 고정 크기 바이트 버퍼
+      array.hpp               # TArray<T, TAllocator>: allocator를 선택하는 소유 배열. TSecureArray<T>, EArrayType (템플릿 전용, .cpp 없음)
+      buffer.hpp                # CBuffer와 CSecureBuffer: 일반 또는 CSecure 기반의 크기 조절 가능 바이트 버퍼
+      octet.hpp                 # COctet와 CSecureOctet: 일반 또는 CSecure 기반의 고정 크기 바이트 소유자
       stream.hpp                  # IStream 인터페이스, IStreamPtr, ESeekMode/EStreamCapability
     asn1/
       tag.hpp                # CTag (ASN.1 태그 인코드/디코드), ETagClass, EUniversalTags
@@ -149,8 +149,8 @@ src/
     securepool.cpp                # large-page 우선 사용과 잠긴 표준 페이지 폴백, 정렬 블록 분할/병합 및 CSecure::zero()를 통한 재사용/반환 전 영 소거
     gf2m.cpp                      # CGf2m: XOR 덧셈, shift-and-XOR 캐리 없는 곱셈 + 워드 단위 다항식 축약, 이진 확장 유클리드 역원. 다섯 개 알려진 체의 축약 다항식은 최초 사용 시 생성되는 접근자 뒤에 있습니다(이유는 이 모듈의 doc 주석 참고)
   io/
-    buffer.cpp                # CBuffer::store()/resize()
-    octet.cpp                 # COctet::store()/clear()/secureClear()
+    buffer.cpp                # CBuffer와 CSecureBuffer의 저장/크기 변경 동작
+    octet.cpp                 # COctet와 CSecureOctet의 저장/해제 동작
     stream.cpp               # IStream::createMemory() 팩토리
     memstream.hpp             # MemStream: private IStream 구현. 공개 API의 일부가 아닙니다
     memstream.cpp              # MemStream 구현

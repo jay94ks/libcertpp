@@ -775,15 +775,15 @@ namespace crypto {
          * recomputing it -- and checkPrivateKey() verifies the embedded H(ek) agrees with it. */
         class MlKemPrivateKey : public IKemPrivateKey {
         private:
-            COctet _encoded;
+            CSecureOctet _encoded;
             SMlKemParams _params;
             IKemPublicKeyPtr _publicKey;
 
         public:
             MlKemPrivateKey(
-                EKems which, const SMlKemParams& params, const SReadOnlyByteSpan& encoded,
+                EKems which, const SMlKemParams& params, CSecureOctet encoded,
                 IKemPublicKeyPtr publicKey
-            ) : _encoded(encoded), _params(params), _publicKey(std::move(publicKey)) {
+            ) : _encoded(std::move(encoded)), _params(params), _publicKey(std::move(publicKey)) {
                 algorithm(which);
             }
 
@@ -792,8 +792,7 @@ namespace crypto {
             }
 
             ERetCode serialize(COctet& out) const override {
-                out = _encoded;
-                return ERET_OK;
+                return out.store(_encoded.toPtr(), _encoded.size()) ? ERET_OK : ERET_NOMEM;
             }
 
             int32_t compare(const IKeyBasePtr& other) const override {
@@ -1027,7 +1026,7 @@ namespace crypto {
         }
 
         CBuffer ek(_params.ekBytes());
-        CBuffer dk(_params.dkBytes());
+        CSecureBuffer dk(_params.dkBytes());
         if (ek.size() != _params.ekBytes() || dk.size() != _params.dkBytes()) {
             return ERET_NOMEM;
         }
@@ -1046,8 +1045,13 @@ namespace crypto {
 
         auto pub = std::make_shared<MlKemPublicKey>(
             _which, _params, SReadOnlyByteSpan(ek.toPtr(), ek.size()));
+        CSecureOctet protectedKey(dk.toSpan());
+        dk.clear();
+        if (protectedKey.size() != _params.dkBytes()) {
+            return ERET_NOMEM;
+        }
         auto priv = CSecure::make<MlKemPrivateKey>(
-            _which, _params, SReadOnlyByteSpan(dk.toPtr(), dk.size()), pub);
+            _which, _params, std::move(protectedKey), pub);
         if (!priv) {
             return ERET_NOMEM;
         }
@@ -1140,7 +1144,10 @@ namespace crypto {
         }
         try {
             auto pub = std::make_shared<MlKemPublicKey>(_which, _params, ek);
-            out = CSecure::make<MlKemPrivateKey>(_which, _params, keyData, pub);
+            CSecureOctet protectedKey(keyData);
+            if (protectedKey.size() != keyData.size) return ERET_NOMEM;
+            out = CSecure::make<MlKemPrivateKey>(
+                _which, _params, std::move(protectedKey), pub);
             if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;

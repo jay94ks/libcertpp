@@ -100,7 +100,10 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
 
-        CBuffer raw(DES_KEY_BYTES);
+        CSecureBuffer raw(DES_KEY_BYTES);
+        if (raw.size() != DES_KEY_BYTES) {
+            return ERET_NOMEM;
+        }
 
         ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
@@ -118,7 +121,11 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
         try {
-            out = std::make_shared<SymRawKey>(ESYM_DES, COctet(keyData));
+            out = std::make_shared<SymRawKey>(ESYM_DES, keyData);
+            if (out->keySize() != keyData.size) {
+                out.reset();
+                return ERET_NOMEM;
+            }
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

@@ -83,13 +83,14 @@ namespace crypto {
 
         class MlDsaPrivateKey : public IPrivateKey {
         private:
-            COctet _key;
+            CSecureOctet _key;
             IPublicKeyPtr _publicKey;
             SKeySize _keySize;
 
         public:
             MlDsaPrivateKey(
-                EAsymmetrics which, SKeySize keySize, COctet key, IPublicKeyPtr publicKey
+                EAsymmetrics which, SKeySize keySize, CSecureOctet key,
+                IPublicKeyPtr publicKey
             )
                 : _key(std::move(key)), _publicKey(std::move(publicKey)), _keySize(keySize)
             {
@@ -101,8 +102,7 @@ namespace crypto {
             }
 
             ERetCode serialize(COctet& out) const override {
-                out = _key;
-                return ERET_OK;
+                return out.store(_key.toPtr(), _key.size()) ? ERET_OK : ERET_NOMEM;
             }
 
             int32_t compare(const IKeyBasePtr& other) const override {
@@ -127,7 +127,7 @@ namespace crypto {
                 return _publicKey;
             }
 
-            const COctet& bytes() const {
+            const CSecureOctet& bytes() const {
                 return _key;
             }
         };
@@ -310,7 +310,7 @@ namespace crypto {
         }
 
         CBuffer pk;
-        CBuffer sk;
+        CSecureBuffer sk;
         if (!pk.resize(params.publicKeyBytes()) || !sk.resize(params.privateKeyBytes())) {
             CSecure::zero(SByteSpan(seed, sizeof(seed)));
             return ERET_NOMEM;
@@ -329,10 +329,13 @@ namespace crypto {
         }
 
         auto pub = std::make_shared<MlDsaPublicKey>(_which, expected, COctet(pk.toSpan()));
+        CSecureOctet protectedKey(sk.toSpan());
+        sk.clear();
+        if (protectedKey.size() != params.privateKeyBytes()) {
+            return ERET_NOMEM;
+        }
         auto priv = CSecure::make<MlDsaPrivateKey>(
-            _which, expected, COctet(sk.toSpan()), pub);
-
-        CSecure::zero(SByteSpan(sk.toPtr(), sk.size()));
+            _which, expected, std::move(protectedKey), pub);
 
         if (!priv) {
             return ERET_NOMEM;
@@ -446,8 +449,13 @@ namespace crypto {
         if (!pub) {
             return ERET_KEY_ERROR;
         }
+        CSecureOctet protectedKey(keyData);
+        if (protectedKey.size() != keyData.size) {
+            return ERET_NOMEM;
+        }
         try {
-            out = CSecure::make<MlDsaPrivateKey>(_which, keySize, COctet(keyData), pub);
+            out = CSecure::make<MlDsaPrivateKey>(
+                _which, keySize, std::move(protectedKey), pub);
             if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;

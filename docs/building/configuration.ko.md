@@ -18,7 +18,8 @@
 | `CERTPP_DISABLE_HWACCEL_AVX512` | `OFF` | AVX-512VL MD4, SHA-384/SHA-512, Keccak과 AVX-512F ChaCha20 및 P-256 private comb 선택, AVX512-IFMA Poly1305, 정확한 Tiger Lake X25519 및 packed Montgomery target을 끄고 더 좁거나 generic인 SIMD 경로는 유지합니다. 좁은 경로와 AVX-512를 비교하거나 좁은 벡터 상태만 보존하는 환경을 지원할 때 사용합니다. |
 | `CERTPP_DISABLE_HWACCEL_SHA` | `OFF` | SHA-1 및 SHA-224/SHA-256의 SHA-NI 압축 경로만 끕니다. SHA-384/SHA-512의 BMI2 RORX와 SHA-3/SHAKE의 BMI1 ANDN 경로는 `CERTPP_DISABLE_HWACCEL_SIMD`가 제어합니다. |
 | `CERTPP_DISABLE_HWACCEL_AES` | `OFF` | `AesCore`의 AES-NI와 VAES 가속을 비활성화하여 `AES` 블록 암호와 AES-GCM AEAD가 항상 소프트웨어 라운드 함수를 사용하게 합니다. VAES 경로는 런타임 CPU·OS 상태 검사 뒤 독립적인 GCM 카운터 여덟 개를 함께 암호화합니다. `DES`/`TripleDES`에는 하드웨어 가속 경로가 없습니다. `ChaCha20`은 대신 SSE2, AVX2, AVX-512F를 사용하며 SIMD 스위치가 제어합니다. |
-| `CERTPP_DISABLE_LARGE_PAGE` | `OFF` | `CSecure`의 backing을 제어합니다. 기본값에서는 먼저 운영체제의 large-page 크기(Windows의 `GetLargePageMinimum()`/`MEM_LARGE_PAGES`, Linux의 `Hugepagesize`/`MAP_HUGETLB`)로 요청하고, large page를 사용할 수 없거나 프로세스에 필요한 권한 또는 예약 풀이 없으면 명시적으로 잠근 표준 페이지로 폴백합니다. `ON`이면 이 시도를 생략하고 항상 `VirtualLock` 또는 `mlock`으로 잠근 표준 페이지를 사용합니다. 어느 모드도 일반 heap 메모리로 폴백하지 않습니다. |
+| `CERTPP_DISABLE_SECURE_MEM` | `OFF` | `CSecure::alloc()`/`dealloc()` backend만 일반 정렬 heap 할당과 해제로 바꿉니다. secure container 타입은 소스 호환성을 유지하지만 저장소는 page 잠금도, 해제 시 영 소거도 하지 않습니다. 연결된 라이브러리의 이 모드는 `GetLibraryVersion().isSecureMemory()`로 확인합니다. |
+| `CERTPP_DISABLE_LARGE_PAGE` | `OFF` | 보안 메모리가 활성화된 경우 `CSecure`의 backing을 제어합니다. 기본값에서는 먼저 운영체제의 large-page 크기(Windows의 `GetLargePageMinimum()`/`MEM_LARGE_PAGES`, Linux의 `Hugepagesize`/`MAP_HUGETLB`)로 요청하고, large page를 사용할 수 없거나 프로세스에 필요한 권한 또는 예약 풀이 없으면 명시적으로 잠근 표준 페이지로 폴백합니다. `ON`이면 이 시도를 생략하고 항상 `VirtualLock` 또는 `mlock`으로 잠근 표준 페이지를 사용합니다. 활성화된 어느 모드도 일반 heap 메모리로 폴백하지 않습니다. `CERTPP_DISABLE_SECURE_MEM=ON`이면 이 옵션은 효과가 없습니다. |
 
 ## 지원 빌드 계약
 
@@ -52,7 +53,9 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
 
 테스트를 켜면 `install_consumer` CTest 케이스가 현재 빌드를 임시 prefix에 설치하고,
 별도의 `find_package(certpp)` 프로젝트를 구성해 링크·실행한 뒤 `HEADER_VERSION`과
-`GetLibraryVersion()`을 비교합니다. 설치 헤더, export, 전이 링크 요구사항, 버전
+`GetLibraryVersion()`을 비교합니다. `SVersion` 비교는 `major`의 보안 메모리 표시를
+마스킹합니다. page 기반 저장소가 반드시 필요한 소비자는 별도로
+`GetLibraryVersion().isSecureMemory()`를 호출합니다. 설치 헤더, export, 전이 링크 요구사항, 버전
 불일치를 릴리스 관점에서 확인하는 검사입니다.
 
 *정적* certpp는 반드시 일치하는 MSVC 런타임과 함께 사용해야 한다는 점에

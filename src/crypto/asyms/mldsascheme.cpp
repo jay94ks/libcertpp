@@ -93,7 +93,7 @@ namespace crypto {
          * order is the reverse of declaration, and every use is inside the scope, so nothing is
          * cleared while still live. */
         struct PolyScrubber {
-            TArray<Poly>& target;
+            TSecureArray<Poly>& target;
 
             ~PolyScrubber() {
                 if (target.size() != 0) {
@@ -442,10 +442,10 @@ namespace crypto {
         const SReadOnlyByteSpan keySeed(expanded + RHO_BYTES + MU_BYTES, RHO_BYTES);
 
         TArray<Poly> aHat;
-        TArray<Poly> s1;
-        TArray<Poly> s2;
-        TArray<Poly> s1Hat;
-        TArray<Poly> t;
+        TSecureArray<Poly> s1;
+        TSecureArray<Poly> s2;
+        TSecureArray<Poly> s1Hat;
+        TSecureArray<Poly> t;
 
         // A-hat is public (it is a function of rho alone, which travels in the public key), so
         // it is left alone; everything else here is secret or derived from secrets.
@@ -474,7 +474,7 @@ namespace crypto {
         matrixVectorNtt(aHat.begin(), s1Hat.begin(), params.k, params.l, t.begin());
 
         TArray<Poly> t1;
-        TArray<Poly> t0;
+        TSecureArray<Poly> t0;
         PolyScrubber t0Scrub{ t0 };   // --> t1 is published; t0 is not.
 
         if (!t1.resize(params.k) || !t0.resize(params.k)) {
@@ -538,9 +538,9 @@ namespace crypto {
         // therefore s1, exactly as EdDSA's signing prefix does.
         ByteScrubber keySeedScrub{ keySeed, sizeof(keySeed) };
 
-        TArray<Poly> s1;
-        TArray<Poly> s2;
-        TArray<Poly> t0;
+        TSecureArray<Poly> s1;
+        TSecureArray<Poly> s2;
+        TSecureArray<Poly> t0;
         PolyScrubber s1Scrub{ s1 };
         PolyScrubber s2Scrub{ s2 };
         PolyScrubber t0Scrub{ t0 };
@@ -557,9 +557,9 @@ namespace crypto {
         }
 
         TArray<Poly> aHat;
-        TArray<Poly> s1Hat;
-        TArray<Poly> s2Hat;
-        TArray<Poly> t0Hat;
+        TSecureArray<Poly> s1Hat;
+        TSecureArray<Poly> s2Hat;
+        TSecureArray<Poly> t0Hat;
         PolyScrubber s1HatScrub{ s1Hat };
         PolyScrubber s2HatScrub{ s2Hat };
         PolyScrubber t0HatScrub{ t0Hat };
@@ -604,14 +604,14 @@ namespace crypto {
             return false;
         }
 
-        TArray<Poly> y;
-        TArray<Poly> yHat;
+        TSecureArray<Poly> y;
+        TSecureArray<Poly> yHat;
         TArray<Poly> w;
         TArray<Poly> w1;
-        TArray<Poly> z;
+        TSecureArray<Poly> z;
         TArray<Poly> lowParts;
         TArray<Poly> wMinusCs2;
-        TArray<Poly> ct0;
+        TSecureArray<Poly> ct0;
         TArray<Poly> hints;
         CBuffer w1Encoded;
 
@@ -984,9 +984,9 @@ namespace crypto {
         uint8_t keySeed[RHO_BYTES];
         uint8_t tr[MU_BYTES];
 
-        TArray<Poly> s1;
-        TArray<Poly> s2;
-        TArray<Poly> t0;
+        TSecureArray<Poly> s1;
+        TSecureArray<Poly> s2;
+        TSecureArray<Poly> t0;
         PolyScrubber s1Scrub{ s1 };
         PolyScrubber s2Scrub{ s2 };
         PolyScrubber t0Scrub{ t0 };
@@ -1022,9 +1022,9 @@ namespace crypto {
         uint8_t keySeed[RHO_BYTES];
         uint8_t tr[MU_BYTES];
 
-        TArray<Poly> s1;
-        TArray<Poly> s2;
-        TArray<Poly> t0;
+        TSecureArray<Poly> s1;
+        TSecureArray<Poly> s2;
+        TSecureArray<Poly> t0;
         PolyScrubber s1Scrub{ s1 };
         PolyScrubber s2Scrub{ s2 };
         PolyScrubber t0Scrub{ t0 };
@@ -1042,10 +1042,10 @@ namespace crypto {
         }
 
         TArray<Poly> aHat;
-        TArray<Poly> s1Hat;
-        TArray<Poly> t;
+        TSecureArray<Poly> s1Hat;
+        TSecureArray<Poly> t;
         TArray<Poly> t1;
-        TArray<Poly> low;
+        TSecureArray<Poly> low;
         PolyScrubber s1HatScrub{ s1Hat };
         PolyScrubber tScrub{ t };
         PolyScrubber lowScrub{ low };

@@ -12,7 +12,7 @@ namespace crypto {
      * near-identical ISymmetricKey subclass. */
     class SymRawKey : public ISymmetricKey {
     public:
-        SymRawKey(ESymmetrics algo, const COctet& raw) {
+        SymRawKey(ESymmetrics algo, const SReadOnlyByteSpan& raw) {
             algorithm(algo);
             keyData(raw);
         }

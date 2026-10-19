@@ -13,9 +13,15 @@
   `uint8_t` instantiations (see
   [RULES.md](../rules/api.md#types) for the `T`- vs
   `S`-prefix rule this follows). Entirely templates, so it has no `.cpp`.
-- **`io/array.hpp`** defines `TArray<T>`, an owning, growable array --
+- **`io/array.hpp`** defines `TArray<T, TAllocator>`, an owning, growable array --
   `TSpan<T>`'s owning counterpart for arbitrary element types (`TString<T>`
-  fills the same role specifically for character types). `EArrayType`
+  fills the same role specifically for character types). The allocator defaults
+  to `SDefaultArrayAllocator`; every owned allocation, reallocation, and release
+  goes through the selected allocator. `TSecureArray<T>` selects
+  `SSecureArrayAllocator`, whose owned dynamic buffers use `CSecure` and receive
+  at least 16-byte alignment. `CERTPP_DISABLE_SECURE_MEM=ON` redirects those
+  allocations to the ordinary aligned heap. `wrap()` still aliases caller-owned
+  storage, so the allocator cannot protect or wipe that external buffer. `EArrayType`
   tracks two orthogonal things in one `uint8_t`: a mutually-exclusive
   STATIC/DYNAMIC sub-type (`EARRAY_TYPE_MASK`, whether the array owns its
   heap allocation or -- via the static `wrap()` -- merely aliases a
@@ -66,8 +72,8 @@
   `resize()` placement-`new` past the end of `_cap` -- was caught by the
   same test suite once the other three were fixed and it could run
   cleanly.
-- **`io/buffer.hpp` / `src/io/buffer.cpp`** define `CBuffer`, an owning,
-  resizable raw byte buffer: `resize()`, `store()`, `toPtr()` for the raw
+- **`io/buffer.hpp` / `src/io/buffer.cpp`** define `CBuffer` and
+  `CSecureBuffer`, owning, resizable raw byte buffers: `resize()`, `store()`, `toPtr()` for the raw
   pointer, and `toSpan()` to hand it on. It is the *working* buffer of the
   three byte containers here, and the distinction between them is
   load-bearing enough that
@@ -81,7 +87,11 @@
   existing content but does **not** zero the bytes it adds (unlike
   `TArray<uint8_t>`), and it returns `bool` -- a caller that ignores it and
   then writes through `toPtr()` is writing out of bounds on an allocation
-  failure.
+  failure. `CSecureBuffer` has the same value and move contract but routes
+  every owned allocation through `CSecure`; the default build therefore keeps
+  it in locked page-backed memory and wipes it on release. Its storage is at
+  least 16-byte aligned for SIMD consumers. `CERTPP_DISABLE_SECURE_MEM=ON`
+  keeps the type and API but makes `CSecure` use ordinary aligned heap memory.
 - **`utils/base64.hpp` / `src/utils/base64.cpp`** define `CBase64`, which is
   both halves of a base64 codec in one class: an incremental transform
   (`push()`/`finish()`, with an `EBase64Mode` fixing the direction --
@@ -104,8 +114,9 @@
   encoded. JSON is included by `certpp.hpp` unless `CERTPP_WITHOUT_JSON` is
   enabled; that option also omits `json.hpp` from installation and skips
   `tests/utils/json.cpp`.
-- **`io/octet.hpp` / `src/io/octet.cpp`** define `COctet`, an owning,
-  fixed-size byte buffer (not resizable/growable, unlike `TString<T>`) --
+- **`io/octet.hpp` / `src/io/octet.cpp`** define `COctet` and
+  `CSecureOctet`, owning, fixed-size byte buffers (not resizable/growable,
+  unlike `TString<T>`) --
   `store()` replaces its content (copying and taking ownership; a null
   pointer or zero size is rejected and leaves prior content untouched, so a
   failed `store()` can't corrupt an existing instance), `clear()` releases
@@ -114,7 +125,11 @@
   the source empty; move *assignment* swaps instead, so the source ends up
   holding whatever the target had -- the project-wide convention described
   under `io/array.hpp` below, which keeps a self-move safe and leaves the
-  old buffer to be freed by the source's own destructor.
+  old buffer to be freed by the source's own destructor. `COctet::secureClear()`
+  wipes one ordinary allocation on request. `CSecureOctet` instead routes its
+  full lifetime through `CSecure`, so retained secret bytes stay protected and
+  are wiped automatically in the default build; the disable option has the
+  same ordinary-heap meaning described for `CSecureBuffer`.
 - **`io/stream.hpp` / `src/io/stream.cpp`** define `IStream`, the
   read/write/seek stream interface (capability-queried via
   `capabilities()`/`EStreamCapability`, optional operations like

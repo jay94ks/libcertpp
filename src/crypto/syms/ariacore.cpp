@@ -495,21 +495,6 @@ namespace crypto {
         return true;
     }
 
-    bool AriaCore::expandKey(const uint8_t* key, size_t keyBytes, TArray<uint8_t>& roundKeys, uint32_t& nr) {
-        const uint32_t rounds = (keyBytes == 16) ? 12 : (keyBytes == 24) ? 14 : (keyBytes == 32) ? 16 : 0;
-        if (rounds == 0) {
-            nr = 0;
-            return false;
-        }
-
-        roundKeys.resize(16 * (rounds + 1));
-        if (!expandKey(key, keyBytes, roundKeys.begin(), nr)) {
-            roundKeys.clear();
-            return false;
-        }
-        return true;
-    }
-
     void AriaCore::encryptBlock(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
         uint32_t keys[4 * 17];
         for (size_t i = 0; i < 4 * (nr + 1); ++i) {

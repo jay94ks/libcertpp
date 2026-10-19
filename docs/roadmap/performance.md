@@ -24,18 +24,27 @@ heap fallback. Lock failure is `ERET_NOMEM`, and key generation or import
 propagates that failure. All asymmetric and KEM private-key object shells now
 use this allocator.
 
-The remaining work is the storage those objects own indirectly. `COctet`,
-`TArray`, and `CBigNum` still allocate their payloads on the ordinary heap, so
-locking only the object shell does not protect those dynamic bytes. Copying
-and growth of a future protected container must stay inside protected storage
-and must never stage the secret through an ordinary heap buffer.
+The first indirect owners have also moved to protected storage. ML-DSA and
+ML-KEM retain encoded private keys in `CSecureOctet`; symmetric-key objects use
+the same type for raw key bytes. Their generation buffers, CBC/RSA transform
+buffers that can retain plaintext, and other byte-oriented secret workspaces
+use `CSecureBuffer`. AES/ARIA key schedules and ML-DSA polynomial temporaries
+use `TSecureArray<T>`. Copying and growth stay inside the selected allocator;
+`wrap()` remains caller-owned storage.
+
+The remaining work is the storage still owned by ordinary containers.
+`CBigNum`, `COctet`, and default-allocator `TArray` instances allocate their
+payloads on the ordinary heap. Locking their object shell does not protect
+those dynamic bytes. `CERTPP_DISABLE_SECURE_MEM=ON` intentionally changes every
+`CSecure` allocation back to ordinary aligned heap storage, without page
+locking or wipe-on-release; this compatibility mode is exposed by
+`GetLibraryVersion().isSecureMemory()`.
 
 Apply the mechanism in stages:
 
-1. Move dynamically allocated, long-lived byte-oriented private material such
-   as ML-DSA and ML-KEM key payloads into a protected buffer. Audit other
-   `COctet` and `TArray` members rather than assuming the locked object shell
-   also locks their allocations.
+1. Audit the remaining secret-bearing `COctet`, `CBuffer`, and default
+   `TArray` instances and migrate each long-lived or reusable owner to
+   `CSecureOctet`, `CSecureBuffer`, or `TSecureArray` as its role requires.
 2. Add protected limb storage for the long-lived private `CBigNum` components
    used by RSA, DSA, ECDSA, and GOST without forcing public arithmetic into the
    secure allocator.

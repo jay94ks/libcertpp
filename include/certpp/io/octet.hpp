@@ -97,7 +97,7 @@ namespace certpp {
 
             return *this;
         }
-        
+
     public:
         /**
          * Checks if the octet is not empty.
@@ -172,22 +172,182 @@ namespace certpp {
         /**
          * Zeroizes the stored bytes, then clears as clear() does.
          *
-         * This exists because the bytes a COctet owns are reachable only through the read-only
-         * toPtr()/toSpan(), so a caller holding secret material in one -- a PKCS#9
-         * `challengePassword`, a decoded private key blob -- cannot wipe it with
-         * CSecure::zero() without a const_cast. Opening a mutable pointer instead would let
-         * anything rewrite an owned buffer piecemeal, which is the one thing store()'s
-         * replace-the-whole-content design is meant to prevent; naming the operation keeps the
-         * capability to the single use that needs it.
-         *
-         * The limitation is the same one CBigNum::secureClear() documents, and it is worth
-         * stating rather than implying: this reaches the bytes *this* instance owns, at the
-         * moment it is called. It does not reach a copy some earlier assignment made, nor the
-         * block store() frees when it replaces content with a different size, nor whatever a
-         * caller's own buffer still holds. It shortens the window a secret stays in freed
-         * memory; it does not close it.
+         * This operation reaches only this instance's current allocation. It cannot erase
+         * earlier copies or caller-owned source buffers.
          */
         void secureClear();
+    };
+
+    /**
+     * Represents fixed-size octets allocated through CSecure.
+     * The default build stores them in locked, page-backed memory and wipes the owned allocation
+     * before release. CERTPP_DISABLE_SECURE_MEM selects ordinary heap behavior.
+     */
+    class CERTPP_API CSecureOctet {
+    private:
+        uint8_t* _data;
+        size_t _size;
+
+    public:
+        /**
+         * Default constructor.
+         * Initializes an empty CSecureOctet instance.
+         */
+        CSecureOctet() : _data(nullptr), _size(0) {}
+
+        /**
+         * Constructs a CSecureOctet instance with the given data.
+         * @param data Pointer to the data to store.
+         * @param size Size of the data to store.
+         */
+        CSecureOctet(const uint8_t* data, size_t size) : _data(nullptr), _size(0) {
+            store(data, size);
+        }
+
+        /**
+         * Constructs a CSecureOctet instance from a read-only byte span.
+         * @param span The read-only byte span to store.
+         */
+        CSecureOctet(const SReadOnlyByteSpan& span) : _data(nullptr), _size(0) {
+            store(span.data, span.size);
+        }
+
+        /**
+         * Copy constructor.
+         * @param other The CSecureOctet instance to copy from.
+         */
+        CSecureOctet(const CSecureOctet& other) : _data(nullptr), _size(0) {
+            store(other._data, other._size);
+        }
+
+        /**
+         * Move constructor.
+         * @param other The CSecureOctet instance to move from.
+         */
+        CSecureOctet(CSecureOctet&& other) noexcept : _data(other._data), _size(other._size) {
+            other._data = nullptr;
+            other._size = 0;
+        }
+
+        /**
+         * Destructor.
+         * Releases the allocated memory for the octet.
+         */
+        ~CSecureOctet() { clear(); }
+
+    public:
+        /**
+         * Copy assignment operator.
+         * @param other The CSecureOctet instance to copy from.
+         * @return Reference to this instance.
+         */
+        inline CSecureOctet& operator=(const CSecureOctet& other) {
+            if (this != &other) {
+                // --> store() no-ops (returning false) on a null/zero-size source, so an assignment
+                // from an empty other must go through clear() instead, or this would keep stale data.
+                if (other.empty()) {
+                    clear();
+                } else {
+                    store(other._data, other._size);
+                }
+            }
+
+            return *this;
+        }
+
+        /**
+         * Move assignment operator.
+         * @param other The CSecureOctet instance to move from.
+         * @return Reference to this instance.
+         */
+        inline CSecureOctet& operator=(CSecureOctet&& other) noexcept {
+            if (this != &other) {
+                std::swap(_data, other._data);
+                std::swap(_size, other._size);
+            }
+
+            return *this;
+        }
+
+    public:
+        /**
+         * Checks if the octet is not empty.
+         * @return True if the octet is not empty, false otherwise.
+         */
+        inline operator bool() const {
+            return !empty();
+        }
+
+        /**
+         * Checks if the octet is empty using the logical NOT operator.
+         * @return True if the octet is empty, false otherwise.
+         */
+        inline bool operator!() const {
+            return empty();
+        }
+
+        /**
+         * Checks if the octet is empty.
+         * @return True if the octet is empty, false otherwise.
+         */
+        inline bool empty() const {
+            return _size == 0;
+        }
+
+        /**
+         * Retrieves the size of the octet.
+         * @return The size of the octet.
+         */
+        inline size_t size() const {
+            return _size;
+        }
+
+        /**
+         * Retrieves a pointer to the data stored in the octet.
+         * @return Pointer to the data.
+         */
+        inline const uint8_t* toPtr() const {
+            return _data;
+        }
+
+        /**
+         * Retrieves a read-only byte span representing the octet's data.
+         * @return The read-only byte span.
+         */
+        inline SReadOnlyByteSpan toSpan() const {
+            return SReadOnlyByteSpan{_data, _size};
+        }
+
+        /**
+         * Stores the given data into the octet.
+         * @param data Pointer to the data to store.
+         * @param size Size of the data to store.
+         * @return True if the data was successfully stored, false otherwise.
+         */
+        bool store(const uint8_t* data, size_t size);
+
+        /**
+         * Stores the given read-only byte span into the octet.
+         * @param span The read-only byte span to store.
+         * @return True if the data was successfully stored, false otherwise.
+         */
+        inline bool store(const SReadOnlyByteSpan& span) {
+            return store(span.data, span.size);
+        }
+
+        /**
+         * Stores the data from another secure octet into this octet.
+         * @param other The secure octet to copy data from.
+         * @return True if the data was successfully stored, false otherwise.
+         */
+        inline bool storeFrom(const CSecureOctet& other) {
+            return store(other.toPtr(), other.size());
+        }
+
+        /**
+         * Clears the octet, releasing any allocated memory and resetting its size to zero.
+         */
+        void clear();
     };
 
 } // namespace certpp

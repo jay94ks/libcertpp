@@ -14,9 +14,15 @@
   따르는 `T` 대 `S` 접두사 규칙은
   [RULES.ko.md](../rules/api.ko.md#타입)를 보십시오). 전부
   템플릿이므로 `.cpp`가 없습니다.
-- **`io/array.hpp`**은 `TArray<T>`를 정의합니다. 소유하며 증가 가능한
+- **`io/array.hpp`**은 `TArray<T, TAllocator>`를 정의합니다. 소유하며 증가 가능한
   배열로, 임의 원소 타입에 대한 `TSpan<T>`의 소유하는 대응물입니다
-  (`TString<T>`은 문자 타입에 특화해 같은 역할을 합니다). `EArrayType`은
+  (`TString<T>`은 문자 타입에 특화해 같은 역할을 합니다). allocator의 기본값은
+  `SDefaultArrayAllocator`이며 소유하는 buffer의 모든 할당, 재할당, 반환은 선택한
+  allocator를 거칩니다. `TSecureArray<T>`는 `SSecureArrayAllocator`를 선택하여 소유하는
+  동적 buffer를 `CSecure`를 통해 최소 16바이트 정렬로 할당합니다.
+  `CERTPP_DISABLE_SECURE_MEM=ON`이면 이 할당은 일반 정렬 heap으로 전환됩니다.
+  `wrap()`은 여전히 호출자 소유 저장소를
+  가리키므로 allocator가 그 외부 buffer를 보호하거나 지울 수는 없습니다. `EArrayType`은
   직교하는 두 가지를 하나의 `uint8_t`에 담아 추적합니다. 상호 배타적인
   STATIC/DYNAMIC 하위 타입(`EARRAY_TYPE_MASK`. 배열이 자기 힙 할당을
   소유하는지, 아니면 — 정적 `wrap()`을 통해 — 절대 `delete[]`해서는 안 되는
@@ -64,8 +70,9 @@
   배열에 대해 용량 검사를 완전히 건너뛰어 `add()`/`resize()`가 `_cap` 끝을
   넘어 placement `new`를 하게 만든 것 — 은 나머지 셋이 고쳐지고 테스트 모음이
   깨끗하게 돌 수 있게 된 뒤에 같은 테스트 모음이 잡았습니다.
-- **`io/buffer.hpp` / `src/io/buffer.cpp`**는 `CBuffer`를 정의합니다.
-  소유하며 크기 조절 가능한 원시 바이트 버퍼로, `resize()`, `store()`, 원시
+- **`io/buffer.hpp` / `src/io/buffer.cpp`**는 `CBuffer`와
+  `CSecureBuffer`를 정의합니다. 소유하며 크기 조절 가능한 원시 바이트 버퍼로,
+  `resize()`, `store()`, 원시
   포인터를 위한 `toPtr()`, 그리고 넘겨주기 위한 `toSpan()`이 있습니다. 여기
   세 바이트 컨테이너 중 *작업용* 버퍼이고, 그 구분이 충분히 중요해서
   [`RULES.ko.md`](../RULES.ko.md)의 "버퍼 처리" 절이
@@ -78,6 +85,11 @@
   보존하지만 추가되는 바이트를 0으로 만들지는 **않습니다**
   (`TArray<uint8_t>`와 달리). 그리고 `bool`을 반환하므로 — 그것을 무시하고
   `toPtr()`로 쓰는 호출자는 할당 실패 시 범위를 벗어나 쓰는 것입니다.
+  `CSecureBuffer`는 같은 값·이동 계약을 유지하면서 모든 소유 할당을 `CSecure`로
+  보냅니다. 따라서 기본 빌드에서는 잠긴 페이지 기반 메모리에 머물고 해제 전에
+  지워지며, SIMD 소비자를 위해 최소 16바이트로 정렬됩니다.
+  `CERTPP_DISABLE_SECURE_MEM=ON`이면 타입과 API는 유지하되 `CSecure`가 일반 정렬
+  heap 메모리를 사용합니다.
 - **`utils/base64.hpp` / `src/utils/base64.cpp`**는 `CBase64`를 정의합니다.
   base64 코덱의 양쪽 절반을 한 클래스에 담았습니다. 증분 변환
   (`push()`/`finish()`. 방향을 고정하는 `EBase64Mode` —
@@ -99,8 +111,9 @@
   BSON 타입은 거부합니다. BSON scalar 루트는 인코딩할 수 없습니다.
   `CERTPP_WITHOUT_JSON`을 켜면 `certpp.hpp`의 선택적 include가 비활성화되고,
   설치 헤더에서 `json.hpp`가 빠지며 `tests/utils/json.cpp`도 건너뜁니다.
-- **`io/octet.hpp` / `src/io/octet.cpp`**는 `COctet`을 정의합니다. 소유하는
-  고정 크기 바이트 버퍼(`TString<T>`와 달리 크기 조절/증가 불가)입니다 —
+- **`io/octet.hpp` / `src/io/octet.cpp`**는 `COctet`과 `CSecureOctet`을
+  정의합니다. 소유하는 고정 크기 바이트 버퍼(`TString<T>`와 달리 크기
+  조절/증가 불가)입니다 —
   `store()`가 내용을 교체하고(복사해 소유권을 가집니다. null 포인터나 크기 0은
   거부되고 이전 내용을 건드리지 않으므로, 실패한 `store()`가 기존 인스턴스를
   망가뜨릴 수 없습니다), `clear()`가 해제하며,
@@ -112,7 +125,9 @@
   남깁니다. `secureClear()`는 해제하기 전에 내용을 영으로 지웁니다. 비밀을
   담고 있는 `COctet`에 필요한데, 그 바이트가 읽기 전용
   `toPtr()`/`toSpan()`으로만 도달 가능하므로 `CSecure::zero()`를 밖에서
-  겨눌 수 없기 때문입니다.
+  겨눌 수 없기 때문입니다. `CSecureOctet`은 대신 수명 전체의 할당을
+  `CSecure`로 보내므로 기본 빌드에서는 보관한 비밀 바이트가 보호되고 자동으로
+  지워집니다. 비활성화 옵션의 의미는 `CSecureBuffer`와 같습니다.
 - **`io/stream.hpp` / `src/io/stream.cpp`**는 `IStream`을 정의합니다.
   읽기/쓰기/탐색 스트림 인터페이스
   (`capabilities()`/`EStreamCapability`로 능력을 질의하고,

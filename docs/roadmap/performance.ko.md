@@ -22,16 +22,24 @@ fallback은 없습니다. 잠금 실패는
 `ERET_NOMEM`이고 키 생성 또는 가져오기 경로가 그 실패를 전달합니다. 모든 비대칭 및 KEM
 개인키 객체 본체도 이제 이 allocator를 사용합니다.
 
-남은 작업은 그 객체들이 간접 소유하는 저장소입니다. `COctet`, `TArray`, `CBigNum`은
-여전히 payload를 일반 heap에 할당하므로 객체 본체만 잠그는 것으로 동적 byte까지 보호되지는
-않습니다. 향후 보호 container의 복사와 확장은 보호 저장소 안에서만 이루어져야 하며 비밀을
-일반 heap buffer에 중간 저장해서는 안 됩니다.
+첫 간접 소유자들도 보호 저장소로 옮겼습니다. ML-DSA와 ML-KEM은 인코딩된 개인키를
+`CSecureOctet`에 보관하고, 대칭키 객체도 원시 키 바이트에 같은 타입을 사용합니다.
+생성 buffer, 평문을 보관할 수 있는 CBC/RSA 변환 buffer와 그 밖의 바이트 기반 비밀
+작업공간은 `CSecureBuffer`를 사용합니다. AES/ARIA key schedule과 ML-DSA 다항식
+임시값은 `TSecureArray<T>`를 사용합니다. 복사와 확장은 선택된 allocator 안에서
+이루어지며 `wrap()`은 계속 호출자 소유 저장소입니다.
+
+남은 작업은 일반 container가 여전히 소유하는 저장소입니다. `CBigNum`, `COctet`, 기본
+allocator의 `TArray` 인스턴스는 payload를 일반 heap에 할당합니다. 객체 본체만 잠가서는
+이 동적 바이트를 보호할 수 없습니다. `CERTPP_DISABLE_SECURE_MEM=ON`은 의도적으로 모든
+`CSecure` 할당을 page 잠금과 해제 시 영 소거가 없는 일반 정렬 heap 저장소로 되돌립니다.
+이 호환 모드는 `GetLibraryVersion().isSecureMemory()`로 확인할 수 있습니다.
 
 다음 단계로 적용합니다.
 
-1. ML-DSA와 ML-KEM key payload처럼 동적으로 할당되는 장기 byte 기반 개인 자료를
-   보호된 buffer로 옮깁니다. 잠긴 객체 본체가 그 할당까지 잠근다고 가정하지 말고 다른
-   `COctet` 및 `TArray` 멤버도 점검합니다.
+1. 비밀을 담는 나머지 `COctet`, `CBuffer`, 기본 `TArray` 인스턴스를 감사하고, 장기
+   보관하거나 재사용하는 각 소유자를 역할에 따라 `CSecureOctet`, `CSecureBuffer`,
+   `TSecureArray`로 옮깁니다.
 2. 공개 산술까지 보안 allocator로 보내지 않으면서 RSA, DSA, ECDSA, GOST의 장기 보관
    private `CBigNum` 구성 요소에 보호된 limb 저장소를 추가합니다.
 3. nonce, seed, 파생 비밀, private 산술 임시값을 위한 연산 단위 secure arena를

@@ -99,7 +99,8 @@
 | 임의 정밀도 정수 | `utils/bignum.hpp` | `CBigNum` |
 | Montgomery 영역 모듈러 연산 | `utils/montgomery.hpp` | `CMontgomery` |
 | 이진체(binary-field) 원소 | `utils/gf2m.hpp` | `CGf2m` |
-| constant-time 비교/지우기 | `utils/secure.hpp` | `CSecure::equals()`, `equalsMask()`, `select()`, `zero()` |
+| 보안 할당/constant-time 비교/지우기 | `utils/secure.hpp` | `CSecure::alloc()`, `dealloc()`, `equals()`, `equalsMask()`, `select()`, `zero()` |
+| 연결된 버전과 보안 메모리 모드 | `version.hpp` | `GetLibraryVersion()`을 `HEADER_VERSION`과 비교하고, page 기반 저장소가 필수이면 `SVersion::isSecureMemory()`도 확인 |
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | 16진수 | `utils/hex.hpp` | `CHex` |
 | JSON 값과 BSON 문서 파싱/생성 | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
@@ -111,9 +112,12 @@
 | 타입 | 헤더 | 쓰는 경우 |
 | --- | --- | --- |
 | `SByteSpan`, `SReadOnlyByteSpan` | `io/span.hpp` | 이미 가지고 있는 메모리를 빌려 쓸 때. 아무것도 소유하지 않습니다. |
-| `TArray<T>` | `io/array.hpp` | 길이를 늘릴 수 있는 시퀀스; `add()`, `resize()`, `begin()`, `size()`. |
+| `TArray<T, TAllocator>` | `io/array.hpp` | 길이를 늘릴 수 있는 시퀀스. allocator 기본값은 `SDefaultArrayAllocator`입니다. |
+| `TSecureArray<T>` | `io/array.hpp` | 소유하는 동적 buffer에 `CSecure`를 쓰는 `TArray`. wrap한 외부 buffer는 호출자가 관리합니다. |
 | `CBuffer` | `io/buffer.hpp` | 크기 조정이 가능한 작업용 바이트 버퍼. |
+| `CSecureBuffer` | `io/buffer.hpp` | `CSecure`로 할당하는 크기 조절 가능 작업용 바이트 버퍼. |
 | `COctet` | `io/octet.hpp` | 완성된 결과물을 담는 고정 크기 소유 버퍼. |
+| `CSecureOctet` | `io/octet.hpp` | 보관하는 비밀 바이트를 위한 `CSecure` 기반 고정 크기 소유자. |
 | `IStream` | `io/stream.hpp` | 스트림 추상화; 메모리 기반이 필요하면 `IStream::createMemory()`. |
 | `CString` | `string.hpp` | 이 라이브러리의 문자열 타입(`TString<char>`). |
 | `SDateTime`, `STimeSpan` | `time.hpp` | 인증서 유효 기간 시각. |

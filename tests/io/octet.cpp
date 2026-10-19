@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <certpp/io/octet.hpp>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 
@@ -261,4 +262,43 @@ TEST_CASE("COctet::secureClear: clears like clear(), and exists so a secret need
         CHECK(held.size() == sizeof(second));
         CHECK(std::memcmp(held.toPtr(), second, sizeof(second)) == 0);
     }
+}
+
+TEST_CASE("CSecureOctet stores, copies, moves, and clears protected bytes") {
+    const uint8_t bytes[] = { 0x10, 0x20, 0x30, 0x40 };
+    CSecureOctet original(bytes, sizeof(bytes));
+    REQUIRE(original.size() == sizeof(bytes));
+    CHECK(reinterpret_cast<std::uintptr_t>(original.toPtr()) % 16 == 0);
+    CHECK(std::memcmp(original.toPtr(), bytes, sizeof(bytes)) == 0);
+
+    CSecureOctet copy(original);
+    REQUIRE(copy.toPtr() != original.toPtr());
+    CHECK(std::memcmp(copy.toPtr(), bytes, sizeof(bytes)) == 0);
+
+    const uint8_t* movedPointer = copy.toPtr();
+    CSecureOctet moved(std::move(copy));
+    CHECK(moved.toPtr() == movedPointer);
+    CHECK(copy.empty());
+
+    CSecureOctet assigned;
+    REQUIRE(assigned.storeFrom(moved));
+    CHECK(std::memcmp(assigned.toPtr(), bytes, sizeof(bytes)) == 0);
+
+    moved.clear();
+    CHECK(moved.empty());
+    CHECK(moved.toPtr() == nullptr);
+}
+
+TEST_CASE("CSecureOctet rejects empty replacement without losing existing content") {
+    const uint8_t bytes[] = { 1, 2, 3 };
+    CSecureOctet octet(bytes, sizeof(bytes));
+
+    CHECK_FALSE(octet.store(nullptr, sizeof(bytes)));
+    CHECK_FALSE(octet.store(bytes, 0));
+    REQUIRE(octet.size() == sizeof(bytes));
+    CHECK(std::memcmp(octet.toPtr(), bytes, sizeof(bytes)) == 0);
+
+    CSecureOctet empty;
+    octet = empty;
+    CHECK(octet.empty());
 }

@@ -832,7 +832,7 @@ namespace crypto {
         private:
             bool _encrypting;
             size_t _inputBlockSize;     // --> encrypting: max plaintext/block (keyBytes-11); decrypting: keyBytes.
-            CBuffer _buffer;
+            CSecureBuffer _buffer;
 
             /* Processes every complete _inputBlockSize chunk currently buffered, writing each
              * block's output in turn; the trailing remainder is kept buffered unless final is
@@ -893,7 +893,7 @@ namespace crypto {
                 }
 
                 if (consumed > 0) {
-                    CBuffer remainder(_buffer.size() - consumed);
+                    CSecureBuffer remainder(_buffer.size() - consumed);
                     std::memcpy(remainder.toPtr(), _buffer.toPtr() + consumed, remainder.size());
                     _buffer = std::move(remainder);
                 }

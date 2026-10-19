@@ -228,7 +228,7 @@ namespace crypto {
 
         if (consumed > 0) {
             size_t remainderSize = _buffer.size() - consumed;
-            CBuffer remainder(remainderSize);
+            CSecureBuffer remainder(remainderSize);
             if (remainderSize > 0) {
                 std::memcpy(remainder.toPtr(), _buffer.toPtr() + consumed, remainderSize);
             }

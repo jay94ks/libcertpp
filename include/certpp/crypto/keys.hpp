@@ -315,7 +315,7 @@ namespace crypto {
      */
     class CERTPP_API ISymmetricKey {
     private:
-        COctet _keyData;
+        CSecureOctet _keyData;
         ESymmetrics _algorithm;
 
     protected:
@@ -328,8 +328,8 @@ namespace crypto {
          * Sets the key data.
          * @param rawKey The key data to set.
          */
-        inline void keyData(const COctet& keyData) {
-            _keyData = keyData;
+        inline bool keyData(const SReadOnlyByteSpan& keyData) {
+            return _keyData.store(keyData);
         }
 
         /**
@@ -361,7 +361,7 @@ namespace crypto {
         /**
          * @return The key data.
          */
-        inline const COctet& keyData() const {
+        inline const CSecureOctet& keyData() const {
             return _keyData;
         }
     };

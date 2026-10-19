@@ -43,7 +43,10 @@
 - **`version.hpp` / `version.cpp`**는 `SVersion`(major/minor/patch)과
   `certpp::GetLibraryVersion()`을 정의합니다. 헤더의 `HEADER_VERSION`과
   `.cpp`의 `LIBRARY_VERSION`은 소비자가 비교해서 헤더/바이너리 불일치를
-  탐지하도록 만들어진 것입니다.
+  탐지하도록 만들어진 것입니다. `CERTPP_DISABLE_SECURE_MEM=ON` 빌드는
+  `major`의 최상위 비트인 `VERSION_FLAG_SECURE_MEM_DISABLED`를 설정합니다.
+  `SVersion` 비교는 이 비트를 마스킹하며 `isSecureMemory()`가 비트가 꺼져 있는지
+  보고합니다.
 - **`time.hpp` / `time.cpp`**는 `STimeSpan`(밀리초 기간. 전부 인라인/
   `constexpr`입니다: `absolute()`, `total*()`/단위 접근자들, 산술과 비교
   연산자)과 `SDateTime`, 즉 분해된 달력 필드 시간
@@ -103,18 +106,23 @@
   먼저 요청하고, 사용할 수 없으면 Windows의 `VirtualLock` 또는 POSIX의 `mlock`으로
   잠근 표준 페이지로 폴백합니다. `CERTPP_DISABLE_LARGE_PAGE=ON`이면 처음부터 표준
   페이지를 선택합니다. 일반 heap fallback은 없습니다. mapping 또는 잠금 실패는
-  `ERET_NOMEM`입니다. `dealloc()`은 블록을 재사용하기 전에 지우고, 다른
+  `ERET_NOMEM`입니다. `CERTPP_DISABLE_SECURE_MEM=ON`은
+  `CSecure::alloc()`/`dealloc()` backend만 일반 정렬 heap 할당과 해제로 바꾸어
+  공개 container 타입은 유지하면서 page 잠금과 해제 시 영 소거를 끕니다. 기본
+  빌드의 `dealloc()`은 블록을 재사용하기 전에 지우고, 다른
   블록이 살아 있는 동안 페이지를 보호하며, 마지막 블록을 반환할 때 페이지 전체를
   지운 다음 표준 페이지 mapping은 필요에 따라 잠금을 풀고 운영체제에 돌려줍니다.
-  명시적인 2의 거듭제곱 정렬을 사용하면
+  정렬을 생략한 overload도 최소 16바이트 정렬을 제공합니다. 명시적인 2의 거듭제곱 정렬을 사용하면
   SIMD 친화적인 상태를 보호 저장소에 바로 놓을 수 있습니다. `make<T>()`는
   `alignof(T)`를 사용하고 `shared_ptr` deleter에서 소멸자를 실행합니다.
 
   모든 비대칭 및 KEM 개인키 객체는 `CSecure::make()`로 생성됩니다. 따라서 Ed25519,
-  Ed448, X25519의 비밀 배열을 포함한 inline 필드는 객체 수명 동안 보호됩니다. 그러나
-  `COctet`, `TArray`, `CBigNum` 또는 다른 heap container가 간접 소유하는 저장소까지
-  잠긴 페이지로 옮기지는 않습니다. 그 payload용 보호 allocator는 보안 roadmap에서
-  별도 작업으로 추적합니다.
+  Ed448, X25519의 비밀 배열을 포함한 inline 필드는 객체 수명 동안 보호됩니다.
+  ML-DSA와 ML-KEM의 인코딩된 개인키는 `CSecureOctet`에 보관되고 생성 buffer는
+  `CSecureBuffer`를 사용합니다. 대칭키 원문은 `CSecureOctet`, AES/ARIA key schedule은
+  `TSecureArray`, 평문을 보관할 수 있는 CBC/RSA 변환 buffer는 `CSecureBuffer`를
+  사용합니다. 기본 `COctet`이나 `TArray`, `CBigNum` 또는 다른 일반 container가 간접
+  소유하는 저장소는 여전히 잠긴 page 밖에 있습니다.
 
   `zero()`는 `memset`을 가리키는 volatile 함수 포인터를 통해 버퍼를
   지우므로, 그 호출이 무효함을 증명할 수 없고 따라서 제거될 수 없습니다 —

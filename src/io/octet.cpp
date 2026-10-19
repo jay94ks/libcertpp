@@ -54,4 +54,41 @@ namespace certpp {
         _size = 0;
     }
 
+    /* Stores the given data in protected storage. */
+    bool CSecureOctet::store(const uint8_t* data, size_t size) {
+        if (!data || size == 0) {
+            return false;
+        }
+
+        if (size != _size || !_data) {
+            uint8_t* replacement = static_cast<uint8_t*>(CSecure::alloc(size));
+            if (!replacement) {
+                return false;
+            }
+
+            std::memcpy(replacement, data, size);
+            if (_data) {
+                (void)CSecure::dealloc(_data);
+            }
+
+            _data = replacement;
+            _size = size;
+        }
+        else {
+            std::memmove(_data, data, size);
+        }
+
+        return true;
+    }
+
+    /* Wipes and releases the protected allocation. */
+    void CSecureOctet::clear() {
+        if (_data) {
+            (void)CSecure::dealloc(_data);
+            _data = nullptr;
+        }
+
+        _size = 0;
+    }
+
 } // namespace certpp

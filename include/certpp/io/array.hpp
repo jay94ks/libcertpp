@@ -3,6 +3,8 @@
 
 #include <certpp/common.hpp>
 #include <certpp/io/span.hpp>
+#include <certpp/utils/secure.hpp>
+#include <limits>
 #include <new>
 #include <utility>
 
@@ -36,21 +38,110 @@ namespace certpp {
     };
 
     /**
-     * Represents an array of elements of type T.
+     * Default allocator for array elements.
+     * Provides basic memory allocation and deallocation functions.
+     */
+    struct SDefaultArrayAllocator {
+        /**
+         * Allocates memory of the specified size.
+         *
+         * @param size The size of memory to allocate.
+         * @return Pointer to the allocated memory.
+         */
+        inline void* alloc(size_t size) const {
+            return new(std::nothrow) uint8_t[size];
+        }
+
+        /**
+         * Deallocates the previously allocated memory.
+         *
+         * @param ptr Pointer to the memory to deallocate.
+         */
+        inline void dealloc(void* ptr) const {
+            delete[] static_cast<uint8_t*>(ptr);
+        }
+    };
+
+    /**
+     * Secure allocator for array elements.
+     * Provides memory allocation and deallocation functions with additional security measures.
+     */
+    struct SSecureArrayAllocator {
+        /**
+         * Allocates memory of the specified size.
+         *
+         * @param size The size of memory to allocate.
+         * @return Pointer to the allocated memory.
+         */
+        inline void* alloc(size_t size) const {
+            return CSecure::alloc(size);
+        }
+
+        /**
+         * Deallocates the previously allocated memory.
+         *
+         * @param ptr Pointer to the memory to deallocate.
+         */
+        inline void dealloc(void* ptr) const {
+            (void)CSecure::dealloc(ptr);
+        }
+    };
+
+    /**
+     * Forward declaration of the TArray class template.
+     */
+    template<typename T, typename TAllocator = SDefaultArrayAllocator>
+    class TArray;
+
+    /**
+     * Represents an array using the CSecure allocator.
+     *
+     * Owned buffers use locked, page-backed storage unless the library was built with
+     * CERTPP_DISABLE_SECURE_MEM. A buffer supplied through wrap() remains caller-owned and has
+     * whatever protection the caller provided.
+     * @tparam T The element type.
      */
     template<typename T>
+    using TSecureArray = TArray<T, SSecureArrayAllocator>;
+
+    /**
+     * Represents an array of elements of type T.
+     * @tparam T The element type.
+     * @tparam TAllocator The allocator used for owned dynamic buffers.
+     */
+    template<typename T, typename TAllocator>
     class TArray {
     public:
         /**
          * The type of the current TArray instance.
          */
-        using SelfType = TArray<T>;
+        using SelfType = TArray<T, TAllocator>;
+
+        /**
+         * The type of the allocator used by the array.
+         */
+        using AllocType = TAllocator;
 
     private:
         T* _data;
         size_t _size;
         size_t _cap;
         uint8_t _type;
+        AllocType _alloc;
+
+    private:
+        inline T* allocate(size_t count) {
+            if (count == 0 || count > std::numeric_limits<size_t>::max() / sizeof(T)) {
+                return nullptr;
+            }
+            return static_cast<T*>(_alloc.alloc(count * sizeof(T)));
+        }
+
+        inline void deallocate(T* ptr) {
+            if (ptr) {
+                _alloc.dealloc(ptr);
+            }
+        }
 
     public:
         /**
@@ -59,7 +150,7 @@ namespace certpp {
          * @param type The type of the array.
          */
         TArray(EArrayType type = EARRAY_NONE)
-            : _data(nullptr), _size(0), _cap(0), _type(type) {}
+            : _data(nullptr), _size(0), _cap(0), _type(type), _alloc() {}
 
         /**
          * Copy constructor for the array.
@@ -67,16 +158,25 @@ namespace certpp {
          * @param other The array to copy from.
          */
         inline TArray(const SelfType& other)
-            : _data(nullptr), _size(0), _cap(0), _type(other._type)
+            : _data(nullptr), _size(0), _cap(0), _type(EARRAY_NONE),
+              _alloc(other._alloc)
         {
             if (other._size > 0) {
-                reserve(other._size);
+                if (!reserve(other._size)) {
+                    return;
+                }
 
                 for (size_t i = 0; i < other._size; ++i) {
                     new(&_data[i]) T(other._data[i]);
                 }
 
                 _size = other._size;
+                if (other._type & EARRAY_FIXED) {
+                    _type = EArrayType(_type | EARRAY_FIXED);
+                }
+            }
+            else {
+                _type = other._type;
             }
         }
 
@@ -86,10 +186,12 @@ namespace certpp {
          * @param span The span containing elements to copy.
          */
         inline TArray(const TSpan<T>& span)
-            : _data(nullptr), _size(0), _cap(0), _type(EARRAY_NONE)
+            : _data(nullptr), _size(0), _cap(0), _type(EARRAY_NONE), _alloc()
         {
             if (span.size > 0) {
-                reserve(span.size);
+                if (!reserve(span.size)) {
+                    return;
+                }
 
                 for (size_t i = 0; i < span.size; ++i) {
                     new(&_data[i]) T(span[i]);
@@ -105,10 +207,12 @@ namespace certpp {
          * @param span The read-only span containing elements to copy.
          */
         inline TArray(const TReadOnlySpan<T>& span)
-            : _data(nullptr), _size(0), _cap(0), _type(EARRAY_NONE)
+            : _data(nullptr), _size(0), _cap(0), _type(EARRAY_NONE), _alloc()
         {
             if (span.size > 0) {
-                reserve(span.size);
+                if (!reserve(span.size)) {
+                    return;
+                }
 
                 for (size_t i = 0; i < span.size; ++i) {
                     new(&_data[i]) T(span[i]);
@@ -124,7 +228,8 @@ namespace certpp {
          * @param other The array to move from.
          */
         inline TArray(SelfType&& other) noexcept
-            : _data(other._data), _size(other._size), _cap(other._cap), _type(other._type)
+            : _data(other._data), _size(other._size), _cap(other._cap),
+              _type(other._type), _alloc(std::move(other._alloc))
         {
             other._data = nullptr;
             other._size = 0;
@@ -148,7 +253,7 @@ namespace certpp {
          */
         inline void releaseOwnedBuffer() {
             if (_data && (_type & EARRAY_TYPE_MASK) != EARRAY_STATIC) {
-                delete[] ((uint8_t*)_data);
+                deallocate(_data);
             }
 
             _type = EARRAY_NONE;
@@ -178,18 +283,26 @@ namespace certpp {
         inline SelfType& operator=(const SelfType& other) {
             if (this != &other) {
                 clear();
+                releaseOwnedBuffer();
+                _alloc = other._alloc;
 
                 if (other._size > 0) {
-                    reserve(other._size);
+                    if (!reserve(other._size)) {
+                        return *this;
+                    }
 
                     for (size_t i = 0; i < other._size; ++i) {
                         new(&_data[i]) T(other._data[i]);
                     }
 
                     _size = other._size;
+                    if (other._type & EARRAY_FIXED) {
+                        _type = EArrayType(_type | EARRAY_FIXED);
+                    }
                 }
-
-                _type = other._type;
+                else {
+                    _type = other._type;
+                }
             }
 
             return *this;
@@ -207,6 +320,7 @@ namespace certpp {
                 swap(_cap, other._cap);
                 swap(_type, other._type);
                 swap(_data, other._data);
+                swap(_alloc, other._alloc);
             }
 
             return *this;
@@ -222,7 +336,9 @@ namespace certpp {
             clear();
 
             if (span.size > 0) {
-                reserve(span.size);
+                if (!reserve(span.size)) {
+                    return *this;
+                }
 
                 for (size_t i = 0; i < span.size; ++i) {
                     new(&_data[i]) T(span[i]);
@@ -377,7 +493,7 @@ namespace certpp {
                 return false;
             }
 
-            T* p = (T*) new(std::nothrow) uint8_t[cap * sizeof(T)];
+            T* p = allocate(cap);
             if (!p) {
                 return false;
             }
@@ -393,7 +509,7 @@ namespace certpp {
 
                 // --> Only delete the old data if the array is not static.
                 if ((_type & EARRAY_TYPE_MASK) != EARRAY_STATIC) {
-                    delete[] ((uint8_t*)_data);
+                    deallocate(_data);
                 }
             }
 
@@ -467,7 +583,7 @@ namespace certpp {
             // --> If the array is empty, release its memory and reset its state.
             if (_size == 0) {
                 if ((_type & EARRAY_TYPE_MASK) != EARRAY_STATIC) {
-                    delete[] ((uint8_t*)_data);
+                    deallocate(_data);
                 }
 
                 _type = EARRAY_NONE;
@@ -478,7 +594,7 @@ namespace certpp {
                 return true;
             }
 
-            T* p = (T*) new(std::nothrow) uint8_t[_size * sizeof(T)];
+            T* p = allocate(_size);
             if (!p) {
                 return false;
             }
@@ -492,7 +608,7 @@ namespace certpp {
             }
 
             if ((_type & EARRAY_TYPE_MASK) != EARRAY_STATIC) {
-                delete[] ((uint8_t*)_data);
+                deallocate(_data);
             }
 
             // --> If the array was previously static, it is now dynamic.

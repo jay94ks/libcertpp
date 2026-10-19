@@ -159,6 +159,10 @@
     unit (a key blob, a digest, a serialized TLV's content).
   - `TArray<T>` stays `TArray<T>` for an actual sequence of logically
     distinct elements (e.g. `TArray<SKeySizeSpec>`), not for a byte buffer.
+  - For secret material that must remain in library-owned storage, preserve
+    the same role while selecting its secure counterpart: `CSecureBuffer`,
+    `CSecureOctet`, or `TSecureArray<T>`. Do not use a secure type for public
+    output merely because it passed through a cryptographic operation.
 
 ## Span parameters
 

@@ -145,21 +145,32 @@ ABI 경계를 넘나들고 새 해시가 뒤에 추가되지만, 숫자 자체�
 
 ## 비밀 메모리 페이지 잠금
 
-**`CSecure::alloc()`은 잠금이 필수인 보호 할당입니다.** 운영체제가 페이지를
-page-out되지 않게 만든 뒤에만 성공하며 일반 heap fallback은 없습니다. 기본 빌드는 OS
-large page를 우선 사용하고, large-page 요청을 사용할 수 없으면 명시적으로 잠근 표준
-페이지로 안전하게 다시 시도합니다. `CERTPP_DISABLE_LARGE_PAGE=ON`으로 구성한 빌드는
-처음부터 표준 페이지를 사용합니다. 하드웨어 또는 SIMD 코드에 정렬이 필요하면 0이 아닌
-2의 거듭제곱 정렬을 전달하고, 반환된 정확한 주소를 `CSecure::dealloc()`으로 해제하며,
-페이지 할당 또는 잠금의 `ERET_NOMEM`을 처리해야
+**기본 빌드에서 `CSecure::alloc()`은 잠금이 필수인 보호 할당입니다.** 운영체제가
+페이지를 page-out되지 않게 만든 뒤에만 성공하며 일반 heap fallback은 없습니다. 기본
+빌드는 OS large page를 우선 사용하고, large-page 요청을 사용할 수 없으면 명시적으로
+잠근 표준 페이지로 안전하게 다시 시도합니다. `CERTPP_DISABLE_LARGE_PAGE=ON`으로 구성한
+빌드는 처음부터 표준 페이지를 사용합니다. 하드웨어 또는 SIMD 코드에 정렬이 필요하면
+0이 아닌 2의 거듭제곱 정렬을 전달하고, 반환된 정확한 주소를
+`CSecure::dealloc()`으로 해제하며, 페이지 할당 또는 잠금의 `ERET_NOMEM`을 처리해야
 합니다. 살아 있는 작은 블록들은 보호된 페이지 하나를 공유할 수 있습니다. 블록 반환 시
 재사용 전에 지우고, 마지막 블록을 반환할 때는 페이지 전체를 지운 뒤 표준 페이지
 mapping은 필요에 따라 잠금을 풀고 운영체제에 돌려줍니다.
 
+**`CERTPP_DISABLE_SECURE_MEM=ON`은 이 보장을 의도적으로 제거합니다.** 공개 container
+타입은 그대로 두지만 `CSecure::alloc()`과 `dealloc()`이 page 잠금이나 해제 시 영 소거
+없이 일반 정렬 heap 할당과 해제를 사용하게 합니다. 애플리케이션이 이 호환 모드 빌드를
+거부해야 한다면 `GetLibraryVersion().isSecureMemory()`를 확인하십시오. 일반
+`SVersion` 비교는 `major`의 표시 비트를 무시하므로 헤더/라이브러리 버전 검사는 의미상
+버전을 계속 비교합니다.
+
 **개인키 객체의 주소가 잠겼다고 해서 그 객체가 소유한 모든 할당까지 잠기는 것은
 아닙니다.** 비대칭 및 KEM 개인키 객체는 `CSecure::make()`로 생성되므로 inline 필드는
-잠긴 저장소에 남습니다. `COctet`, `TArray`, `CBigNum`과 다른 동적 container가 보유한
-payload는 여전히 각자의 일반 heap 할당에 있습니다. 호출자 소유 사본, compiler spill,
+잠긴 저장소에 남습니다. `CBigNum`, 일반 `COctet`/`CBuffer`, 기본 allocator의
+`TArray` 및 다른 동적 container가 보유한 payload는 여전히 각자의 일반 heap 할당에
+있습니다. 보관하는 ML-DSA/ML-KEM 및 대칭키 개인 바이트는 `CSecureOctet`, 선택된 작업
+buffer는 `CSecureBuffer`, AES/ARIA schedule과 선택된 다항식 배열은
+`TSecureArray<T>`를 사용합니다. `wrap()`은 호출자 소유 메모리의 보호 상태를 바꿀 수
+없습니다. 호출자 소유 사본, compiler spill,
 최대 절전 이미지, 전체 메모리 dump, debugger 접근, 가상 머신 snapshot도 이 계약의
 범위 밖입니다.
 

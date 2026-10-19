@@ -17,8 +17,8 @@ namespace crypto {
 
         class AriaContext : public ISymmetricContext, public std::enable_shared_from_this<AriaContext> {
         private:
-            TArray<uint8_t> _encKeys;   // --> encryption schedule
-            TArray<uint8_t> _decKeys;   // --> decryption schedule, derived once per key
+            TSecureArray<uint8_t> _encKeys;   // --> encryption schedule
+            TSecureArray<uint8_t> _decKeys;   // --> decryption schedule, derived once per key
             uint32_t _nr;
 
         protected:
@@ -126,7 +126,10 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
 
-        CBuffer raw(bits / 8);
+        CSecureBuffer raw(bits / 8);
+        if (raw.size() != bits / 8) {
+            return ERET_NOMEM;
+        }
 
         const ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
@@ -144,7 +147,11 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
         try {
-            out = std::make_shared<SymRawKey>(ESYM_ARIA, COctet(keyData));
+            out = std::make_shared<SymRawKey>(ESYM_ARIA, keyData);
+            if (out->keySize() != keyData.size) {
+                out.reset();
+                return ERET_NOMEM;
+            }
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

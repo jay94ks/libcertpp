@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <certpp/io/array.hpp>
+#include <cstdint>
 #include <utility>
 
 using namespace certpp;
@@ -74,6 +75,29 @@ namespace {
     size_t Tracker::liveCount = 0;
     size_t Tracker::corruptionCount = 0;
 
+    struct TrackingAllocator {
+        static size_t allocationCount;
+        static size_t deallocationCount;
+
+        void* alloc(size_t size) const {
+            ++allocationCount;
+            return new(std::nothrow) uint8_t[size];
+        }
+
+        void dealloc(void* ptr) const {
+            ++deallocationCount;
+            delete[] static_cast<uint8_t*>(ptr);
+        }
+    };
+
+    size_t TrackingAllocator::allocationCount = 0;
+    size_t TrackingAllocator::deallocationCount = 0;
+
+    struct RejectingAllocator {
+        void* alloc(size_t) const { return nullptr; }
+        void dealloc(void*) const { }
+    };
+
     /* Resets Tracker's counters on construction, and asserts both are back to a clean state
      * (corruptionCount == 0, liveCount == 0) on destruction -- wrap a TEST_CASE's body in a nested
      * scope and construct one of these right before it to verify every Tracker the test created
@@ -101,6 +125,66 @@ TEST_CASE("TArray default construction is empty") {
     CHECK(a.size() == 0);
     CHECK(a.capacity() == 0);
     CHECK(a.type() == EARRAY_NONE);
+}
+
+TEST_CASE("TArray delegates owned storage to its allocator") {
+    TrackingAllocator::allocationCount = 0;
+    TrackingAllocator::deallocationCount = 0;
+
+    {
+        TArray<int, TrackingAllocator> original;
+        REQUIRE(original.reserve(2));
+        REQUIRE(original.add(10));
+        REQUIRE(original.add(20));
+
+        TArray<int, TrackingAllocator> copy(original);
+        REQUIRE(copy.size() == 2);
+        CHECK(copy[0] == 10);
+        CHECK(copy[1] == 20);
+
+        REQUIRE(copy.reserve(8));
+        TArray<int, TrackingAllocator> moved(std::move(copy));
+        REQUIRE(moved.size() == 2);
+        CHECK(copy.empty());
+
+        original.markFixed();
+        TArray<int, TrackingAllocator> fixedCopy(original);
+        CHECK(fixedCopy.type() == EARRAY_DYNAMIC_FIXED);
+        CHECK(fixedCopy.size() == 2);
+    }
+
+    CHECK(TrackingAllocator::allocationCount == 4);
+    CHECK(TrackingAllocator::deallocationCount == TrackingAllocator::allocationCount);
+}
+
+TEST_CASE("TArray leaves its state unchanged when its allocator rejects growth") {
+    TArray<int, RejectingAllocator> array;
+
+    CHECK_FALSE(array.reserve(1));
+    CHECK_FALSE(array.resize(1));
+    CHECK_FALSE(array.add(1));
+    CHECK(array.empty());
+    CHECK(array.capacity() == 0);
+    CHECK(array.type() == EARRAY_NONE);
+}
+
+TEST_CASE("TSecureArray supports the ordinary TArray copy and move contract") {
+    TSecureArray<uint8_t> original;
+    REQUIRE(original.resize(32));
+    CHECK(reinterpret_cast<std::uintptr_t>(original.begin()) % 16 == 0);
+    for (size_t i = 0; i < original.size(); ++i) {
+        original[i] = uint8_t(i);
+    }
+
+    TSecureArray<uint8_t> copy(original);
+    REQUIRE(copy.size() == original.size());
+    CHECK(copy.begin() != original.begin());
+    CHECK(copy[17] == 17);
+
+    const uint8_t* copiedData = copy.begin();
+    TSecureArray<uint8_t> moved(std::move(copy));
+    CHECK(moved.begin() == copiedData);
+    CHECK(copy.empty());
 }
 
 TEST_CASE("TArray(EArrayType) records the requested type even while still empty") {

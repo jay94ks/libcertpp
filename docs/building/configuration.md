@@ -18,7 +18,8 @@
 | `CERTPP_DISABLE_HWACCEL_AVX512` | `OFF` | Disables AVX-512VL MD4, SHA-384/SHA-512, and Keccak, AVX-512F ChaCha20 and P-256 private-comb selection, AVX512-IFMA Poly1305, and the exact Tiger Lake X25519 and packed Montgomery targets while retaining narrower or generic SIMD paths. Use this to compare narrower paths against AVX-512 or to support an environment that saves only the narrower vector state. |
 | `CERTPP_DISABLE_HWACCEL_SHA` | `OFF` | Disables only the SHA-NI compression paths for SHA-1 and SHA-224/SHA-256. SHA-384/SHA-512's BMI2 RORX and SHA-3/SHAKE's BMI1 ANDN paths are governed by `CERTPP_DISABLE_HWACCEL_SIMD`. |
 | `CERTPP_DISABLE_HWACCEL_AES` | `OFF` | Disables `AesCore`'s AES-NI and VAES acceleration -- so both the `AES` block cipher and the AES-GCM AEAD built on it -- always using the portable round functions instead. The VAES path encrypts eight independent GCM counters at a time after runtime CPU and OS-state checks. `DES`/`TripleDES` have no hardware-accelerated path regardless of this option. `ChaCha20` uses SSE2, AVX2, and AVX-512F instead and is governed by the SIMD switches. |
-| `CERTPP_DISABLE_LARGE_PAGE` | `OFF` | Controls the backing used by `CSecure`. The default first requests the operating system's large-page size (`GetLargePageMinimum()`/`MEM_LARGE_PAGES` on Windows, `Hugepagesize`/`MAP_HUGETLB` on Linux) and falls back to explicitly locked standard pages when large pages are unavailable or the process lacks the required privilege or reserved pool. `ON` skips that attempt and always uses standard pages with `VirtualLock` or `mlock`. Neither mode falls back to ordinary heap memory. |
+| `CERTPP_DISABLE_SECURE_MEM` | `OFF` | Changes only the `CSecure::alloc()`/`dealloc()` backend to ordinary aligned heap allocation and free. The secure container types remain source-compatible, but their storage is neither page-locked nor wiped on release. The linked library exposes this mode through `GetLibraryVersion().isSecureMemory()`. |
+| `CERTPP_DISABLE_LARGE_PAGE` | `OFF` | Controls the backing used by `CSecure` when secure memory is enabled. The default first requests the operating system's large-page size (`GetLargePageMinimum()`/`MEM_LARGE_PAGES` on Windows, `Hugepagesize`/`MAP_HUGETLB` on Linux) and falls back to explicitly locked standard pages when large pages are unavailable or the process lacks the required privilege or reserved pool. `ON` skips that attempt and always uses standard pages with `VirtualLock` or `mlock`. Neither enabled mode falls back to ordinary heap memory. It has no effect when `CERTPP_DISABLE_SECURE_MEM=ON`. |
 
 ## Supported build contract
 
@@ -53,7 +54,9 @@ The version file is `SameMajorVersion`, matching the shared object's
 When tests are enabled, the `install_consumer` CTest case installs the current
 build into a temporary prefix, configures a separate `find_package(certpp)`
 project, links and runs it, and compares `HEADER_VERSION` with
-`GetLibraryVersion()`. This is the release-facing check for missing installed
+`GetLibraryVersion()`. `SVersion` comparison masks the secure-memory marker in
+`major`; a consumer that requires page-backed storage separately calls
+`GetLibraryVersion().isSecureMemory()`. This is the release-facing check for missing installed
 headers, exports, transitive link requirements, and version skew.
 
 Note that a *static* certpp must be consumed with a matching MSVC runtime —

@@ -105,6 +105,7 @@ namespace certpp {
          * may span multiple pages. No ordinary-heap fallback is used when page allocation or
          * locking fails. Default builds prefer OS large pages and retry with locked standard
          * pages when unavailable; CERTPP_DISABLE_LARGE_PAGE selects standard pages directly.
+         * CERTPP_DISABLE_SECURE_MEM replaces this backend with aligned ordinary-heap allocation.
          *
          * The alignment must be a nonzero power of two. The returned block remains nonpageable
          * until dealloc() releases it, and must be released only through dealloc().
@@ -117,7 +118,9 @@ namespace certpp {
         static ERetCode alloc(void** out, size_t sz, size_t alignment);
 
         /**
-         * Allocates a block with the platform's fundamental object alignment.
+         * Allocates a block with at least 16-byte alignment, or the platform's fundamental
+         * object alignment when that is greater. This lets byte-oriented protected containers
+         * feed ordinary SIMD and AES/SHA hardware paths without copying to an aligned buffer.
          * @param out Receives the allocated block and is set to null on failure.
          * @param sz Number of usable bytes to allocate; must be nonzero.
          * @return The result of the aligned alloc() overload.
@@ -134,7 +137,9 @@ namespace certpp {
          * @return Pointer to the allocated memory block, or nullptr on failure.
          */
         static inline void* alloc(size_t sz) {
-            return alloc(sz, alignof(std::max_align_t));
+            constexpr size_t DEFAULT_ALIGNMENT =
+                alignof(std::max_align_t) < 16 ? size_t(16) : alignof(std::max_align_t);
+            return alloc(sz, DEFAULT_ALIGNMENT);
         }
 
         /**
@@ -157,7 +162,8 @@ namespace certpp {
          * Wipes and releases a block returned by alloc(). Its page remains protected while
          * another live block shares it; the last release wipes the complete page, unlocks a
          * standard-page mapping when needed, and returns it to the operating system. Passing
-         * nullptr is a successful no-op.
+         * nullptr is a successful no-op. With CERTPP_DISABLE_SECURE_MEM, this performs the
+         * matching ordinary aligned free without locking or wiping.
          *
          * @param ptr Pointer to the memory block to deallocate.
          * @return ERET_OK on success; an appropriate error code otherwise.

@@ -28,9 +28,9 @@ include/
       gf2m.hpp                    # CGf2m: fixed-capacity GF(2^m) binary field element (polynomial basis); EGf2mKnownField + CGf2m::knownField()/knownFieldPtr() name the 5 field sizes the B-*/K-* binary curves share
     io/
       span.hpp              # TSpan<T> / TReadOnlySpan<T> (template-only, no .cpp); SByteSpan/SReadOnlyByteSpan aliases
-      array.hpp               # TArray<T>: owning, growable array (template-only, no .cpp); EArrayType
-      buffer.hpp                # CBuffer: owning, resizable raw byte buffer -- the working buffer COctet results are built in
-      octet.hpp                 # COctet: owning, fixed-size byte buffer
+      array.hpp               # TArray<T, TAllocator>: allocator-aware owning array; TSecureArray<T>; EArrayType (template-only, no .cpp)
+      buffer.hpp                # CBuffer and CSecureBuffer: ordinary or CSecure-backed resizable byte buffers
+      octet.hpp                 # COctet and CSecureOctet: ordinary or CSecure-backed fixed-size byte owners
       stream.hpp                  # IStream interface, IStreamPtr, ESeekMode/EStreamCapability
     asn1/
       tag.hpp                # CTag (ASN.1 tag encode/decode), ETagClass, EUniversalTags
@@ -149,8 +149,8 @@ src/
     securepool.cpp                # large-page preference and locked standard-page fallback, aligned block splitting/coalescing, and wipe-before-release through CSecure::zero()
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
   io/
-    buffer.cpp                # CBuffer::store()/resize()
-    octet.cpp                 # COctet::store()/clear()
+    buffer.cpp                # CBuffer and CSecureBuffer storage/resize operations
+    octet.cpp                 # COctet and CSecureOctet storage/clear operations
     stream.cpp               # IStream::createMemory() factories
     memstream.hpp             # MemStream: private IStream impl, not part of the public API
     memstream.cpp              # MemStream implementation

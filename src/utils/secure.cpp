@@ -1,6 +1,11 @@
 #include <certpp/utils/secure.hpp>
 #include "securepool.hpp"
+#include <cstdlib>
 #include <cstring>
+
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace certpp {
 
@@ -8,6 +13,51 @@ namespace certpp {
 
         /* Reaching memset through a volatile call target prevents dead-store elimination. */
         void* (* volatile const SECURE_MEMSET)(void*, int, size_t) = &std::memset;
+
+#if defined(CERTPP_DISABLE_SECURE_MEM)
+        bool isPowerOfTwo(size_t value) {
+            return value != 0 && (value & (value - 1)) == 0;
+        }
+
+        ERetCode allocateOrdinary(void** out, size_t size, size_t alignment) {
+            if (!out) {
+                return ERET_INVAL;
+            }
+            *out = nullptr;
+
+            if (size == 0 || !isPowerOfTwo(alignment)) {
+                return ERET_INVAL;
+            }
+
+            if (alignment < sizeof(void*)) {
+                alignment = sizeof(void*);
+            }
+#if defined(_WIN32)
+            *out = _aligned_malloc(size, alignment);
+            return *out ? ERET_OK : ERET_NOMEM;
+#else
+            void* allocated = nullptr;
+            if (posix_memalign(&allocated, alignment, size) != 0) {
+                return ERET_NOMEM;
+            }
+            *out = allocated;
+            return ERET_OK;
+#endif
+        }
+
+        ERetCode releaseOrdinary(void* ptr) {
+            if (!ptr) {
+                return ERET_OK;
+            }
+
+#if defined(_WIN32)
+            _aligned_free(ptr);
+#else
+            std::free(ptr);
+#endif
+            return ERET_OK;
+        }
+#endif
 
     } // namespace
 
@@ -65,17 +115,27 @@ namespace certpp {
 
     /* Allocates an aligned block from locked, page-backed storage. */
     ERetCode CSecure::alloc(void** out, size_t sz, size_t alignment) {
+#if defined(CERTPP_DISABLE_SECURE_MEM)
+        return allocateOrdinary(out, sz, alignment);
+#else
         return SecurePool::instance().allocate(out, sz, alignment);
+#endif
     }
 
-    /* Allocates a fundamentally aligned block from locked, page-backed storage. */
+    /* Allocates a SIMD-ready block from the selected CSecure storage backend. */
     ERetCode CSecure::alloc(void** out, size_t sz) {
-        return alloc(out, sz, alignof(std::max_align_t));
+        constexpr size_t DEFAULT_ALIGNMENT =
+            alignof(std::max_align_t) < 16 ? size_t(16) : alignof(std::max_align_t);
+        return alloc(out, sz, DEFAULT_ALIGNMENT);
     }
 
     /* Wipes and releases one block, returning an empty page to the operating system. */
     ERetCode CSecure::dealloc(void* ptr) {
+#if defined(CERTPP_DISABLE_SECURE_MEM)
+        return releaseOrdinary(ptr);
+#else
         return SecurePool::instance().release(ptr);
+#endif
     }
 
 } // namespace certpp

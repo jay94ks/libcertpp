@@ -549,19 +549,6 @@ namespace crypto {
         return true;
     }
 
-    /* Expands a key into a growable array. */
-    bool AesCore::expandKey(const uint8_t* key, size_t keyBytes, TArray<uint8_t>& roundKeys, uint32_t& nr) {
-        nr = 0;
-        roundKeys.clear();
-
-        if (keyBytes != 16 && keyBytes != 24 && keyBytes != 32) {
-            return false;
-        }
-
-        roundKeys.resize(16 * (keyBytes / 4 + 7));
-        return expandKey(key, keyBytes, roundKeys.begin(), nr);
-    }
-
     /* Encrypts one block with the portable round functions. */
     void AesCore::encryptBlockPortable(const uint8_t in[16], uint8_t out[16], const uint8_t* roundKeys, uint32_t nr) {
         uint8_t state[16];

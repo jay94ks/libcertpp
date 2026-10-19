@@ -44,7 +44,10 @@
 - **`version.hpp` / `version.cpp`** define `SVersion` (major/minor/patch) and
   `certpp::GetLibraryVersion()`. `HEADER_VERSION` in the header and
   `LIBRARY_VERSION` in the `.cpp` are meant to be compared by consumers to
-  detect a header/binary mismatch.
+  detect a header/binary mismatch. A library built with
+  `CERTPP_DISABLE_SECURE_MEM=ON` sets `VERSION_FLAG_SECURE_MEM_DISABLED`, the
+  high bit of `major`; `SVersion` comparisons mask that bit, while
+  `isSecureMemory()` reports whether it is clear.
 - **`time.hpp` / `time.cpp`** define `STimeSpan` (a millisecond duration,
   entirely inline/`constexpr`: `absolute()`, the `total*()`/unit accessors,
   arithmetic and comparison operators) and `SDateTime`, decomposed
@@ -105,20 +108,26 @@
   locked with `VirtualLock` on Windows or `mlock` on POSIX when the large-page
   request is unavailable. `CERTPP_DISABLE_LARGE_PAGE=ON` selects standard
   pages directly. It has no ordinary-heap fallback: mapping or lock failure is
-  `ERET_NOMEM`. `dealloc()`
+  `ERET_NOMEM`. `CERTPP_DISABLE_SECURE_MEM=ON` changes only the
+  `CSecure::alloc()`/`dealloc()` backend to ordinary aligned heap allocation
+  and free, disabling page locking and wipe-on-release while preserving the
+  public container types. `dealloc()` in the default build
   wipes a block before reuse, keeps its page protected while another block is
   live, then wipes the complete page, unlocks a standard-page mapping when
-  needed, and releases the last block. The explicit power-of-two alignment lets
-  callers place SIMD-friendly
+  needed, and releases the last block. The no-alignment overload provides at
+  least 16-byte alignment, and explicit power-of-two alignment lets callers place SIMD-friendly
   state directly in protected storage; `make<T>()` uses `alignof(T)` and runs
   the destructor through a `shared_ptr` deleter.
 
   Every asymmetric and KEM private-key object is constructed with
   `CSecure::make()`. This protects inline fields, including the Ed25519,
-  Ed448, and X25519 secret arrays, for the object's lifetime. It does not move
-  storage owned indirectly by `COctet`, `TArray`, `CBigNum`, or another heap
-  container into the locked page; protected allocators for those payloads are
-  tracked separately in the security roadmap.
+  Ed448, and X25519 secret arrays, for the object's lifetime. ML-DSA and ML-KEM
+  retain their encoded private keys in `CSecureOctet`; their generation buffers
+  use `CSecureBuffer`. Symmetric raw keys use `CSecureOctet`, AES/ARIA schedules
+  use `TSecureArray`, and CBC/RSA transform buffering uses `CSecureBuffer` where
+  plaintext can be retained. Storage owned indirectly by a default `COctet` or
+  `TArray`, `CBigNum`, or another ordinary container remains outside the locked
+  page.
 
   `zero()` clears a buffer through a volatile function pointer to `memset`,
   so the call cannot be proven ineffective and therefore cannot be removed

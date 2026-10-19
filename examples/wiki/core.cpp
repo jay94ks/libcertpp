@@ -9,6 +9,10 @@ void exampleSVersion() {
     if (lib != HEADER_VERSION) {
         // built against one version of the headers, linked against another
     }
+
+    if (!lib.isSecureMemory()) {
+        // this library was built with ordinary heap-backed CSecure allocations
+    }
 }
 
 // === TArray ===

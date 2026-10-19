@@ -66,9 +66,9 @@ namespace crypto {
         ESymPaddings _padding;
         BlockFn _blockFn;
         BulkBlockFn _bulkBlockFn;   // --> empty when the cipher offers no bulk path.
-        CBuffer _chain;      // --> current chaining value; IV until the first block.
-        CBuffer _buffer;     // --> input not yet consumed.
-        CBuffer _scratch;    // --> one block of scratch space, reused per block.
+        CSecureBuffer _chain;      // --> current chaining value; IV until the first block.
+        CSecureBuffer _buffer;     // --> input not yet consumed.
+        CSecureBuffer _scratch;    // --> one block of scratch space, reused per block.
 
         ERetCode processBuffered(bool final, SByteSpan& output);
 

@@ -1,5 +1,5 @@
-// CSecure: locked page-backed allocation, zeroization that survives the optimizer, and
-// constant-time compare/select.
+// CSecure: selectable protected/ordinary allocation, zeroization that survives the optimizer,
+// and constant-time compare/select.
 //
 // What a test can and cannot establish here is worth being explicit about. The functional
 // contracts below -- which mask comes back, which bytes land where, that a buffer ends up zeroed
@@ -89,6 +89,7 @@ TEST_CASE("CSecure::alloc validates arguments and honors explicit alignment") {
     CHECK(CSecure::dealloc(nullptr) == ERET_OK);
 }
 
+#if !defined(CERTPP_TEST_SECURE_MEMORY_DISABLED)
 TEST_CASE("CSecure::alloc splits a locked page and wipes a returned block before reuse") {
     void* anchor = nullptr;
     void* secret = nullptr;
@@ -115,6 +116,16 @@ TEST_CASE("CSecure::alloc splits a locked page and wipes a returned block before
     CHECK(CSecure::dealloc(reused) == ERET_OK);
     CHECK(CSecure::dealloc(anchor) == ERET_OK);
 }
+#else
+TEST_CASE("CSecure::alloc uses the ordinary aligned backend when secure memory is disabled") {
+    void* block = nullptr;
+    REQUIRE(CSecure::alloc(&block, 64, 32) == ERET_OK);
+    REQUIRE(block != nullptr);
+    CHECK(reinterpret_cast<std::uintptr_t>(block) % 32 == 0);
+    std::memset(block, 0x5A, 64);
+    CHECK(CSecure::dealloc(block) == ERET_OK);
+}
+#endif
 
 TEST_CASE("CSecure::make aligns, constructs, and destroys its object") {
     int destructions = 0;

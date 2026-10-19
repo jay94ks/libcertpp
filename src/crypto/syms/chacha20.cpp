@@ -152,7 +152,10 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
 
-        CBuffer raw(CHACHA20_KEY_BYTES);
+        CSecureBuffer raw(CHACHA20_KEY_BYTES);
+        if (raw.size() != CHACHA20_KEY_BYTES) {
+            return ERET_NOMEM;
+        }
 
         ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
@@ -170,7 +173,11 @@ namespace crypto {
             return ERET_KEY_SIZE;
         }
         try {
-            out = std::make_shared<SymRawKey>(ESYM_CHACHA20, COctet(keyData));
+            out = std::make_shared<SymRawKey>(ESYM_CHACHA20, keyData);
+            if (out->keySize() != keyData.size) {
+                out.reset();
+                return ERET_NOMEM;
+            }
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;
         }

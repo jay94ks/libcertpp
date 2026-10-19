@@ -120,7 +120,28 @@ namespace crypto {
          * @param nr Receives the round count.
          * @return true on success.
          */
-        static bool expandKey(const uint8_t* key, size_t keyBytes, TArray<uint8_t>& roundKeys, uint32_t& nr);
+        template<typename TAllocator>
+        static bool expandKey(
+            const uint8_t* key, size_t keyBytes, TArray<uint8_t, TAllocator>& roundKeys,
+            uint32_t& nr
+        ) {
+            const uint32_t rounds =
+                (keyBytes == 16) ? 12 : (keyBytes == 24) ? 14 : (keyBytes == 32) ? 16 : 0;
+            if (rounds == 0) {
+                nr = 0;
+                return false;
+            }
+
+            if (!roundKeys.resize(16 * (rounds + 1))) {
+                nr = 0;
+                return false;
+            }
+            if (!expandKey(key, keyBytes, roundKeys.begin(), nr)) {
+                roundKeys.clear();
+                return false;
+            }
+            return true;
+        }
 
         /**
          * Encrypts one block (RFC 5794 2.3.1).

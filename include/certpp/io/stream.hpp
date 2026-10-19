@@ -168,7 +168,6 @@ namespace certpp {
          * @return ERetCode indicating success or failure.
          */
         virtual ERetCode close() = 0;
-        
     };
 }
 
