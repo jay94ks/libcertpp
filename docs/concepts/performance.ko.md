@@ -311,6 +311,12 @@ Montgomery reduction에서도 지속되는 ADX chain 두 개를 다시 사용합
 줄었고 OpenSSL 대비 비율 중앙값은 0.330배에서 0.396배로 높아졌습니다. 같은 실행의 검증 비율
 중앙값은 0.675배였습니다. 이 CRT 전용 kernel은 공개 지수 산술을 바꾸지 않습니다. 아래
 Windows 표는 동일 구성의 전체 목록을 계속 유지합니다.
+일반 고정 폭 Montgomery dispatcher도 같은 지속 dual-carry 설계를 16 및 32-limb 피연산자에
+선택합니다. 32-limb 경로는 runtime BMI2/ADX gate와 portable fallback을 유지하면서 RSA-2048
+공개 지수승을 가속합니다. 한 코어에 고정한 7회 교대 실행에서 검증 중앙값은 0.024에서
+0.017 ms로 29.2% 줄고 OpenSSL 대비 비율 중앙값은 0.678배에서 0.913배로 높아졌습니다.
+빨라진 공개 재암호화 검사로 서명 중앙값도 0.689에서 0.646 ms로 6.2% 줄었으며 비율
+중앙값은 0.414배였습니다.
 
 | 연산(별도 표기가 없으면 64 KiB) | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|

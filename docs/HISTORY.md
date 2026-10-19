@@ -159,6 +159,12 @@ the scalar-product and accumulator carries in CF and OF; its reduction pass reus
 the modulus product and shifted accumulator. The existing five-bit paired exponent schedule and CRT
 fault check remain unchanged. Eleven alternating pinned runs reduced the RSA-2048 signing median
 from 0.778 to 0.626 ms (19.5%) and raised the paired OpenSSL ratio median from 0.330 to 0.396.
+The same persistent dual-carry schedule now covers the ordinary fixed-width Montgomery path at 16
+and 32 limbs. This gives RSA-2048 public operations a full-width kernel while retaining runtime
+BMI2/ADX dispatch and the existing portable fallback. Seven alternating pinned runs reduced the
+verification median from 0.024 to 0.017 ms (29.2%) and raised its paired OpenSSL ratio median from
+0.678 to 0.913. The private operation's public re-encryption check also reduced the signing median
+from 0.689 to 0.646 ms (6.2%).
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

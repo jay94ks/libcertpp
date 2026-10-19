@@ -311,6 +311,12 @@ alternating runs against the pre-change binary reduced the RSA-2048 signing medi
 0.626 ms, a 19.5% latency reduction, while the paired OpenSSL ratio median rose from 0.330 to 0.396.
 The same runs measured a 0.675 verification ratio; public-exponent arithmetic is unchanged by this
 CRT-only kernel. The pinned Windows table remains the complete same-configuration inventory.
+The ordinary fixed-width Montgomery dispatcher now selects the same persistent dual-carry design
+for both 16- and 32-limb operands. The 32-limb path accelerates RSA-2048 public exponentiation while
+retaining the runtime BMI2/ADX gate and portable fallback. Seven alternating pinned runs reduced
+the verification median from 0.024 to 0.017 ms, a 29.2% latency reduction, and raised its paired
+OpenSSL ratio median from 0.678 to 0.913. The faster public re-encryption check also reduced the
+signing median from 0.689 to 0.646 ms (6.2%), with a 0.414 ratio median.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
