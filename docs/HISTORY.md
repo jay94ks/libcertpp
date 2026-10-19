@@ -165,6 +165,15 @@ BMI2/ADX dispatch and the existing portable fallback. Seven alternating pinned r
 verification median from 0.024 to 0.017 ms (29.2%) and raised its paired OpenSSL ratio median from
 0.678 to 0.913. The private operation's public re-encryption check also reduced the signing median
 from 0.689 to 0.646 ms (6.2%).
+A trial that replaced the paired CRT schedule with two separate sliding-window exponentiations
+measured 0.622/0.620 ms and was removed. The accepted private path instead pairs two radix-52
+Almost Montgomery multiplications in three AVX-512 IFMA ZMM blocks, uses a six-bit fixed window,
+seeds from the top window, reads packed exponent words directly, and prepares the key's radix-52
+constants once. Eleven focused current-source runs measured RSA-2048 sign/verify medians of
+0.285/0.017 ms against OpenSSL's 0.257/0.016 ms, with paired ratio medians of 0.905/0.910. The
+runtime feature gate, non-IFMA fallbacks, and full CRT re-encryption fault check remain. This closed
+the last direct OpenSSL performance gap; unavailable OpenSSL rows retain documented internal or
+cross-toolchain baselines, while automatic CI and the platform matrix remain future roadmap work.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

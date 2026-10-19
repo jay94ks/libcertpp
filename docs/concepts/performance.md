@@ -21,6 +21,13 @@ implement: they do ECDSA and not ECDH.
 
 ## Current optimization checks
 
+The OpenSSL 90% program reached its completion gate on 2026-10-19. Every directly comparable
+operation now has a matched median ratio of at least 0.90. Streebog, GOST signatures, binary-curve
+ECDH, and XChaCha20-Poly1305 remain explicit unavailable rows for the tested OpenSSL 3.6.4
+default/legacy providers; the internal GCC/MSVC comparisons below retain their alternative
+baselines. Automatic CI and the broader platform matrix remain separate future work in
+[the roadmap](../PLANS.md#automated-ci-and-platform-matrix).
+
 ### Current AEAD comparison
 
 The AEAD rows were refreshed on 2026-10-18 on the same i7-11370H host under Windows, using
@@ -275,16 +282,15 @@ sign/verify ratios of 0.310/0.628. DSA contexts now prepare position-dependent f
 tables for the bound generator and public key. Seven pinned runs measured DSA sign/verify medians
 of 0.196/0.263 ms against OpenSSL's 0.330/0.289 ms. The paired median ratios are 1.667/1.103, with
 per-run ranges of 1.603--1.726 and 1.083--1.143. Context binding builds 1,920 residues before the
-timed repeated-operation rows; the table below retains the pinned Windows DSA key-generation row
-because randomized prime search varied from 0.573 to 1.838 of OpenSSL in these seven runs and this
-optimization does not change key generation. RSA prime generation now chooses one random seed and
+timed repeated-operation rows. This fixed-base optimization does not change key generation, whose
+randomized prime search varied from 0.573 to 1.838 of OpenSSL in these seven runs. A later focused
+key-generation campaign supplies the DSA row below. RSA prime generation now chooses one random seed and
 walks nearby odd candidates while reusing the seed's grouped small-prime residues. It preserves the
 existing 20 Miller--Rabin rounds. Against a separately built pre-change `HEAD`, 15 pinned WSL Clang
 18 runs reduced certpp RSA-2048 key generation from a 63.937 ms median to 54.471 ms, a 14.8%
-improvement. The current runs had a 1.824 median OpenSSL ratio, but the table retains the latest
-internally consistent pinned Windows RSA snapshot until that configuration is remeasured; randomized
-prime search makes cross-implementation key-generation ratios substantially noisier than the
-within-implementation before/after result.
+improvement. The current runs had a 1.824 median OpenSSL ratio, which the table reports with the
+certpp median. Randomized prime search makes cross-implementation key-generation ratios
+substantially noisier than the within-implementation before/after result.
 DSA parameter generation now applies the same residue-reuse idea to its constrained search: it
 walks a bounded `p += 2q` progression, updates grouped small-prime residues through every candidate,
 and uses a compile-time table of primes below 4096. The accepted `p`'s Montgomery context is reused
@@ -293,13 +299,13 @@ both independent 20-round Miller--Rabin checks remain in place. Twenty-one alter
 the certpp median from 225.673 to 178.276 ms. Fifteen additional current runs measured a 158.894 ms
 median; the combined 36 current runs have a 164.646 ms certpp median and a 0.9015 paired OpenSSL
 ratio median. This reaches the gate, but the wide randomized distribution makes the row especially
-remeasurement-sensitive. The pinned Windows table remains the last complete same-configuration
-inventory rather than mixing this WSL row into it.
+remeasurement-sensitive. The table reports this current WSL result alongside the latest accepted
+measurements for the other operations; the paragraphs identify each row's configuration.
 RSA CRT exponentiation now advances the two 1024-bit branches through one fixed five-bit schedule
 and interleaves their independent CIOS carry chains on the same thread. Fifteen alternating pinned
 WSL Clang 18 runs reduced the certpp RSA-2048 signing median from 0.811 to 0.772 ms, a 4.8%
-latency reduction. The paired-run median OpenSSL ratio rose to 0.324. The pinned Windows table below
-remains the last complete same-configuration snapshot until all three RSA rows are remeasured there.
+latency reduction. The paired-run median OpenSSL ratio rose to 0.324. This was an intermediate
+result superseded by the current IFMA measurement below.
 The public-exponent path now combines its last odd-base multiply with the Montgomery-domain exit.
 Eleven alternating pinned runs reduced verification from 0.024 to 0.023 ms and raised its median
 OpenSSL ratio from 0.640 to 0.676; the private operation's re-encryption check gave signing a smaller
@@ -310,13 +316,23 @@ The 1024-bit CRT multiplier now keeps its product and accumulator carries in CF 
 alternating runs against the pre-change binary reduced the RSA-2048 signing median from 0.778 to
 0.626 ms, a 19.5% latency reduction, while the paired OpenSSL ratio median rose from 0.330 to 0.396.
 The same runs measured a 0.675 verification ratio; public-exponent arithmetic is unchanged by this
-CRT-only kernel. The pinned Windows table remains the complete same-configuration inventory.
+CRT-only kernel. This was an intermediate result superseded by the current IFMA measurement below.
 The ordinary fixed-width Montgomery dispatcher now selects the same persistent dual-carry design
 for both 16- and 32-limb operands. The 32-limb path accelerates RSA-2048 public exponentiation while
 retaining the runtime BMI2/ADX gate and portable fallback. Seven alternating pinned runs reduced
 the verification median from 0.024 to 0.017 ms, a 29.2% latency reduction, and raised its paired
 OpenSSL ratio median from 0.678 to 0.913. The faster public re-encryption check also reduced the
 signing median from 0.689 to 0.646 ms (6.2%), with a 0.414 ratio median.
+The final private-operation step uses a paired 20-digit radix-52 Montgomery kernel selected only
+when AVX-512F, AVX-512VL, and AVX512-IFMA are available. Three ZMM blocks advance both 1024-bit CRT
+branches through one six-bit fixed-window schedule. The top window seeds the accumulator directly,
+exponent bits are read from a packed 64-bit copy, and each private key prepares its radix-52
+moduli, R-squared values, and Montgomery ones once; those key-related arrays are zeroized with the
+key. Other CPUs and builds with AVX-512 or SIMD disabled retain the dual-carry or portable paths.
+In eleven focused WSL2 Clang 22.1.8 Release runs against OpenSSL 3.6.4, RSA-2048 signing had
+per-side medians of 0.285/0.257 ms and a paired ratio median of 0.905. Verification had
+0.017/0.016 ms medians and a 0.910 paired ratio. The existing CRT re-encryption fault check is
+unchanged.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
@@ -342,10 +358,10 @@ signing median from 0.689 to 0.646 ms (6.2%), with a 0.414 ratio median.
 | ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
 | ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
 | ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
-| RSA-2048 keygen | 58.127 ms | 21.197 ms | 0.393x |
-| RSA-2048 sign | 0.805 ms | 0.255 ms | 0.316x |
-| RSA-2048 verify | 0.025 ms | 0.016 ms | 0.668x |
-| DSA-2048 keygen, including fresh parameters | 193.242 ms | 129.481 ms | 0.594x |
+| RSA-2048 keygen | 54.471 ms | randomized | 1.824x |
+| RSA-2048 sign | 0.285 ms | 0.257 ms | 0.905x |
+| RSA-2048 verify | 0.017 ms | 0.016 ms | 0.910x |
+| DSA-2048 keygen, including fresh parameters | 164.646 ms | randomized | 0.9015x |
 | DSA-2048 sign | 0.196 ms | 0.330 ms | 1.667x |
 | DSA-2048 verify | 0.263 ms | 0.289 ms | 1.103x |
 | GOST R 34.10-2012 |  | unavailable |  |
@@ -514,11 +530,10 @@ exponents produced most of the reduction. The small-prime sieve now groups prime
 that fit 32 bits, scans the candidate once per product, and tests the product remainder against
 its factors. On a fixed 2048-bit composite whose first divisor in the sieve is 997, the nine-run
 median fell from 86.687 to 16.790 microseconds per call, a 5.16x local before/after improvement.
-The original eleven-run OpenSSL comparison and the current focused DSA refresh are reported above.
-Key generation still varies with how quickly random prime candidates are found, while repeated
-signing and verification are stable. DSA's repeated-operation rows now exceed the gate; its key
-generation and the RSA rows remain tracked in
-[the performance roadmap](../roadmap/performance.md#openssl-90-program).
+The current focused RSA and DSA refreshes are reported above. Key generation still varies with how
+quickly random prime candidates are found, while repeated signing and verification are stable.
+The paired medians for RSA key generation and every repeated RSA/DSA operation now exceed the
+gate. The step-by-step work and rejected alternatives are retained in [History](../HISTORY.md).
 
 ### Current ML-KEM comparison
 

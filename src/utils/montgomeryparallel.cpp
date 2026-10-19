@@ -1,6 +1,12 @@
 #include "montgomeryparallel.hpp"
 #include <cstring>
 
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && defined(__x86_64__) && \
+    !defined(CERTPP_DISABLE_HWACCEL_SIMD) && !defined(CERTPP_DISABLE_HWACCEL_AVX512)
+#include <immintrin.h>
+#define CERTPP_MONTGOMERY_PAIR_IFMA 1
+#endif
+
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64))
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -133,6 +139,286 @@ namespace certpp {
 #if defined(__clang__) && defined(__SIZEOF_INT128__) && \
     (defined(__x86_64__) || defined(_M_X64))
     namespace {
+
+#if defined(CERTPP_MONTGOMERY_PAIR_IFMA)
+        constexpr size_t IFMA_DIGITS = 20;
+        constexpr uint64_t IFMA_MASK = (uint64_t(1) << 52) - 1;
+
+        bool hasIfmaPair() {
+            static const bool supported = [] {
+                __builtin_cpu_init();
+                return __builtin_cpu_supports("avx512f")
+                    && __builtin_cpu_supports("avx512vl")
+                    && __builtin_cpu_supports("avx512ifma");
+            }();
+            return supported;
+        }
+
+        void wideTo52(const uint64_t* input, uint64_t* output) {
+            for (size_t i = 0; i < IFMA_DIGITS; ++i) {
+                const size_t bit = i * 52;
+                const size_t word = bit / 64;
+                const size_t shift = bit % 64;
+                uint64_t value = input[word] >> shift;
+                if (shift != 0 && word + 1 < 16) {
+                    value |= input[word + 1] << (64 - shift);
+                }
+                output[i] = value & IFMA_MASK;
+            }
+        }
+
+        void words52ToWide(const uint64_t* input, uint64_t* output) {
+            std::memset(output, 0, 16 * sizeof(uint64_t));
+            for (size_t i = 0; i < IFMA_DIGITS; ++i) {
+                const size_t bit = i * 52;
+                const size_t word = bit / 64;
+                const size_t shift = bit % 64;
+                if (word < 16) {
+                    output[word] |= input[i] << shift;
+                }
+                if (shift > 12 && word + 1 < 16) {
+                    output[word + 1] |= input[i] >> (64 - shift);
+                }
+            }
+        }
+
+        void reduce52(uint64_t* value, const uint64_t* modulus) {
+            bool subtract = true;
+            for (size_t i = IFMA_DIGITS; i-- > 0; ) {
+                if (value[i] != modulus[i]) {
+                    subtract = value[i] > modulus[i];
+                    break;
+                }
+            }
+            if (!subtract) {
+                return;
+            }
+
+            uint64_t borrow = 0;
+            for (size_t i = 0; i < IFMA_DIGITS; ++i) {
+                const uint64_t subtrahend = modulus[i] + borrow;
+                const uint64_t next = value[i] - subtrahend;
+                borrow = value[i] < subtrahend;
+                value[i] = next & IFMA_MASK;
+            }
+        }
+
+        __attribute__((target("avx2,avx512f,avx512vl,avx512ifma,bmi2")))
+        void montgomeryPair52(
+            const uint64_t* firstA, const uint64_t* firstB,
+            const uint64_t* firstModulus, uint64_t firstN0inv,
+            uint64_t* firstOut,
+            const uint64_t* secondA, const uint64_t* secondB,
+            const uint64_t* secondModulus, uint64_t secondN0inv,
+            uint64_t* secondOut
+        ) {
+            using Vec = __m512i;
+            Vec firstT[3];
+            Vec secondT[3];
+            const Vec zero = _mm512_setzero_si512();
+            for (size_t block = 0; block < 3; ++block) {
+                firstT[block] = zero;
+                secondT[block] = zero;
+            }
+
+            for (size_t i = 0; i < IFMA_DIGITS; ++i) {
+                const Vec firstBi = _mm512_set1_epi64(firstB[i]);
+                const Vec secondBi = _mm512_set1_epi64(secondB[i]);
+                Vec firstPreviousValue = zero;
+                Vec secondPreviousValue = zero;
+
+#pragma clang loop unroll(full)
+                for (size_t block = 0; block < 3; ++block) {
+                    const __mmask8 mask = block == 2 ? __mmask8(0x0f) : __mmask8(0xff);
+                    const Vec firstValue = _mm512_maskz_loadu_epi64(
+                        mask, firstA + block * 8);
+                    const Vec secondValue = _mm512_maskz_loadu_epi64(
+                        mask, secondA + block * 8);
+                    const Vec firstShifted = _mm512_alignr_epi64(
+                        firstValue, firstPreviousValue, 7);
+                    const Vec secondShifted = _mm512_alignr_epi64(
+                        secondValue, secondPreviousValue, 7);
+                    firstT[block] = _mm512_madd52hi_epu64(
+                        firstT[block], firstShifted, firstBi);
+                    secondT[block] = _mm512_madd52hi_epu64(
+                        secondT[block], secondShifted, secondBi);
+                    firstT[block] = _mm512_madd52lo_epu64(
+                        firstT[block], firstValue, firstBi);
+                    secondT[block] = _mm512_madd52lo_epu64(
+                        secondT[block], secondValue, secondBi);
+                    firstPreviousValue = firstValue;
+                    secondPreviousValue = secondValue;
+                }
+
+                const uint64_t firstLow = uint64_t(_mm_cvtsi128_si64(
+                    _mm512_castsi512_si128(firstT[0])));
+                const uint64_t secondLow = uint64_t(_mm_cvtsi128_si64(
+                    _mm512_castsi512_si128(secondT[0])));
+                const uint64_t firstMultiplier = (firstLow * firstN0inv) & IFMA_MASK;
+                const uint64_t secondMultiplier = (secondLow * secondN0inv) & IFMA_MASK;
+                const Vec firstMi = _mm512_set1_epi64(firstMultiplier);
+                const Vec secondMi = _mm512_set1_epi64(secondMultiplier);
+                firstPreviousValue = zero;
+                secondPreviousValue = zero;
+
+#pragma clang loop unroll(full)
+                for (size_t block = 0; block < 3; ++block) {
+                    const __mmask8 mask = block == 2 ? __mmask8(0x0f) : __mmask8(0xff);
+                    const Vec firstValue = _mm512_maskz_loadu_epi64(
+                        mask, firstModulus + block * 8);
+                    const Vec secondValue = _mm512_maskz_loadu_epi64(
+                        mask, secondModulus + block * 8);
+                    const Vec firstShifted = _mm512_alignr_epi64(
+                        firstValue, firstPreviousValue, 7);
+                    const Vec secondShifted = _mm512_alignr_epi64(
+                        secondValue, secondPreviousValue, 7);
+                    firstT[block] = _mm512_madd52hi_epu64(
+                        firstT[block], firstShifted, firstMi);
+                    secondT[block] = _mm512_madd52hi_epu64(
+                        secondT[block], secondShifted, secondMi);
+                    firstT[block] = _mm512_madd52lo_epu64(
+                        firstT[block], firstValue, firstMi);
+                    secondT[block] = _mm512_madd52lo_epu64(
+                        secondT[block], secondValue, secondMi);
+                    firstPreviousValue = firstValue;
+                    secondPreviousValue = secondValue;
+                }
+
+                const uint64_t firstQuotient = uint64_t(_mm_cvtsi128_si64(
+                    _mm512_castsi512_si128(firstT[0]))) >> 52;
+                const uint64_t secondQuotient = uint64_t(_mm_cvtsi128_si64(
+                    _mm512_castsi512_si128(secondT[0]))) >> 52;
+
+                firstT[0] = _mm512_alignr_epi64(firstT[1], firstT[0], 1);
+                firstT[1] = _mm512_alignr_epi64(firstT[2], firstT[1], 1);
+                firstT[2] = _mm512_alignr_epi64(zero, firstT[2], 1);
+                secondT[0] = _mm512_alignr_epi64(secondT[1], secondT[0], 1);
+                secondT[1] = _mm512_alignr_epi64(secondT[2], secondT[1], 1);
+                secondT[2] = _mm512_alignr_epi64(zero, secondT[2], 1);
+                firstT[0] = _mm512_add_epi64(
+                    firstT[0], _mm512_set_epi64(
+                        0, 0, 0, 0, 0, 0, 0, firstQuotient));
+                secondT[0] = _mm512_add_epi64(
+                    secondT[0], _mm512_set_epi64(
+                        0, 0, 0, 0, 0, 0, 0, secondQuotient));
+            }
+
+            alignas(64) uint64_t firstCoefficients[IFMA_DIGITS];
+            alignas(64) uint64_t secondCoefficients[IFMA_DIGITS];
+            _mm512_store_si512(firstCoefficients, firstT[0]);
+            _mm512_store_si512(firstCoefficients + 8, firstT[1]);
+            _mm512_mask_storeu_epi64(firstCoefficients + 16, __mmask8(0x0f), firstT[2]);
+            _mm512_store_si512(secondCoefficients, secondT[0]);
+            _mm512_store_si512(secondCoefficients + 8, secondT[1]);
+            _mm512_mask_storeu_epi64(secondCoefficients + 16, __mmask8(0x0f), secondT[2]);
+
+            uint64_t firstCarry = 0;
+            uint64_t secondCarry = 0;
+            for (size_t i = 0; i < IFMA_DIGITS; ++i) {
+                const uint64_t firstValue = firstCoefficients[i] + firstCarry;
+                const uint64_t secondValue = secondCoefficients[i] + secondCarry;
+                firstOut[i] = firstValue & IFMA_MASK;
+                secondOut[i] = secondValue & IFMA_MASK;
+                firstCarry = firstValue >> 52;
+                secondCarry = secondValue >> 52;
+            }
+        }
+
+        bool modExpPair52(
+            const uint64_t* firstBase, const uint64_t* firstExponent, size_t firstExponentBits,
+            const uint64_t* firstModulus, const uint64_t* firstPrimeRr,
+            const uint64_t* firstOne, uint64_t firstN0inv,
+            uint64_t* firstOut,
+            const uint64_t* secondBase, const uint64_t* secondExponent, size_t secondExponentBits,
+            const uint64_t* secondModulus, const uint64_t* secondPrimeRr,
+            const uint64_t* secondOne, uint64_t secondN0inv,
+            uint64_t* secondOut
+        ) {
+            constexpr size_t WINDOW = 6;
+            constexpr size_t TABLE_SIZE = size_t(1) << WINDOW;
+            uint64_t firstBase52[IFMA_DIGITS], secondBase52[IFMA_DIGITS];
+            wideTo52(firstBase, firstBase52);
+            wideTo52(secondBase, secondBase52);
+
+            uint64_t firstTable[TABLE_SIZE * IFMA_DIGITS];
+            uint64_t secondTable[TABLE_SIZE * IFMA_DIGITS];
+            uint64_t ordinaryOne[IFMA_DIGITS] = { 0 };
+            ordinaryOne[0] = 1;
+            std::memcpy(firstTable, firstOne, IFMA_DIGITS * sizeof(uint64_t));
+            std::memcpy(secondTable, secondOne, IFMA_DIGITS * sizeof(uint64_t));
+            montgomeryPair52(
+                firstBase52, firstPrimeRr, firstModulus, firstN0inv,
+                firstTable + IFMA_DIGITS,
+                secondBase52, secondPrimeRr, secondModulus, secondN0inv,
+                secondTable + IFMA_DIGITS);
+            for (size_t i = 2; i < TABLE_SIZE; ++i) {
+                montgomeryPair52(
+                    firstTable + (i - 1) * IFMA_DIGITS, firstTable + IFMA_DIGITS,
+                    firstModulus, firstN0inv, firstTable + i * IFMA_DIGITS,
+                    secondTable + (i - 1) * IFMA_DIGITS, secondTable + IFMA_DIGITS,
+                    secondModulus, secondN0inv, secondTable + i * IFMA_DIGITS);
+            }
+
+            uint64_t firstValue[IFMA_DIGITS], secondValue[IFMA_DIGITS];
+            std::memcpy(firstValue, firstTable, sizeof(firstValue));
+            std::memcpy(secondValue, secondTable, sizeof(secondValue));
+            size_t cursor = firstExponentBits;
+            if (secondExponentBits > cursor) {
+                cursor = secondExponentBits;
+            }
+            size_t width = cursor % WINDOW;
+            if (width == 0 && cursor != 0) {
+                width = WINDOW;
+            }
+            if (cursor != 0) {
+                const size_t bottom = cursor - width;
+                size_t firstDigit = 0;
+                size_t secondDigit = 0;
+                for (size_t bit = cursor; bit-- > bottom; ) {
+                    firstDigit = (firstDigit << 1)
+                        | size_t((firstExponent[bit / 64] >> (bit % 64)) & 1);
+                    secondDigit = (secondDigit << 1)
+                        | size_t((secondExponent[bit / 64] >> (bit % 64)) & 1);
+                }
+                std::memcpy(
+                    firstValue, firstTable + firstDigit * IFMA_DIGITS, sizeof(firstValue));
+                std::memcpy(
+                    secondValue, secondTable + secondDigit * IFMA_DIGITS, sizeof(secondValue));
+                cursor = bottom;
+                width = cursor < WINDOW ? cursor : WINDOW;
+            }
+            while (cursor != 0) {
+                const size_t bottom = cursor - width;
+                size_t firstDigit = 0;
+                size_t secondDigit = 0;
+                for (size_t bit = cursor; bit-- > bottom; ) {
+                    firstDigit = (firstDigit << 1)
+                        | size_t((firstExponent[bit / 64] >> (bit % 64)) & 1);
+                    secondDigit = (secondDigit << 1)
+                        | size_t((secondExponent[bit / 64] >> (bit % 64)) & 1);
+                    montgomeryPair52(
+                        firstValue, firstValue, firstModulus, firstN0inv, firstValue,
+                        secondValue, secondValue, secondModulus, secondN0inv, secondValue);
+                }
+                montgomeryPair52(
+                    firstValue, firstTable + firstDigit * IFMA_DIGITS,
+                    firstModulus, firstN0inv, firstValue,
+                    secondValue, secondTable + secondDigit * IFMA_DIGITS,
+                    secondModulus, secondN0inv, secondValue);
+                cursor = bottom;
+                width = cursor < WINDOW ? cursor : WINDOW;
+            }
+
+            montgomeryPair52(
+                firstValue, ordinaryOne, firstModulus, firstN0inv, firstValue,
+                secondValue, ordinaryOne, secondModulus, secondN0inv, secondValue);
+            reduce52(firstValue, firstModulus);
+            reduce52(secondValue, secondModulus);
+            words52ToWide(firstValue, firstOut);
+            words52ToWide(secondValue, secondOut);
+            return true;
+        }
+#endif
 
         template<size_t Count>
         inline void finish(
@@ -312,6 +598,78 @@ namespace certpp {
     } // namespace
 #endif
 
+#if defined(CERTPP_MONTGOMERY_PAIR_IFMA)
+    /* Prepares the radix-52 constants shared by every private operation for one RSA key. */
+    void MontgomeryParallel::prepare(
+        const CMontgomery& firstMontgomery,
+        const CMontgomery& secondMontgomery,
+        Prepared& prepared
+    ) {
+        constexpr size_t COUNT = 16;
+        prepared.valid = false;
+        if (!hasIfmaPair()
+            || !firstMontgomery._valid || !secondMontgomery._valid
+            || firstMontgomery._wideCount != COUNT || secondMontgomery._wideCount != COUNT) {
+            return;
+        }
+
+        auto packWide = [](const CBigNum& value, uint64_t* out) {
+            for (size_t i = 0; i < COUNT; ++i) {
+                const size_t lo = 2 * i;
+                uint64_t digit = lo < value._limbs.size() ? uint64_t(value._limbs[lo]) : 0;
+                if (lo + 1 < value._limbs.size()) {
+                    digit |= uint64_t(value._limbs[lo + 1]) << 32;
+                }
+                out[i] = digit;
+            }
+        };
+
+        uint64_t firstWide[COUNT], secondWide[COUNT];
+        packWide(firstMontgomery._m, firstWide);
+        packWide(secondMontgomery._m, secondWide);
+        wideTo52(firstWide, prepared.firstModulus);
+        wideTo52(secondWide, prepared.secondModulus);
+
+        packWide(firstMontgomery._rr, firstWide);
+        packWide(secondMontgomery._rr, secondWide);
+        uint64_t firstRr52[IFMA_DIGITS], secondRr52[IFMA_DIGITS];
+        wideTo52(firstWide, firstRr52);
+        wideTo52(secondWide, secondRr52);
+        montgomeryPair52(
+            firstRr52, firstRr52, prepared.firstModulus, firstMontgomery._n0inv64,
+            prepared.firstRr,
+            secondRr52, secondRr52, prepared.secondModulus, secondMontgomery._n0inv64,
+            prepared.secondRr);
+
+        uint64_t coefficient[IFMA_DIGITS] = { 0 };
+        coefficient[1] = uint64_t(1) << 12;
+        montgomeryPair52(
+            prepared.firstRr, coefficient, prepared.firstModulus,
+            firstMontgomery._n0inv64, prepared.firstRr,
+            prepared.secondRr, coefficient, prepared.secondModulus,
+            secondMontgomery._n0inv64, prepared.secondRr);
+
+        uint64_t ordinaryOne[IFMA_DIGITS] = { 0 };
+        ordinaryOne[0] = 1;
+        montgomeryPair52(
+            ordinaryOne, prepared.firstRr, prepared.firstModulus,
+            firstMontgomery._n0inv64, prepared.firstOne,
+            ordinaryOne, prepared.secondRr, prepared.secondModulus,
+            secondMontgomery._n0inv64, prepared.secondOne);
+        prepared.valid = true;
+    }
+#else
+    void MontgomeryParallel::prepare(
+        const CMontgomery& firstMontgomery,
+        const CMontgomery& secondMontgomery,
+        Prepared& prepared
+    ) {
+        (void)firstMontgomery;
+        (void)secondMontgomery;
+        prepared.valid = false;
+    }
+#endif
+
     /* Advances two 1024-bit exponentiations through one fixed-window schedule. */
     bool MontgomeryParallel::modExp(
         const CMontgomery& firstMontgomery,
@@ -321,7 +679,8 @@ namespace certpp {
         const CMontgomery& secondMontgomery,
         const CBigNum& secondBase,
         const CBigNum& secondExponent,
-        CBigNum& secondResult
+        CBigNum& secondResult,
+        const Prepared* prepared
     ) {
 #if defined(__clang__) && defined(__SIZEOF_INT128__) && \
     (defined(__x86_64__) || defined(_M_X64))
@@ -334,6 +693,71 @@ namespace certpp {
             || secondExponent.bitLength() > COUNT * 64) {
             return false;
         }
+
+#if defined(CERTPP_MONTGOMERY_PAIR_IFMA)
+        if (hasIfmaPair()) {
+            Prepared localPrepared;
+            if (prepared == nullptr || !prepared->valid) {
+                prepare(firstMontgomery, secondMontgomery, localPrepared);
+                prepared = &localPrepared;
+            }
+            if (!prepared->valid) {
+                return false;
+            }
+
+            CBigNum firstReduced(firstBase);
+            CBigNum secondReduced(secondBase);
+            if (firstMontgomery.needsReduce(firstReduced)) {
+                firstReduced.mod(firstMontgomery._m);
+            }
+            if (secondMontgomery.needsReduce(secondReduced)) {
+                secondReduced.mod(secondMontgomery._m);
+            }
+
+            auto packWide = [](const CBigNum& value, uint64_t* out) {
+                for (size_t i = 0; i < COUNT; ++i) {
+                    const size_t lo = 2 * i;
+                    uint64_t digit = lo < value._limbs.size() ? uint64_t(value._limbs[lo]) : 0;
+                    if (lo + 1 < value._limbs.size()) {
+                        digit |= uint64_t(value._limbs[lo + 1]) << 32;
+                    }
+                    out[i] = digit;
+                }
+            };
+            auto unpackWide = [](const uint64_t* value, CBigNum& out) {
+                if (!out._limbs.resize(2 * COUNT)) {
+                    return false;
+                }
+                for (size_t i = 0; i < COUNT; ++i) {
+                    out._limbs[2 * i] = uint32_t(value[i]);
+                    out._limbs[2 * i + 1] = uint32_t(value[i] >> 32);
+                }
+                size_t used = out._limbs.size();
+                while (used != 0 && out._limbs[used - 1] == 0) {
+                    --used;
+                }
+                return out._limbs.resize(used);
+            };
+
+            uint64_t firstBaseWide[COUNT], secondBaseWide[COUNT];
+            uint64_t firstExponentWide[COUNT], secondExponentWide[COUNT];
+            uint64_t firstResultWide[COUNT], secondResultWide[COUNT];
+            packWide(firstReduced, firstBaseWide);
+            packWide(secondReduced, secondBaseWide);
+            packWide(firstExponent, firstExponentWide);
+            packWide(secondExponent, secondExponentWide);
+            if (modExpPair52(
+                    firstBaseWide, firstExponentWide, firstExponent.bitLength(),
+                    prepared->firstModulus, prepared->firstRr, prepared->firstOne,
+                    firstMontgomery._n0inv64, firstResultWide,
+                    secondBaseWide, secondExponentWide, secondExponent.bitLength(),
+                    prepared->secondModulus, prepared->secondRr, prepared->secondOne,
+                    secondMontgomery._n0inv64, secondResultWide)) {
+                return unpackWide(firstResultWide, firstResult)
+                    && unpackWide(secondResultWide, secondResult);
+            }
+        }
+#endif
 
         const CBigNum firstMont = firstMontgomery.toMont(firstBase);
         const CBigNum secondMont = secondMontgomery.toMont(secondBase);
@@ -394,6 +818,21 @@ namespace certpp {
         size_t width = cursor % WINDOW;
         if (width == 0 && cursor != 0) {
             width = WINDOW;
+        }
+        if (cursor != 0) {
+            const size_t bottom = cursor - width;
+            size_t firstDigit = 0;
+            size_t secondDigit = 0;
+            for (size_t bit = cursor; bit-- > bottom; ) {
+                firstDigit = (firstDigit << 1) | size_t(firstExponent.testBit(bit));
+                secondDigit = (secondDigit << 1) | size_t(secondExponent.testBit(bit));
+            }
+            std::memcpy(
+                firstValue, firstTable + firstDigit * COUNT, sizeof(firstValue));
+            std::memcpy(
+                secondValue, secondTable + secondDigit * COUNT, sizeof(secondValue));
+            cursor = bottom;
+            width = cursor < WINDOW ? cursor : WINDOW;
         }
 
         while (cursor != 0) {

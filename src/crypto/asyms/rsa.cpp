@@ -73,6 +73,7 @@ namespace crypto {
         private:
             CBigNum _n, _e, _d, _p, _q, _dp, _dq, _qInv;
             CMontgomery _montgomeryN, _montgomeryP, _montgomeryQ;
+            MontgomeryParallel::Prepared _parallelPrepared;
             IPublicKeyPtr _publicKey;
 
         public:
@@ -86,6 +87,12 @@ namespace crypto {
                   _publicKey(std::move(publicKey))
             {
                 algorithm(EASYM_RSA);
+                MontgomeryParallel::prepare(_montgomeryP, _montgomeryQ, _parallelPrepared);
+            }
+
+            ~RsaPrivateKey() override {
+                CSecure::zero(SByteSpan(
+                    reinterpret_cast<uint8_t*>(&_parallelPrepared), sizeof(_parallelPrepared)));
             }
 
             SKeySize keySize() const override {
@@ -147,6 +154,9 @@ namespace crypto {
             const CMontgomery& montgomeryN() const { return _montgomeryN; }
             const CMontgomery& montgomeryP() const { return _montgomeryP; }
             const CMontgomery& montgomeryQ() const { return _montgomeryQ; }
+            const MontgomeryParallel::Prepared& parallelPrepared() const {
+                return _parallelPrepared;
+            }
         };
 
         class RsaContext : public IAsymmetricContext, public std::enable_shared_from_this<RsaContext> {
@@ -460,7 +470,7 @@ namespace crypto {
                     CBigNum m2;
                     if (!MontgomeryParallel::modExp(
                             priv.montgomeryP(), x, dp, m1,
-                            priv.montgomeryQ(), x, dq, m2)) {
+                            priv.montgomeryQ(), x, dq, m2, &priv.parallelPrepared())) {
                         m1 = modExpCached(x, dp, p, priv.montgomeryP());
                         m2 = modExpCached(x, dq, q, priv.montgomeryQ());
                     }
