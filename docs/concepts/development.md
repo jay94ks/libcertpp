@@ -89,7 +89,7 @@ tests/
       mlkemcodec.cpp                 # MlKemCodec: ByteEncode/ByteDecode round trips at every width, and the compression rounding checked against the exact rational definition for every coefficient in [0, q)
       kat_mlkem.cpp                   # ML-KEM keyGen/encap/decap against NIST ACVP for all three parameter sets, including the modified-ciphertext records (implicit rejection is a defined output, so ACVP publishes its expected secret) and both key-check negative groups
       mlkem.cpp                        # MLKEM as an IKem: that repeated encapsulate() calls differ, that a tampered ciphertext returns ERET_OK with a different secret, and that a parameter set the standard never defined is refused by all eight entry points
-    rng.cpp                       # CRng::fill() test cases
+    rng.cpp                       # IRng injection/clone and CRng test cases
     hmac.cpp                      # CHmac test cases (RFC 4231's SHA-224/256/384/512 vectors and RFC 2202's SHA-1 ones, the over-long-key hashing rule, and that verify() accepts only the exact tag)
     blake2smac.cpp                # CBlake2sMac against all 256 keyed BLAKE2s reference KAT entries, chunking, key lifecycle, and separation from HMAC-BLAKE2s
     hkdf.cpp                       # CHkdf test cases (RFC 5869 Appendix A's SHA-256 A.1-A.3 and SHA-1 A.4-A.6, plus that an absent salt equals a HashLen zero salt)

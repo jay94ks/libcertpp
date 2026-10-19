@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <memory>
+#include <atomic>
 #include <tuple>
 #include <string>
 #include <vector>
@@ -54,6 +55,83 @@ namespace certpp {
     using nullptr_t = decltype(nullptr);
 
     /**
+     * Represents an atomic type for thread-safe operations.
+     *
+     * @tparam T The type of the value to be stored atomically.
+     */
+    template<typename T>
+    using atomic = std::atomic<T>;
+
+    /**
+     * Represents a shared pointer for managing the lifetime of an object.
+     *
+     * @tparam T The type of the object being managed.
+     */
+    template<typename T>
+    using shared_ptr = std::shared_ptr<T>;
+
+    /**
+     * Represents a weak pointer for observing an object managed by a shared pointer.
+     *
+     * @tparam T The type of the object being observed.
+     */
+    template<typename T>
+    using weak_ptr = std::weak_ptr<T>;
+
+    /**
+     * Represents a unique pointer for exclusive ownership of an object.
+     *
+     * @tparam T The type of the object being managed.
+     */
+    template<typename T>
+    using unique_ptr = std::unique_ptr<T>;
+
+    /**
+     * A structure representing a raw pointer.
+     * This should never have definition body.
+     * Commonly, these are used to represent OS handle or a page pointer.
+     */
+    struct SRawPtr;
+
+    /**
+     * A structure representing a tagged raw pointer.
+     * This should never have definition body.
+     * Commonly, these are used to represent OS handle or a page pointer with a specific tag.
+     * And, template version is used to avoid misunderstanding or misuse of the raw pointer with different tags.
+     */
+    template<typename Tag>
+    struct TRawPtr;
+
+    /**
+     * Tag definitions for use with TRawPtr.
+     */
+    namespace tags {
+        /**
+         * Tag for page pointers used with TRawPtr.
+         */
+        struct Page;
+
+        /**
+         * Tag for big page pointers used with TRawPtr.
+         */
+        struct BigPage;
+    }
+
+    /**
+     * Represents a page pointer using the TRawPtr template with the Page tag.
+     * typically used to represent a standard page in memory.
+     * in X86 architecture, this typically corresponds to a 4KB page.
+     */
+    using SPagePtr = TRawPtr<tags::Page>;
+
+    /**
+     * Represents a big page pointer using the TRawPtr template with the BigPage tag.
+     * typically used to represent a large page in memory.
+     * in X86 architecture, this typically corresponds to a 2MB page.
+     */
+    using SBigPagePtr = TRawPtr<tags::BigPage>;
+
+    /**
      * Represents the result of an operation, typically used to indicate success or various error conditions.
      */
     enum ERetCode : uint8_t {
@@ -71,7 +149,7 @@ namespace certpp {
         ERET_NOTIMPL        = 0x08u,     // --> Not implemented
         ERET_ALREADY        = 0x09u,     // --> Already exists or already in the desired state
         ERET_AGAIN          = 0x0au,     // --> Try again (e.g., temporary failure)
-        ERET_NOTFOUND       = 0x0bu,     // --> Not found.
+        ERET_NOENT          = 0x0bu,     // --> No entry, or not found.
 
         // --
         ERET_KEY_ERROR      = 0x10u,     // --> Public/Private key error (e.g. mismatch or invalid combination).
@@ -135,6 +213,7 @@ namespace certpp {
 
         return 0;
     }
+
 } // namespace certpp
 
 #endif

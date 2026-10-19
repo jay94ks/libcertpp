@@ -107,7 +107,10 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode ARIA::generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const {
+    ERetCode ARIA::generateKey(
+        const IRng& rng, ISymmetricKeyPtr& out, const SKeySizeSpec& keySize
+    ) const {
+        out.reset();
         // Default to the largest key, as AES::generateKey() does -- a caller that does not
         // say which it wants is better served by 256 bits than by 128.
         SKeySize bits = keySize.empty() ? 256 : keySize.minSize;
@@ -125,36 +128,49 @@ namespace crypto {
 
         CBuffer raw(bits / 8);
 
-        const ERetCode rc = CRng::fill(raw.toSpan());
+        const ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
             return rc;
         }
 
-        out = createKey(raw.toSpan());
-        return out ? ERET_OK : ERET_KEY_SIZE;
+        return createKey(out, raw.toSpan());
     }
 
-    ISymmetricKeyPtr ARIA::createKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode ARIA::createKey(
+        ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 16 && keyData.size != 24 && keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        return std::make_shared<SymRawKey>(ESYM_ARIA, COctet(keyData));
+        try {
+            out = std::make_shared<SymRawKey>(ESYM_ARIA, COctet(keyData));
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    ERetCode ARIA::generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const {
+    ERetCode ARIA::generateIV(const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out) const {
         if (!key || key->algorithm() != ESYM_ARIA) {
             return ERET_KEY_FORMAT;
         }
 
         out.resize(ARIA_BLOCK_BYTES);
-        return CRng::fill(out.toSpan());
+        return rng.fillTo(out.toSpan());
     }
 
-    ISymmetricContextPtr ARIA::createContext(const ISymmetricKeyPtr& key) const {
-        auto ctx = std::make_shared<AriaContext>();
-        ctx->key(key, CBuffer());
-        return ctx;
+    ERetCode ARIA::createContext(
+        ISymmetricContextPtr& out, const ISymmetricKeyPtr& key
+    ) const {
+        out.reset();
+        try {
+            out = std::make_shared<AriaContext>();
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        out->key(key, CBuffer());
+        return ERET_OK;
     }
 
 } // namespace crypto

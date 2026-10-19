@@ -825,6 +825,10 @@ namespace crypto {
     } // namespace
 
     class MlKemContext : public IKemContext {
+    public:
+        using IKemContext::IKemContext;
+
+    private:
         CMlKem::PreparedPublic _preparedPublic{};
         CMlKem::PreparedPrivate _preparedPrivate{};
         bool _hasPreparedPublic = false;
@@ -879,7 +883,10 @@ namespace crypto {
                     reinterpret_cast<uint8_t*>(&_preparedPrivate), sizeof(_preparedPrivate)));
             }
 
-            ERetCode encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret) override {
+            ERetCode encapsulate(
+                SByteSpan& ciphertext, SByteSpan& sharedSecret
+            ) override {
+                const IRng& rng = randomGenerator();
                 if (!publicKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -903,7 +910,7 @@ namespace crypto {
                 // as a parameter so it can be driven from a test vector; a reused message means a
                 // reused shared secret, so nothing but fresh CSPRNG output belongs here.
                 uint8_t message[32];
-                if (CRng::fill(SByteSpan(message, sizeof(message))) != ERET_OK) {
+                if (rng.fillTo(SByteSpan(message, sizeof(message))) != ERET_OK) {
                     return ERET_UNKNOWN;
                 }
 
@@ -1005,7 +1012,7 @@ namespace crypto {
     }
 
     /* Draws both FIPS 203 seeds from the CSPRNG and expands them into a key pair. */
-    ERetCode MLKEM::generateKeyPair(SKeySize keySize, SKemKeyPair& out) {
+    ERetCode MLKEM::generateKeyPair(const IRng& rng, SKeySize keySize, SKemKeyPair& out) {
         out = SKemKeyPair();
 
         if (_which == EKEM_UNKNOWN || keySize != keySizeOf(_which)) {
@@ -1015,7 +1022,7 @@ namespace crypto {
         // d expands into the key material; z is retained inside the decapsulation key as the
         // implicit-rejection seed, and never leaves it.
         uint8_t seeds[64];
-        if (CRng::fill(SByteSpan(seeds, sizeof(seeds))) != ERET_OK) {
+        if (rng.fillTo(SByteSpan(seeds, sizeof(seeds))) != ERET_OK) {
             return ERET_UNKNOWN;
         }
 
@@ -1095,18 +1102,30 @@ namespace crypto {
     }
 
     /* Parses an encapsulation key, rejecting a non-canonical one. */
-    IKemPublicKeyPtr MLKEM::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode MLKEM::createPublicKey(
+        IKemPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (_which == EKEM_UNKNOWN || !CMlKem::checkEncapsulationKey(_params, keyData)) {
-            return nullptr;
+            if (_which == EKEM_UNKNOWN) return ERET_NOTSUP;
+            return keyData.size == _params.ekBytes() ? ERET_KEY_FORMAT : ERET_KEY_SIZE;
         }
-
-        return std::make_shared<MlKemPublicKey>(_which, _params, keyData);
+        try {
+            out = std::make_shared<MlKemPublicKey>(_which, _params, keyData);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Parses a decapsulation key, rejecting one whose embedded H(ek) doesn't match. */
-    IKemPrivateKeyPtr MLKEM::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode MLKEM::createPrivateKey(
+        IKemPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (_which == EKEM_UNKNOWN || !CMlKem::checkDecapsulationKey(_params, keyData)) {
-            return nullptr;
+            if (_which == EKEM_UNKNOWN) return ERET_NOTSUP;
+            return keyData.size == _params.dkBytes() ? ERET_KEY_FORMAT : ERET_KEY_SIZE;
         }
 
         // The embedded encapsulation key is the public half, so there is nothing to recompute --
@@ -1114,16 +1133,29 @@ namespace crypto {
         // outside.
         const SReadOnlyByteSpan ek(keyData.data + _params.dkPkeBytes(), _params.ekBytes());
         if (!CMlKem::checkEncapsulationKey(_params, ek)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
-
-        auto pub = std::make_shared<MlKemPublicKey>(_which, _params, ek);
-        return std::make_shared<MlKemPrivateKey>(_which, _params, keyData, pub);
+        try {
+            auto pub = std::make_shared<MlKemPublicKey>(_which, _params, ek);
+            out = std::make_shared<MlKemPrivateKey>(_which, _params, keyData, pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Creates a key-less context for this parameter set. */
-    IKemContextPtr MLKEM::createContext() const {
-        return std::make_shared<MlKemContext>();
+    ERetCode MLKEM::createContext(
+        IKemContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<MlKemContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

@@ -684,6 +684,12 @@ namespace x509 {
     }
 
     ERetCode COcspRequestBuilder::generateNonce(size_t size) {
+        crypto::CRng rng;
+        return generateNonce(rng, size);
+    }
+
+    /* Generates a nonce through the caller-provided generator. */
+    ERetCode COcspRequestBuilder::generateNonce(const crypto::IRng& rng, size_t size) {
         if (size == 0) {
             return ERET_INVAL;
         }
@@ -691,7 +697,7 @@ namespace x509 {
         CBuffer buf;
         buf.resize(size);
 
-        ERetCode rc = crypto::CRng::fill(buf.toSpan());
+        ERetCode rc = rng.fillTo(buf.toSpan());
         if (rc != ERET_OK) {
             return rc;
         }

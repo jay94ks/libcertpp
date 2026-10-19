@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/gost3410.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
 #include <cstring>
 #include <memory>
@@ -171,6 +172,9 @@ namespace crypto {
         };
 
         class GostContext : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         protected:
             void onReset() override {
                 auto priv = std::dynamic_pointer_cast<GostPrivateKey>(privateKey());
@@ -189,6 +193,7 @@ namespace crypto {
 
         public:
             ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out) override {
+                const IRng& rng = randomGenerator();
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -222,7 +227,7 @@ namespace crypto {
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
-                    if (!CBigNum::randomBelow(qMinus1, k)) {
+                    if (!CBigNum::randomBelow(rng, qMinus1, k)) {
                         return ERET_UNKNOWN;
                     }
                     k.add(CBigNum(uint64_t(1))); // k in [1, q-1], per RFC 7091 step 3
@@ -353,7 +358,7 @@ namespace crypto {
     }
 
     /* Generates a new key pair. */
-    ERetCode CGost3410::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode CGost3410::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         if (keySize != _halfLen * 8) {
@@ -364,7 +369,7 @@ namespace crypto {
         qMinus1.sub(CBigNum(uint64_t(1)));
 
         CBigNum d;
-        if (!CBigNum::randomBelow(qMinus1, d)) {
+        if (!CBigNum::randomBelow(rng, qMinus1, d)) {
             return ERET_UNKNOWN;
         }
         d.add(CBigNum(uint64_t(1))); // d in [1, q-1], per RFC 7091 section 5.2
@@ -441,9 +446,12 @@ namespace crypto {
     }
 
     /* Parses public key material into a usable public key. */
-    IPublicKeyPtr CGost3410::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CGost3410::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != _halfLen * 2 || !keyData.data) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
 
         // --> x || y, each little-endian (RFC 9215 section 2.4).
@@ -452,47 +460,70 @@ namespace crypto {
             CBigNum::fromLittleEndian(SReadOnlyByteSpan(keyData.data + _halfLen, _halfLen)));
 
         if (point.x >= _curve.p || point.y >= _curve.p) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
 
         if (!_curve.isOnCurve(point)) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
 
         // --> Order-q subgroup, which is a genuine check on the cofactor-4 parameter sets --
         // see checkPrivateKey()'s step 4.
         if (!_curve.scalarMul(point, _curve.n).infinity) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
-
-        return std::make_shared<GostPublicKey>(_curve, std::move(point), _halfLen, _which);
+        try {
+            out = std::make_shared<GostPublicKey>(
+                _curve, std::move(point), _halfLen, _which);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Parses private key material into a usable private key. */
-    IPrivateKeyPtr CGost3410::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CGost3410::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != _halfLen || !keyData.data) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
 
         CBigNum d = CBigNum::fromLittleEndian(keyData);
         if (d.isZero() || d >= _curve.n) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
 
         // --> Re-derive the public point rather than carrying it in the blob: it's a single
         // scalar multiplication, and it makes a mismatched (d, Q) pair impossible to import.
         SEcPoint point = _curve.scalarMulBase(d);
         if (point.infinity) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
-
-        auto pub = std::make_shared<GostPublicKey>(_curve, std::move(point), _halfLen, _which);
-        return std::make_shared<GostPrivateKey>(_curve, std::move(d), pub, _halfLen, _which);
+        try {
+            auto pub = std::make_shared<GostPublicKey>(
+                _curve, std::move(point), _halfLen, _which);
+            out = std::make_shared<GostPrivateKey>(
+                _curve, std::move(d), pub, _halfLen, _which);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Creates a context for this algorithm's operations. */
-    IAsymmetricContextPtr CGost3410::createContext() const {
-        return std::make_shared<GostContext>();
+    ERetCode CGost3410::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<GostContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

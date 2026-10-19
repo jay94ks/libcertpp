@@ -2,6 +2,7 @@
 #define __INCLUDE_CERTPP_X509_CHAIN_PFX_HPP__
 
 #include <certpp/common.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
 #include <certpp/io/span.hpp>
 #include <certpp/x509/chain.hpp>
@@ -184,6 +185,19 @@ namespace x509 {
         ERetCode save(
             const CCertCollection& in, const SReadOnlyByteSpan& password, CBuffer& out
         ) const override;
+
+        /**
+         * Writes a collection using caller-provided randomness for every salt and IV.
+         * @param rng The generator to use for this save operation.
+         * @param in The non-empty certificate collection.
+         * @param password The non-empty protection password.
+         * @param out Receives the encoded PFX.
+         * @return ERET_OK on success; another ERetCode on invalid input or encoding failure.
+         */
+        ERetCode save(
+            const crypto::IRng& rng, const CCertCollection& in,
+            const SReadOnlyByteSpan& password, CBuffer& out
+        ) const;
     };
 
 } // namespace x509

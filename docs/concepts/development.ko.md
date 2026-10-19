@@ -89,7 +89,7 @@ tests/
       mlkemcodec.cpp                 # MlKemCodec: 모든 폭에서의 ByteEncode/ByteDecode 왕복, 그리고 [0, q) 안의 모든 계수에 대해 정확한 유리수 정의에 대조한 압축 라운딩
       kat_mlkem.cpp                   # 세 파라미터 집합 전부에 대한 NIST ACVP ML-KEM keyGen/encap/decap. modified-ciphertext 레코드(암묵적 거부는 정의된 출력이므로 ACVP가 기대 비밀을 발행합니다)와 두 키 검사 음성 그룹 포함
       mlkem.cpp                        # IKem으로서의 MLKEM: 반복 encapsulate() 호출이 서로 다르다는 것, 조작된 ciphertext가 다른 비밀과 함께 ERET_OK를 반환한다는 것, 그리고 표준이 정의한 적 없는 파라미터 집합이 여덟 진입점 전부에서 거부된다는 것
-    rng.cpp                       # CRng::fill() 테스트 케이스
+    rng.cpp                       # IRng 주입/복제와 CRng 테스트 케이스
     hmac.cpp                      # CHmac 테스트 케이스 (RFC 4231의 SHA-224/256/384/512 벡터와 RFC 2202의 SHA-1 것들, 과도하게 긴 키의 해싱 규칙, 그리고 verify()가 정확한 tag만 받아들인다는 것)
     blake2smac.cpp                # CBlake2sMac을 키 있는 BLAKE2s 참조 KAT 256개 전체에 대조, chunk 처리, 키 수명 주기, HMAC-BLAKE2s와의 구분
     hkdf.cpp                       # CHkdf 테스트 케이스 (RFC 5869 부록 A의 SHA-256 A.1–A.3과 SHA-1 A.4–A.6. 더해서 salt가 없는 것이 HashLen만큼의 0 salt와 같다는 것)

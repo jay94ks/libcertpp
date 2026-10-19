@@ -104,19 +104,36 @@ void exampleCHkdf(const SReadOnlyByteSpan& sharedSecret, const SReadOnlyByteSpan
     CSecure::zero(serverOut);
 }
 
+// === IRng ===
+// Supplies caller-controlled randomness to key generation and context construction. Passing an
+// IRng reference to createContext() clones it, so the context never keeps a borrowed reference.
+void exampleIRng(const crypto::IAsymmetricPtr& algo, const crypto::IRng& rng) {
+    crypto::SKeyPair pair;
+    if (algo->generateKeyPair(rng, algo->keySizes()[0].minSize, pair) != ERET_OK) {
+        return;
+    }
+
+    crypto::IAsymmetricContextPtr ctx;
+    if (algo->createContext(ctx, rng) != ERET_OK) {
+        return; // includes any error reported by rng.clone()
+    }
+    ctx->keyPair(pair);
+}
+
 // === CRng ===
-// Fills a nonce and a PKCS#1 v1.5 padding string from the OS CSPRNG. fillNonZero() is the
+// Fills a nonce and a PKCS#1 v1.5 padding string from the OS CSPRNG. fillNonZeroTo() is the
 // variant that padding needs, where a zero byte would terminate the padding string early.
 void exampleCRng() {
+    crypto::CRng rng;
     uint8_t nonce[12];
     SByteSpan nonceSpan(nonce, sizeof(nonce));
-    if (crypto::CRng::fill(nonceSpan) != ERET_OK) {
+    if (rng.fillTo(nonceSpan) != ERET_OK) {
         return; // there is no safe degraded mode -- do not fall back to rand()
     }
 
     uint8_t padding[64];
     SByteSpan paddingSpan(padding, sizeof(padding));
-    if (crypto::CRng::fillNonZero(paddingSpan) != ERET_OK) {
+    if (rng.fillNonZeroTo(paddingSpan) != ERET_OK) {
         return;
     }
 
@@ -491,12 +508,15 @@ void exampleIPublicKey(
     const crypto::IAsymmetricPtr& algo, const SReadOnlyByteSpan& keyData,
     const SReadOnlyByteSpan& digest, const SReadOnlyByteSpan& signature
 ) {
-    crypto::IPublicKeyPtr peer = algo->createPublicKey(keyData);
-    if (!peer) {
-        return; // keyData was not a valid encoding for this algorithm
+    crypto::IPublicKeyPtr peer;
+    if (algo->createPublicKey(peer, keyData) != ERET_OK) {
+        return; // distinguish a wrong length, malformed encoding, and allocation failure
     }
 
-    crypto::IAsymmetricContextPtr ctx = algo->createContext();
+    crypto::IAsymmetricContextPtr ctx;
+    if (algo->createContext(ctx) != ERET_OK) {
+        return;
+    }
     ctx->keyPair(peer, nullptr);
 
     if (ctx->verify(digest, signature) != ERET_OK) {
@@ -509,9 +529,9 @@ void exampleIPublicKey(
 // calling on anything deserialized: generateKeyPair() runs it for you, createPrivateKey() does
 // not, and it reports *why* it failed rather than ERET_AGAIN.
 void exampleIPrivateKey(const crypto::IAsymmetricPtr& algo, const SReadOnlyByteSpan& keyData) {
-    crypto::IPrivateKeyPtr key = algo->createPrivateKey(keyData);
-    if (!key) {
-        return; // not a valid encoding
+    crypto::IPrivateKeyPtr key;
+    if (algo->createPrivateKey(key, keyData) != ERET_OK) {
+        return; // distinguish encoding, key-parameter, and allocation failures
     }
 
     if (algo->checkPrivateKey(key) != ERET_OK) {
@@ -523,7 +543,10 @@ void exampleIPrivateKey(const crypto::IAsymmetricPtr& algo, const SReadOnlyByteS
         return;
     }
 
-    crypto::IAsymmetricContextPtr ctx = algo->createContext();
+    crypto::IAsymmetricContextPtr ctx;
+    if (algo->createContext(ctx) != ERET_OK) {
+        return;
+    }
     ctx->keyPair(pub, key);
 }
 
@@ -637,8 +660,8 @@ void exampleIKemKeyBase(const crypto::IKemKeyBasePtr& key) {
 
 // === IKemPublicKey ===
 // Serializes an encapsulation key to hand to a peer, and parses the one they sent back.
-// createPublicKey() returns null rather than a half-built key when the encoding is wrong, so the
-// null check is the whole error report you get.
+// The error-reporting createPublicKey() overload distinguishes a wrong length from malformed or
+// noncanonical input. The pointer-returning overload remains for source compatibility.
 void exampleIKemPublicKey(
     const crypto::IKemPtr& kem, const crypto::IKemPublicKeyPtr& own,
     const SReadOnlyByteSpan& peerKeyData
@@ -649,8 +672,9 @@ void exampleIKemPublicKey(
     }
 
     // ... send encoded, receive theirs.
-    crypto::IKemPublicKeyPtr peer = kem->createPublicKey(peerKeyData);
-    if (!peer || peer->algorithm() != own->algorithm()) {
+    crypto::IKemPublicKeyPtr peer;
+    if (kem->createPublicKey(peer, peerKeyData) != ERET_OK ||
+        peer->algorithm() != own->algorithm()) {
         return; // a mismatched parameter set is not interoperable
     }
 
@@ -728,8 +752,8 @@ void exampleESymmetrics(crypto::ESymmetrics which) {
 // Imports raw key material -- from a KDF, say -- and reads back what the algorithm made of it.
 // keySize() here is in *bytes*, unlike the bit counts SKeySizeSpec and generateKey() deal in.
 void exampleISymmetricKey(const crypto::ISymmetricPtr& algo, const SReadOnlyByteSpan& derived) {
-    crypto::ISymmetricKeyPtr key = algo->createKey(derived);
-    if (!key) {
+    crypto::ISymmetricKeyPtr key;
+    if (algo->createKey(key, derived) != ERET_OK) {
         return; // derived.size is not a legal length for this algorithm
     }
 

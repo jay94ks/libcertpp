@@ -208,6 +208,9 @@ namespace crypto {
     namespace {
 
         class X25519Context : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         private:
             std::shared_ptr<X25519PrivateKey> _private;
             IPublicKeyPtr _peerBase;
@@ -294,7 +297,7 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode X25519::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode X25519::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         if (keySize != 256) {
@@ -302,7 +305,7 @@ namespace crypto {
         }
 
         uint8_t raw[32];
-        if (CRng::fill(SByteSpan(raw, 32)) != ERET_OK) {
+        if (rng.fillTo(SByteSpan(raw, 32)) != ERET_OK) {
             return ERET_UNKNOWN;
         }
 
@@ -360,29 +363,49 @@ namespace crypto {
         return validateDerivedPublicValue(derivedEncoded);
     }
 
-    IPublicKeyPtr X25519::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode X25519::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        return std::make_shared<X25519PublicKey>(keyData.data);
+        try {
+            out = std::make_shared<X25519PublicKey>(keyData.data);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IPrivateKeyPtr X25519::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode X25519::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        IPublicKeyPtr pub = publicKeyFromRaw(keyData.data);
-        if (!pub) {
-            return nullptr;
+        try {
+            IPublicKeyPtr pub = publicKeyFromRaw(keyData.data);
+            if (!pub) return ERET_KEY_ERROR;
+            out = std::make_shared<X25519PrivateKey>(keyData.data, pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
         }
-
-        return std::make_shared<X25519PrivateKey>(keyData.data, pub);
+        return ERET_OK;
     }
 
-    IAsymmetricContextPtr X25519::createContext() const {
-        return std::make_shared<X25519Context>();
+    ERetCode X25519::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<X25519Context>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

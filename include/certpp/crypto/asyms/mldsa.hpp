@@ -57,10 +57,12 @@ namespace crypto {
      * it is not constant-time and FIPS 204 offers no way to make it so; see
      * docs/pqc/engineering.md and docs/pqc/implementation.md.
      * This class is also where randomness enters: the raw algorithm under `src/` takes its seed
-     * and signing randomness as parameters so it can be driven from a test vector, while
-     * generateKeyPair()/sign() here draw from CRng. Signing is **hedged** -- a fresh 32-byte rnd
-     * per signature, FIPS 204's recommended default -- so two signatures over the same message
-     * differ, and a known-answer test has to go through the raw layer with rnd = 0 instead.
+     * and signing randomness as parameters so it can be driven from a test vector.
+     * generateKeyPair() accepts an IRng directly, and sign() uses the IRng sealed into its
+     * context by createContext(); the compatibility overloads create a CRng. Signing is
+     * **hedged** -- a fresh 32-byte rnd per signature, FIPS 204's recommended default -- so two
+     * signatures over the same message differ, and a known-answer test has to go through the raw
+     * layer with rnd = 0 instead.
      *
      * Validated against NIST's ACVP vectors for all three parameter sets: keyGen 75/75,
      * sigGen 360/360 byte-exact across all 24 groups, sigVer 180/180 verdicts including every
@@ -104,18 +106,21 @@ namespace crypto {
             return _which;
         }
 
-        ERetCode generateKeyPair(SKeySize keySize, SKeyPair& out) override;
+        using IAsymmetric::generateKeyPair;
+        using IAsymmetric::createContext;
+        using IAsymmetric::createPublicKey;
+        using IAsymmetric::createPrivateKey;
+        ERetCode generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) override;
         ERetCode checkPrivateKey(const IPrivateKeyPtr& key) const override;
-        IPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const override;
-        IPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPublicKey(IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPrivateKey(IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
 
         // --> Re-exposes IAsymmetric's COctet convenience overloads, which the SReadOnlyByteSpan
         // overrides above would otherwise hide: name lookup stops at the first scope holding the
         // name, so without these a caller holding a concrete CMlDsa cannot pass a COctet at all,
         // while the same call through an IAsymmetricPtr compiles.
-        using IAsymmetric::createPublicKey;
-        using IAsymmetric::createPrivateKey;
-        IAsymmetricContextPtr createContext() const override;
+        ERetCode createContext(
+            IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng) const override;
     };
 
 } // namespace crypto

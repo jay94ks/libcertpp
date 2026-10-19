@@ -33,6 +33,9 @@ namespace crypto {
         ESYMPAD_NONE,
     };
 
+    // --> Forward declaration of the IRng interface.
+    class IRng;
+
     /**
      * Forward declaration of the ISymmetric interface.
      */
@@ -115,23 +118,44 @@ namespace crypto {
          * @param keySize The desired key size specification.
          * @return ERET_OK on success; another ERetCode describing the failure otherwise.
          */
-        virtual ERetCode generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const = 0;
+        virtual ERetCode generateKey(
+            ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const;
+
+        /**
+         * Generates a new key for this algorithm using the provided random number generator.
+         *
+         * @param rng The random number generator to use for key generation.
+         * @param out The output parameter to receive the generated key.
+         * @param keySize The desired key size specification.
+         * @return ERET_OK on success; another ERetCode describing the failure otherwise.
+         */
+        virtual ERetCode generateKey(
+            const IRng& rng, ISymmetricKeyPtr& out,
+            const SKeySizeSpec& keySize) const = 0;
 
         /**
          * Imports raw key material (e.g. supplied by a KDF, read from a file, or a known-answer
          * test vector) as a usable key for this algorithm.
+         * @param out Receives the imported key and is reset on failure.
          * @param keyData The raw key bytes; its length must be one of keySizes() (in bytes).
-         * @return The imported key, or null if keyData's length isn't a valid size for this
-         * algorithm.
+         * @return ERET_OK on success; ERET_KEY_SIZE if keyData has an invalid length;
+         * ERET_NOMEM if allocation failed; another ERetCode otherwise.
          */
-        virtual ISymmetricKeyPtr createKey(const SReadOnlyByteSpan& keyData) const = 0;
+        virtual ERetCode createKey(
+            ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData) const = 0;
 
-        /**
-         * Imports raw key material. See the SReadOnlyByteSpan overload.
-         * @param keyData The raw key bytes.
-         * @return The imported key, or null if keyData's length isn't a valid size for this
-         * algorithm.
-         */
+        /** Backward-compatible pointer-returning key parser. */
+        inline ISymmetricKeyPtr createKey(const SReadOnlyByteSpan& keyData) const {
+            ISymmetricKeyPtr out;
+            return createKey(out, keyData) == ERET_OK ? out : nullptr;
+        }
+
+        /** Error-reporting key parser for owning input. */
+        inline ERetCode createKey(ISymmetricKeyPtr& out, const COctet& keyData) const {
+            return createKey(out, keyData.toSpan());
+        }
+
+        /** Backward-compatible pointer-returning key parser for owning input. */
         inline ISymmetricKeyPtr createKey(const COctet& keyData) const {
             return createKey(keyData.toSpan());
         }
@@ -143,15 +167,35 @@ namespace crypto {
          * @param out The output parameter to receive the generated IV.
          * @return ERET_OK on success; another ERetCode describing the failure otherwise.
          */
-        virtual ERetCode generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const = 0;
+        virtual ERetCode generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const;
+
+        /**
+         * Generates an initialization vector with caller-provided randomness.
+         * @param rng The random number generator to use.
+         * @param key The key whose block or nonce size determines the IV size.
+         * @param out Receives the generated IV.
+         * @return ERET_OK on success; another ERetCode otherwise.
+         */
+        virtual ERetCode generateIV(
+            const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out) const = 0;
 
         /**
          * Creates a new symmetric cryptographic context for the given key.
          *
          * @param key The symmetric key to use for the context.
-         * @return A shared pointer to the created symmetric context.
+         * @param out Receives the created context and is reset on failure.
+         * A null or foreign key still produces a context; its later operations report the
+         * missing or unusable key, preserving the pointer-returning factory's behavior.
+         * @return ERET_OK on success; ERET_NOMEM if allocation failed.
          */
-        virtual ISymmetricContextPtr createContext(const ISymmetricKeyPtr& key) const = 0;
+        virtual ERetCode createContext(
+            ISymmetricContextPtr& out, const ISymmetricKeyPtr& key) const = 0;
+
+        /** Backward-compatible pointer-returning context factory. */
+        inline ISymmetricContextPtr createContext(const ISymmetricKeyPtr& key) const {
+            ISymmetricContextPtr out;
+            return createContext(out, key) == ERET_OK ? out : nullptr;
+        }
     };
 
     /**

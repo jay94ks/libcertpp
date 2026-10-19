@@ -565,7 +565,7 @@ namespace x509 {
             // --> The scan running out of blocks is how a healthy scan ends, so it is reported
             // separately from the two ways a block can be present but unusable.
             case SCAN_END:
-                return ERET_NOTFOUND;
+                return ERET_NOENT;
 
             case SCAN_ENCRYPTED:
                 return ERET_NOTSUP;

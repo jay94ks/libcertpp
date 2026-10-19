@@ -61,7 +61,7 @@ include/
       policy.hpp                  # CAlgorithmPolicy/EAlgorithmPolicy: 중앙 기본 정책과 명시적 레거시 생성 opt-in
       kems/                        # 구체 IKem 구현들, 파일 하나당 하나 (asyms/를 반영)
         mlkem.hpp                     # CMlKem/SMlKemParams/SMlKemPoly/CMlKemSampler: 원시 span 위의 ML-KEM (FIPS 203, 포스트 양자). K-PKE와 암묵적 거부를 갖춘 FO 변환. 그리고 같은 세 파라미터 집합을 IKem으로 노출하는 MLKEM
-      rng.hpp                     # CRng: CSPRNG 유틸리티 (OS API, std::random_device 대체)
+      rng.hpp                     # IRng 인터페이스와 운영체제 기반 CSPRNG 구현 CRng
       eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass 점 연산(아핀 좌표). EEcKnownCurves + CEcCurve::knownCurves()가 내장 P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool(RFC 5639, 14개 곡선)과 GOST R 34.10-2012(9개 파라미터 집합, 그중 2개는 cofactor 4) 도메인 파라미터를 지칭합니다
       ec2curve.hpp                 # CEc2Curve/SEc2Point: CGf2m 위의 이진 곡선 점 연산(아핀 좌표). EEc2KnownCurves + CEc2Curve::knownCurves()가 내장 B-163/K-163 .. B-571/K-571 열 개의 도메인 파라미터를 지칭합니다
       asym.hpp                   # IAsymmetric(알고리즘 기술자/팩토리) + IAsymmetricContext(바인딩된 키로 서명/검증 + deriveSharedSecret 키 합의 + encrypter/decrypter 팩토리) + IAsymmetricTransformer(암호화/복호화 세션)
@@ -196,7 +196,7 @@ src/
       mlkemcodec.hpp / .cpp          # MlKemCodec: private, FIPS 203의 ByteEncode/ByteDecode와 Compress/Decompress, 그리고 isCanonical12() — ByteDecode_12는 mod q로 축약하므로 단사가 아니고, 그것 자체가 캡슐화 키 유효성 검사입니다
       mlkemsampler.cpp                # MlKemSampler: private, SampleNTT(SHAKE128::squeeze()의 첫 소비자)와 중심 이항 샘플러
       mlkem.cpp                        # CMlKem(원시 span 위의 K-PKE + 암묵적 거부를 갖춘 FO 변환)과 MLKEM(같은 세 집합을 IKem으로). CRng를 끌어다 쓰는 유일한 ML-KEM 계층입니다
-    rng.cpp                    # CRng::fill(): Windows에서는 BCryptGenRandom / Linux에서는 getrandom(2)(실패 시 /dev/urandom) / 그 외 POSIX에서는 /dev/urandom. 사용할 수 없으면 std::random_device로 대체
+    rng.cpp                    # IRng 도우미와 CRng::fillTo(): Windows BCryptGenRandom / Linux getrandom(2)(실패 시 /dev/urandom) / 그 외 POSIX /dev/urandom. 옵션을 켠 경우에만 std::random_device로 대체
     transform.cpp               # 빈 스텁 — ITransformer는 순수 가상 인터페이스이므로 out-of-line인 것이 없습니다
     sym.cpp                      # ISymmetric::builtIn() 팩토리 디스패치
     syms/

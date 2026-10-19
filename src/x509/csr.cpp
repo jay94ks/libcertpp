@@ -309,9 +309,9 @@ namespace x509 {
             }
         }
 
-        // ERET_NOTFOUND means the file held no CERTIFICATE REQUEST block at all, which from this
+        // ERET_NOENT means the file held no CERTIFICATE REQUEST block at all, which from this
         // entry point's perspective is the same bad input as a file that held nothing usable.
-        return (scan == ERET_NOTFOUND) ? ERET_BADREQ : scan;
+        return (scan == ERET_NOENT) ? ERET_BADREQ : scan;
     }
 
     /* Imports the certification request from raw data in the specified format. */

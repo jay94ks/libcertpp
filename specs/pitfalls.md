@@ -234,6 +234,20 @@ rather than a fixed bound. Do not build a timing assumption on it.
 
 ## Keys
 
+**Use the error-reporting factories for untrusted key bytes.**
+`createPublicKey(out, bytes)`, `createPrivateKey(out, bytes)`, and symmetric
+`createKey(out, bytes)` clear `out` on failure and distinguish a wrong length
+from malformed or invalid key material. The older pointer-returning overloads
+collapse every failure to null and remain only for source compatibility.
+`serialize(out)` already reports `ERetCode`; check it before using the output.
+
+**A custom `IRng` must be a cryptographically secure generator in production.**
+The interface also permits deterministic implementations for known-answer
+tests. Context creation either retains the supplied `shared_ptr<IRng>` or
+clones a `const IRng&`, then seals that choice for the context lifetime. Its
+methods are logically `const`; an implementation may still advance private
+mutable state and must provide any synchronization its sharing model needs.
+
 **Pairing a private key with a certificate needs a signature, not a
 comparison.** Comparing serialized keys works for some algorithms and not
 others. `CCertCollection::checkKeyPairing()` signs a fixed value and verifies

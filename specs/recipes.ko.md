@@ -249,16 +249,25 @@ bool ok = aead.open(nonce, aad,
 IAsymmetricPtr algo = IAsymmetric::builtIn(EASYM_P256);
 
 SKeyPair pair;
-algo->generateKeyPair(SKeySize(256), pair);
+CRng rng;
+if (algo->generateKeyPair(rng, SKeySize(256), pair) != ERET_OK) {
+    return;
+}
 
-IAsymmetricContextPtr ctx = algo->createContext();
+IAsymmetricContextPtr ctx;
+if (algo->createContext(ctx, rng) != ERET_OK) {
+    return;
+}
 ctx->keyPair(pair);
 
 COctet signature;
 ctx->sign(digest, signature);             // ECDSA는 다이제스트에 서명합니다
 
 // 검증에는 공개키 쪽만 필요합니다.
-IAsymmetricContextPtr verifier = algo->createContext();
+IAsymmetricContextPtr verifier;
+if (algo->createContext(verifier) != ERET_OK) {
+    return;
+}
 verifier->keyPair(pair.publicKey, nullptr);
 verifier->verify(digest.toSpan(), signature.toSpan());
 ```
@@ -270,6 +279,25 @@ Ed25519, Ed448, ML-DSA에서는 `digest` 매개변수가 다이제스트가 아�
 **메시지**를 담습니다 — 이 방식들은 내부에서 해시를 수행합니다.
 `ctx->sizeOfDigest() == 0`이 그 신호이고, 인증서 수준의 대응물은
 `CCert::signsMessageDirectly()`입니다.
+
+## 키 직렬화와 가져오기
+
+```cpp
+COctet encoded;
+if (pair.privateKey->serialize(encoded) != ERET_OK) {
+    return;
+}
+
+IPrivateKeyPtr restored;
+ERetCode status = algo->createPrivateKey(restored, encoded);
+if (status != ERET_OK) {
+    return; // ERET_KEY_SIZE, ERET_KEY_FORMAT, ERET_KEY_PARAM 등을 구분합니다
+}
+```
+
+신뢰할 수 없는 입력에는 `ERetCode`와 out 파라미터를 쓰는 가져오기 오버로드를
+사용하십시오. 포인터 반환 오버로드는 호환용으로 남아 있지만 모든 실패 사유를
+null로 합칩니다. 공개키와 KEM 키도 같은 패턴을 따릅니다.
 
 ## 공유 비밀 합의
 
@@ -353,9 +381,17 @@ col.checkKeyPairing(0);
 ## 난수
 
 ```cpp
+CRng rng;
 uint8_t nonce[12];
-CRng::fill(SByteSpan(nonce, sizeof(nonce)));   // OS CSPRNG
+if (rng.fillTo(SByteSpan(nonce, sizeof(nonce))) != ERET_OK) {
+    return; // rand()로 안전하게 대체할 수 없습니다
+}
 ```
+
+애플리케이션이 자체 난수 소스를 제공한다면 키/IV 생성이나
+`createContext(out, rng)`에 `const IRng&`를 넘기십시오. 컨텍스트 생성은
+`IRng&`를 복제하고, `shared_ptr<IRng>` 오버로드는 소유권을 공유합니다. 어느
+경우든 선택된 생성기는 나중에 컨텍스트에서 교체할 수 없습니다.
 
 ## Constant-time 비교와 메모리 지우기
 

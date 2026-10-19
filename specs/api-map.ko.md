@@ -57,9 +57,9 @@
 
 | 작업 | 헤더 | 진입점 |
 | --- | --- | --- |
-| 임의의 서명 알고리즘 | `crypto/asym.hpp`, `crypto/keys.hpp` | `IAsymmetric::builtIn(EASYM_P256)`, 그다음 `createContext()` |
-| 키 쌍 생성 | `crypto/asym.hpp` | `IAsymmetric::generateKeyPair(bits, out)` |
-| 공개키/개인키 가져오기 | `crypto/asym.hpp` | `createPublicKey(span)`, `createPrivateKey(span)` |
+| 임의의 서명 알고리즘 | `crypto/asym.hpp`, `crypto/keys.hpp` | `IAsymmetric::builtIn(EASYM_P256)`, 그다음 `createContext(out, rng)` |
+| 키 쌍 생성 | `crypto/asym.hpp` | `IAsymmetric::generateKeyPair(rng, bits, out)`; RNG가 없는 오버로드는 지역 `CRng` 사용 |
+| 공개키/개인키 직렬화 및 가져오기 | `crypto/keys.hpp`, `crypto/asym.hpp` | `key->serialize(out)`, `createPublicKey(out, span)`, `createPrivateKey(out, span)`; 포인터 반환 파서는 호환 오버로드로 유지 |
 | 서명/검증 | `crypto/asym.hpp` | `IAsymmetricContext::sign()`, `verify()`, `signPss()`, `verifyPss()` |
 | ECDH/X25519 키 교환 | `crypto/asym.hpp` | `IAsymmetricContext::deriveSharedSecret(peer, out)` |
 | 곡선 매개변수 | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; 이진 곡선은 `CEc2Curve`; `linearCombination()`은 공개 검증 스칼라 전용 |
@@ -103,7 +103,7 @@
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | 16진수 | `utils/hex.hpp` | `CHex` |
 | JSON 값과 BSON 문서 파싱/생성 | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
-| 무작위 바이트 | `crypto/rng.hpp` | `CRng::fill(span)` |
+| 무작위 바이트와 주입 | `crypto/rng.hpp` | `IRng::fillTo(span)`, `fillNonZeroTo(span)`, `clone(out)`; `CRng`는 운영체제 기반 구현 |
 | 객체 식별자 | `oid.hpp` | `SRawOid`, `SKnownOid`, `COid`; 임의 OID 파싱/포맷과 이름 붙은 상수 비교 |
 
 ## 버퍼와 span

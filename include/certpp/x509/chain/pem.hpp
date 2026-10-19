@@ -159,7 +159,7 @@ namespace x509 {
          * @param cursor Where to scan from; advanced past the block that was read.
          * @param outLabel Receives the block's label, without the dashes.
          * @param outDer Receives the decoded body.
-         * @return ERET_OK on a block read; ERET_NOTFOUND once no `-----BEGIN` remains (the
+         * @return ERET_OK on a block read; ERET_NOENT once no `-----BEGIN` remains (the
          *         ordinary end of a scan, not an error); ERET_BADREQ for a boundary with no
          *         usable block behind it; ERET_NOTSUP for an RFC 1421 password-encrypted body,
          *         which this format cannot decrypt.

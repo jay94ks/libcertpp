@@ -60,7 +60,7 @@ Operational instructions without translated counterparts:
 | [API design rules](rules/api.md) | [API 설계 규칙](rules/api.ko.md) |
 | [Source and documentation style](rules/style.md) | [소스와 문서 스타일](rules/style.ko.md) |
 | [Versioning and tests](rules/maintenance.md) | [버전 관리와 테스트](rules/maintenance.ko.md) |
-| [Constant-time and performance roadmap](roadmap/performance.md) | [Constant-time 및 성능 로드맵](roadmap/performance.ko.md) |
+| [Security and performance roadmap](roadmap/performance.md) | [보안 및 성능 로드맵](roadmap/performance.ko.md) |
 | [Not planned](roadmap/not-planned.md) | [계획에 없음](roadmap/not-planned.ko.md) |
 | [PQC motivation, standards, and interfaces](pqc/design.md) | [PQC 동기, 표준 및 인터페이스](pqc/design.ko.md) |
 | [PQC shared engineering and risk](pqc/engineering.md) | [PQC 공유 엔지니어링과 위험](pqc/engineering.ko.md) |

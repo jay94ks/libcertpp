@@ -1,4 +1,5 @@
 #include <certpp/crypto/sym.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/syms/aes.hpp>
 #include <certpp/crypto/syms/aria.hpp>
 #include <certpp/crypto/syms/des.hpp>
@@ -7,6 +8,20 @@
 
 namespace certpp {
 namespace crypto {
+
+    /* Generates a key through the default operating-system-backed generator. */
+    ERetCode ISymmetric::generateKey(
+        ISymmetricKeyPtr& out, const SKeySizeSpec& keySize
+    ) const {
+        CRng rng;
+        return generateKey(rng, out, keySize);
+    }
+
+    /* Generates an IV through the default operating-system-backed generator. */
+    ERetCode ISymmetric::generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const {
+        CRng rng;
+        return generateIV(rng, key, out);
+    }
 
     ISymmetricPtr ISymmetric::builtIn(ESymmetrics which) {
         switch (which) {

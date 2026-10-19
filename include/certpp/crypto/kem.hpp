@@ -3,6 +3,7 @@
 
 #include <certpp/common.hpp>
 #include <certpp/crypto/keys.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/io/span.hpp>
 #include <certpp/io/array.hpp>
 #include <certpp/io/octet.hpp>
@@ -86,7 +87,26 @@ namespace crypto {
          * checkPrivateKey()'s validation (the caller should simply call this again); another
          * ERetCode describing any other failure.
          */
-        virtual ERetCode generateKeyPair(SKeySize keySize, SKemKeyPair& out) = 0;
+        virtual ERetCode generateKeyPair(SKeySize keySize, SKemKeyPair& out);
+
+        /**
+         * Generates a new encapsulation/decapsulation key pair using the provided random number
+         * generator, validating it via checkPrivateKey() before returning it. Unlike a direct
+         * checkPrivateKey() call, a
+         * validation failure here is reported as ERET_AGAIN specifically (never
+         * checkPrivateKey()'s own diagnostic code) -- generation is expected to be retried by
+         * simply calling this again, so the caller only needs a "try again" signal, not *why*
+         * the candidate was rejected. Mirrors IAsymmetric::generateKeyPair() exactly.
+         *
+         * @param rng The random number generator to use for key generation.
+         * @param keySize The key size to generate the pair at; must be one of keySizes().
+         * @param out Receives the new key pair; left empty (see SKemKeyPair::empty()) on failure.
+         * @return ERET_OK on success; ERET_AGAIN if the freshly generated key failed
+         * checkPrivateKey()'s validation (the caller should simply call this again); another
+         * ERetCode describing any other failure.
+         */
+        virtual ERetCode generateKeyPair(
+            const IRng& rng, SKeySize keySize, SKemKeyPair& out) = 0;
 
         /**
          * Validates a private key's structure -- e.g., for a lattice-based algorithm, that its
@@ -107,10 +127,20 @@ namespace crypto {
 
         /**
          * Parses encapsulation-key material into a usable public key.
+         * @param out Receives the parsed key and is reset on failure.
          * @param keyData The public key material, in an algorithm-defined encoding.
-         * @return The parsed public key, or null if keyData wasn't a valid encoding.
+         * @return ERET_OK on success; ERET_KEY_SIZE for an invalid encoded length;
+         * ERET_KEY_FORMAT for malformed or noncanonical input; ERET_NOTSUP for an unsupported
+         * parameter set; ERET_NOMEM if allocation failed; another ERetCode otherwise.
          */
-        virtual IKemPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const = 0;
+        virtual ERetCode createPublicKey(
+            IKemPublicKeyPtr& out, const SReadOnlyByteSpan& keyData) const = 0;
+
+        /** Backward-compatible pointer-returning encapsulation-key parser. */
+        inline IKemPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const {
+            IKemPublicKeyPtr out;
+            return createPublicKey(out, keyData) == ERET_OK ? out : nullptr;
+        }
 
         /**
          * Parses encapsulation-key material into a usable public key.
@@ -121,12 +151,28 @@ namespace crypto {
             return createPublicKey(keyData.toSpan());
         }
 
+        /** Error-reporting encapsulation-key parser for owning input. */
+        inline ERetCode createPublicKey(IKemPublicKeyPtr& out, const COctet& keyData) const {
+            return createPublicKey(out, keyData.toSpan());
+        }
+
         /**
          * Parses decapsulation-key material into a usable private key.
+         * @param out Receives the parsed key and is reset on failure.
          * @param keyData The private key material, in an algorithm-defined encoding.
-         * @return The parsed private key, or null if keyData wasn't a valid encoding.
+         * @return ERET_OK on success; ERET_KEY_SIZE for an invalid encoded length;
+         * ERET_KEY_FORMAT for malformed, noncanonical, or internally inconsistent input;
+         * ERET_NOTSUP for an unsupported parameter set; ERET_NOMEM if allocation failed;
+         * another ERetCode otherwise.
          */
-        virtual IKemPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const = 0;
+        virtual ERetCode createPrivateKey(
+            IKemPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData) const = 0;
+
+        /** Backward-compatible pointer-returning decapsulation-key parser. */
+        inline IKemPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+            IKemPrivateKeyPtr out;
+            return createPrivateKey(out, keyData) == ERET_OK ? out : nullptr;
+        }
 
         /**
          * Parses decapsulation-key material into a usable private key.
@@ -137,12 +183,58 @@ namespace crypto {
             return createPrivateKey(keyData.toSpan());
         }
 
+        /** Error-reporting decapsulation-key parser for owning input. */
+        inline ERetCode createPrivateKey(IKemPrivateKeyPtr& out, const COctet& keyData) const {
+            return createPrivateKey(out, keyData.toSpan());
+        }
+
         /**
          * Creates a context for this algorithm's operations. Holds no key material until
          * IKemContext::keyPair()/keyPair() is called on it.
-         * @return A new, key-less context.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @return ERET_OK on success; ERET_NOMEM if allocation failed; another code otherwise.
          */
-        virtual IKemContextPtr createContext() const = 0;
+        inline ERetCode createContext(IKemContextPtr& out) const {
+            CRng rng;
+            return createContext(out, rng);
+        }
+
+        /** Backward-compatible pointer-returning context factory. */
+        inline IKemContextPtr createContext() const {
+            IKemContextPtr out;
+            return createContext(out) == ERET_OK ? out : nullptr;
+        }
+
+        /**
+         * Creates a context that owns the supplied random generator for encapsulation.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @param rng The generator to retain. Must not be null.
+         * @return ERET_OK on success; ERET_BADREQ if rng is null; ERET_NOMEM if allocation
+         *         failed; another code otherwise.
+         */
+        virtual ERetCode createContext(
+            IKemContextPtr& out, const std::shared_ptr<IRng>& rng) const = 0;
+
+        /** Backward-compatible pointer-returning context factory with shared RNG ownership. */
+        inline IKemContextPtr createContext(const std::shared_ptr<IRng>& rng) const {
+            IKemContextPtr out;
+            return createContext(out, rng) == ERET_OK ? out : nullptr;
+        }
+
+        /**
+         * Creates a context from a clone of rng, so the context never retains a reference to
+         * caller-owned storage.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @param rng The generator to clone and retain.
+         * @return ERET_OK on success; the clone or context creation error otherwise.
+         */
+        ERetCode createContext(IKemContextPtr& out, const IRng& rng) const;
+
+        /** Backward-compatible pointer-returning factory that clones rng. */
+        inline IKemContextPtr createContext(const IRng& rng) const {
+            IKemContextPtr out;
+            return createContext(out, rng) == ERET_OK ? out : nullptr;
+        }
     };
 
     /**
@@ -158,15 +250,18 @@ namespace crypto {
     private:
         IKemPublicKeyPtr _publicKey;
         IKemPrivateKeyPtr _privateKey;
+        const std::shared_ptr<IRng> _rng;
 
         size_t _sizeOfCiphertext;      // --> size of the ciphertext encapsulate() produces.
         size_t _sizeOfSharedSecret;    // --> size of the shared secret encapsulate()/decapsulate() produce.
 
     public:
         /**
-         * Default constructor.
+         * Constructor. The generator is retained for the whole context lifetime and cannot be
+         * replaced after construction.
+         * @param rng The non-null generator this context owns.
          */
-        IKemContext() : _sizeOfCiphertext(0), _sizeOfSharedSecret(0) { }
+        explicit IKemContext(const std::shared_ptr<IRng>& rng);
 
         /**
          * Virtual destructor.
@@ -193,6 +288,9 @@ namespace crypto {
         inline const IKemPrivateKeyPtr& privateKey() const {
             return _privateKey;
         }
+
+        /** @return The generator owned by this context. */
+        const IRng& randomGenerator() const;
 
     public:
         /**

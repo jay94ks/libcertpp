@@ -16,7 +16,7 @@ namespace net {
         case EAI_MEMORY:
             return ERET_NOMEM;
         case EAI_NONAME:
-            return ERET_NOTFOUND;
+            return ERET_NOENT;
         case EAI_FAMILY:
         case EAI_SOCKTYPE:
         case EAI_SERVICE:
@@ -378,7 +378,7 @@ namespace net {
             return resolveErrorToRetCode(resolveResult);
         }
         if (!res) {
-            return ERET_NOTFOUND;
+            return ERET_NOENT;
         }
 
         addrinfo* cur = res;
@@ -424,7 +424,7 @@ namespace net {
             return ERET_OK;
         }
 
-        return ERET_NOTFOUND;
+        return ERET_NOENT;
     }
 
     /**
@@ -492,7 +492,7 @@ namespace net {
             return resolveErrorToRetCode(resolveResult);
         }
         if (!res) {
-            return ERET_NOTFOUND;
+            return ERET_NOENT;
         }
 
         addrinfo* cur = res;
@@ -536,7 +536,7 @@ namespace net {
             return ERET_OK;
         }
 
-        return ERET_NOTFOUND;
+        return ERET_NOENT;
     }
 
     /**

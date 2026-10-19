@@ -29,7 +29,7 @@
   씁니다 — PSS 자신의 `AlgorithmIdentifier`가 해시/MGF/salt 길이를 명시적으로
   담으므로, 평범한 `sign()`/`verify()`가 해결해야 하는 모호성이 없습니다.
   `createEncrypter()`/`createDecrypter()`는 RSAES-PKCS1-v1_5를 구현하고, 그
-  padding에 `CRng::fillNonZero()`를 씁니다. private
+  padding에 컨텍스트에 봉인된 `IRng::fillNonZeroTo()`를 씁니다. private
   `RsaPublicKey`/`RsaPrivateKey`/`RsaContext`/`RsaTransformer` 클래스가 각각
   공개 `IPublicKey`/`IPrivateKey`/`IAsymmetricContext`/`IAsymmetricTransformer`
   인터페이스를 뒷받침하며, `MemStream`이 `IStream`을 뒷받침하는 것과 같은

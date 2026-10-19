@@ -17,8 +17,9 @@
 
 `crypto`에는 다음이 있습니다. 밑바닥부터 구현한 MD4/MD5/SHA-1/SHA-224/
 SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s/
-Streebog-256/Streebog-512 구현을 갖춘 `IHasher` 인터페이스. CSPRNG
-유틸리티(`CRng`). 아홉 개의 구체 구현을 갖춘 `IAsymmetric` 인터페이스
+Streebog-256/Streebog-512 구현을 갖춘 `IHasher` 인터페이스. 교체 가능한 난수
+생성기 인터페이스(`IRng`)와 운영체제 기반 구현(`CRng`). 아홉 개의 구체 구현을
+갖춘 `IAsymmetric` 인터페이스
 (RSA — PKCS#1 v1.5와 RSASSA-PSS 서명/검증, PKCS#1 v1.5 암호화/복호화.
 DSA. `CEcdsa`, NIST P-192/P-224/P-256/P-384/P-521, secp256k1, 또는 14개
 Brainpool 곡선(RFC 5639) 중 어느 것 위의 ECDSA와, 같은 곡선들 위의 ECDH 키

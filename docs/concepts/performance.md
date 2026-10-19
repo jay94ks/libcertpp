@@ -4,13 +4,12 @@
 
 Measured by [`examples/05_benchmark.cpp`](../../examples/05_benchmark.cpp) and
 [`examples/06_openssl_compare.cpp`](../../examples/06_openssl_compare.cpp), so these are reproducible
-rather than claimed: build them and run them on your own hardware. Both toolchains, both Release,
-measured in one session on a single 4-core i7-11370H (3.30 GHz base, around 3.92 GHz sustained
-under this load): MSVC 19.36 (VS 2022 17.6) on Windows, and GCC 13.3 on Ubuntu 24.04
-**under WSL2**. Each figure is the fastest of three batches of 20 iterations, best of three runs,
-and the two were run one after the other rather than at once so neither could end up measuring the
-other's compiler. The run-to-run spread is 20--30%, so nothing smaller than that is a result.
-Bold is the faster entry in its row.
+rather than claimed: build them and run them on your own hardware. The older internal comparison
+tables use Release builds from one 4-core i7-11370H session: MSVC 19.36 (VS 2022 17.6) on Windows
+and GCC 13.3 on Ubuntu 24.04 **under WSL2**. Their figures are the fastest of three batches of 20
+iterations, best of three process runs. Newer OpenSSL sections state their compiler and aggregation
+method explicitly; the post-refactor snapshot uses paired medians instead. The run-to-run spread can
+reach 20--30%, so nothing smaller than that is a result. Bold is the faster entry in its row.
 
 The tables cover every algorithm the library implements: 14 hashers, 8 block-cipher configurations,
 3 KEM parameter sets, and 34 signature and key-agreement schemes. No row in the harness's own
@@ -21,12 +20,37 @@ implement: they do ECDSA and not ECDH.
 
 ## Current optimization checks
 
-The OpenSSL 90% program reached its completion gate on 2026-10-19. Every directly comparable
-operation now has a matched median ratio of at least 0.90. Streebog, GOST signatures, binary-curve
-ECDH, and XChaCha20-Poly1305 remain explicit unavailable rows for the tested OpenSSL 3.6.4
-default/legacy providers; the internal GCC/MSVC comparisons below retain their alternative
-baselines. Automatic CI and the broader platform matrix remain separate future work in
-[the roadmap](../PLANS.md#automated-ci-and-platform-matrix).
+The focused OpenSSL 90% program reached its original completion gate on 2026-10-19 in the
+per-algorithm configurations recorded below. A same-day full Windows inventory rerun after the
+RNG and key-factory refactor found compiler-specific gaps that the focused runs did not expose:
+RSA-2048 key generation, signing, and verification measured 0.398x, 0.875x, and 0.700x;
+P-256 key generation measured 0.676x; and SHA-384 measured 0.88x. These Windows Clang results
+reopen those rows for investigation in [the performance roadmap](../roadmap/performance.md#performance-work).
+Streebog, GOST signatures, binary-curve ECDH, and XChaCha20-Poly1305 remain explicit unavailable
+rows for the tested OpenSSL 3.6.4 default/legacy providers; the internal comparison retains their
+alternative baselines. Automatic CI and the broader platform matrix remain separate future work
+in [the roadmap](../PLANS.md#automated-ci-and-platform-matrix).
+
+### Post-refactor full inventory refresh
+
+The full inventory was rebuilt and rerun on 2026-10-19 on the i7-11370H Windows host with
+Clang 22.1.8, Ninja, a Release shared-library build, radix-51 enabled, and OpenSSL 3.6.4 from
+MSYS2 MinGW64. Both benchmark processes were pinned to one logical processor at high priority.
+Each harness row is already the fastest of three internal batches; the tables below use the
+per-side median and the paired-ratio median from three complete process runs. The ratio column is
+the performance ratio, so throughput uses `certpp / OpenSSL` and latency uses
+`OpenSSL / certpp`. The three internal-only runs of `05_benchmark` use the same process controls.
+
+The RNG-facing operations remained functional through key generation, signing, agreement, and
+encapsulation. ML-KEM stayed between 1.071x and 1.237x, X25519 derive stayed at 0.905x, and the
+Ed25519 rows stayed above 1.8x. The context-owned RNG does not add per-operation cloning: cloning
+occurs when the context is created, outside these repeated-operation loops. The full current
+inventory is recorded in [Current algorithm inventory comparison](#current-algorithm-inventory-comparison).
+
+Internal-only control rows from the same build were 82.3/83.5 MiB/s for Streebog-256/512,
+3770.7 MiB/s and 370 ns for XChaCha20-Poly1305 bulk and 64-byte sealing, 0.169/0.289 ms for
+GOST-256-A sign/verify, and 0.859/1.189 ms for GOST-512-A sign/verify. These rows have no ratio
+because the tested OpenSSL providers do not expose matching operations.
 
 ### Current AEAD comparison
 
@@ -76,9 +100,10 @@ library's wrapper, which measures the cryptography rather than the per-call allo
 through `certpp` would add. Both sides are warmed up first: OpenSSL resolves its constructors
 lazily, and a cold first SHA-256 of 64 KiB costs 963 us against 38.9 us warm.
 
-Each figure is the best of three runs of the harness on a quiet machine. Run-to-run ranges are
-recorded for the refreshed comparison below where they materially affect the ratio; one run's
-absolute value should not be treated as the algorithm's universal speed.
+Older focused sections use the best of three runs unless they state a larger sample. The current
+inventory uses the paired-median method described above. Run-to-run ranges are recorded where they
+materially affect the ratio; one run's absolute value should not be treated as the algorithm's
+universal speed.
 
 ### Current SHA-384 and SHA-512 comparison
 
@@ -288,8 +313,9 @@ key-generation campaign supplies the DSA row below. RSA prime generation now cho
 walks nearby odd candidates while reusing the seed's grouped small-prime residues. It preserves the
 existing 20 Miller--Rabin rounds. Against a separately built pre-change `HEAD`, 15 pinned WSL Clang
 18 runs reduced certpp RSA-2048 key generation from a 63.937 ms median to 54.471 ms, a 14.8%
-improvement. The current runs had a 1.824 median OpenSSL ratio, which the table reports with the
-certpp median. Randomized prime search makes cross-implementation key-generation ratios
+improvement. The current runs had a 1.824 median OpenSSL ratio. That focused result remains useful
+historical evidence; the inventory table now reports the later full Windows refresh. Randomized
+prime search makes cross-implementation key-generation ratios
 substantially noisier than the within-implementation before/after result.
 DSA parameter generation now applies the same residue-reuse idea to its constrained search: it
 walks a bounded `p += 2q` progression, updates grouped small-prime residues through every candidate,
@@ -298,9 +324,8 @@ for generator construction, public-key derivation, both key objects, and generat
 both independent 20-round Miller--Rabin checks remain in place. Twenty-one alternating runs reduced
 the certpp median from 225.673 to 178.276 ms. Fifteen additional current runs measured a 158.894 ms
 median; the combined 36 current runs have a 164.646 ms certpp median and a 0.9015 paired OpenSSL
-ratio median. This reaches the gate, but the wide randomized distribution makes the row especially
-remeasurement-sensitive. The table reports this current WSL result alongside the latest accepted
-measurements for the other operations; the paragraphs identify each row's configuration.
+ratio median. This reached the focused gate, but the wide randomized distribution makes the row
+especially remeasurement-sensitive. The inventory table now reports the later full Windows refresh.
 RSA CRT exponentiation now advances the two 1024-bit branches through one fixed five-bit schedule
 and interleaves their independent CIOS carry chains on the same thread. Fifteen alternating pinned
 WSL Clang 18 runs reduced the certpp RSA-2048 signing median from 0.811 to 0.772 ms, a 4.8%
@@ -336,101 +361,100 @@ unchanged.
 
 | Operation, 64 KiB unless noted | certpp | OpenSSL EVP | certpp / OpenSSL |
 |---|---:|---:|---:|
-| MD4 | about 1237 MiB/s | about 1383 MiB/s | 0.90x |
-| MD5 | about 758 MiB/s | about 843 MiB/s | 0.90x |
-| SHA-1 | 1709 MiB/s | 1839 MiB/s | 0.93x |
-| SHA-224 | 1532 MiB/s | 1601 MiB/s | 0.96x |
-| SHA-256 | 1536 MiB/s | 1598 MiB/s | 0.96x |
-| SHA-384 | 632 MiB/s | 700 MiB/s | 0.90x |
-| SHA-512 | 632 MiB/s | 695 MiB/s | 0.91x |
-| SHA3-256 | about 580 MiB/s | about 418 MiB/s | 1.40x |
-| SHA3-512 | about 311 MiB/s | about 228 MiB/s | 1.35x |
-| SHAKE-128, 64-byte output | about 724 MiB/s | about 526 MiB/s | 1.38x |
-| SHAKE-256, 64-byte output | about 544 MiB/s | about 399 MiB/s | 1.38x |
-| BLAKE2s | 512 MiB/s | 533 MiB/s | 0.96x |
+| MD4 | 1569 MiB/s | 1352 MiB/s | 1.16x |
+| MD5 | 757 MiB/s | 845 MiB/s | 0.90x |
+| SHA-1 | 1733 MiB/s | 1866 MiB/s | 0.95x |
+| SHA-224 | 1521 MiB/s | 1464 MiB/s | 0.97x |
+| SHA-256 | 1507 MiB/s | 1597 MiB/s | 0.94x |
+| SHA-384 | 611 MiB/s | 679 MiB/s | 0.88x |
+| SHA-512 | 698 MiB/s | 701 MiB/s | 0.99x |
+| SHA3-256 | 523 MiB/s | 423 MiB/s | 1.24x |
+| SHA3-512 | 275 MiB/s | 230 MiB/s | 1.19x |
+| SHAKE-128, 64-byte output | 640 MiB/s | 526 MiB/s | 1.22x |
+| SHAKE-256, 64-byte output | 522 MiB/s | 422 MiB/s | 1.24x |
+| BLAKE2s | 594 MiB/s | 555 MiB/s | 1.04x |
 | Streebog-256 |  | unavailable |  |
 | Streebog-512 |  | unavailable |  |
-| AES-128-CBC | 1818 MiB/s | 1882 MiB/s | 0.97x |
-| AES-192-CBC | 1542 MiB/s | 1586 MiB/s | 0.97x |
-| AES-256-CBC | 1346 MiB/s | 1377 MiB/s | 0.98x |
-| DES-CBC | 81 MiB/s | 78 MiB/s | 1.04x |
-| 2-key 3DES-CBC | 30 MiB/s | about 30 MiB/s | 1.01x |
-| ARIA-128-CBC | 154 MiB/s | 149 MiB/s | 1.04x |
-| ARIA-192-CBC | 136 MiB/s | 130 MiB/s | 1.03x |
-| ARIA-256-CBC | 117 MiB/s | 115 MiB/s | 1.03x |
-| RSA-2048 keygen | 54.471 ms | randomized | 1.824x |
-| RSA-2048 sign | 0.285 ms | 0.257 ms | 0.905x |
-| RSA-2048 verify | 0.017 ms | 0.016 ms | 0.910x |
-| DSA-2048 keygen, including fresh parameters | 164.646 ms | randomized | 0.9015x |
-| DSA-2048 sign | 0.196 ms | 0.330 ms | 1.667x |
-| DSA-2048 verify | 0.263 ms | 0.289 ms | 1.103x |
+| AES-128-CBC | 1808 MiB/s | 1882 MiB/s | 0.96x |
+| AES-192-CBC | 1544 MiB/s | 1578 MiB/s | 0.98x |
+| AES-256-CBC | 1333 MiB/s | 1367 MiB/s | 0.98x |
+| DES-CBC | 87 MiB/s | 78 MiB/s | 1.09x |
+| 2-key 3DES-CBC | 31 MiB/s | 30 MiB/s | 1.05x |
+| ARIA-128-CBC | 176 MiB/s | 155 MiB/s | 1.12x |
+| ARIA-192-CBC | 152 MiB/s | 134 MiB/s | 1.13x |
+| ARIA-256-CBC | 132 MiB/s | 120 MiB/s | 1.10x |
+| RSA-2048 keygen | 46.234 ms | 18.423 ms | 0.398x |
+| RSA-2048 sign | 0.295 ms | 0.261 ms | 0.875x |
+| RSA-2048 verify | 0.023 ms | 0.016 ms | 0.700x |
+| DSA-2048 keygen, including fresh parameters | 166.167 ms | 157.247 ms | 0.941x |
+| DSA-2048 sign | 0.252 ms | 0.336 ms | 1.328x |
+| DSA-2048 verify | 0.303 ms | 0.297 ms | 0.982x |
 | GOST R 34.10-2012 |  | unavailable |  |
-| Ed25519 sign, 32-byte message | 0.024 ms | 0.036 ms | 1.53x |
-| Ed25519 verify, 32-byte message | 0.077 ms | 0.098 ms | 1.28x |
-| ChaCha20-Poly1305 seal, 64 KiB | 3796 MiB/s | 4129 MiB/s | 0.92x |
+| Ed25519 sign, 32-byte message | 0.018 ms | 0.033 ms | 1.88x |
+| Ed25519 verify, 32-byte message | 0.049 ms | 0.095 ms | 1.92x |
+| ChaCha20-Poly1305 seal, 64 KiB | 3831 MiB/s | 4041 MiB/s | 0.95x |
 | XChaCha20-Poly1305 seal, 64 KiB |  | unavailable |  |
-| AES-256-GCM seal, 64 KiB | 10692 MiB/s | 11800 MiB/s | 0.90x |
-| ChaCha20-Poly1305 seal, 64-byte record | 264 ns | 258 ns | 0.97x |
+| AES-256-GCM seal, 64 KiB | 10772 MiB/s | 11691 MiB/s | 0.92x |
+| ChaCha20-Poly1305 seal, 64-byte record | 293 ns | 257 ns | 0.98x |
 | XChaCha20-Poly1305 seal, 64-byte record |  | unavailable |  |
-| AES-256-GCM seal, 64-byte record | 83 ns | 75 ns | 0.93x |
-| X25519 keygen | 0.032 ms | 0.033 ms | 1.035x |
-| X25519 derive | 0.032 ms | 0.029 ms | 0.909x |
-| ML-KEM-512 keygen | 0.025 ms | 0.032 ms | 1.24x |
-| ML-KEM-512 encapsulate | 0.019 ms | 0.022 ms | 1.15x |
-| ML-KEM-512 decapsulate | 0.028 ms | 0.035 ms | 1.25x |
-| ML-KEM-768 keygen | 0.042 ms | 0.046 ms | 1.11x |
-| ML-KEM-768 encapsulate | 0.029 ms | 0.031 ms | 1.10x |
-| ML-KEM-768 decapsulate | 0.040 ms | 0.048 ms | 1.18x |
-| ML-KEM-1024 keygen | 0.064 ms | 0.072 ms | 1.13x |
-| ML-KEM-1024 encapsulate | 0.039 ms | 0.043 ms | 1.07x |
-| ML-KEM-1024 decapsulate | 0.053 ms | 0.064 ms | 1.19x |
-| Ed448 sign, 32-byte message | 0.139 ms | 0.200 ms | 1.48x |
-| Ed448 verify, 32-byte message | 0.191 ms | 0.188 ms | 0.99x |
-| ML-DSA-44 sign, 32-byte message | 0.394 ms | 0.541 ms | 1.38x |
-| ML-DSA-44 verify, 32-byte message | 0.090 ms | 0.118 ms | 1.31x |
-| ML-DSA-65 sign, 32-byte message | 0.705 ms | 0.942 ms | 1.32x |
-| ML-DSA-65 verify, 32-byte message | 0.145 ms | 0.182 ms | 1.26x |
-| ML-DSA-87 sign, 32-byte message | 0.858 ms | 1.000 ms | 1.21x |
-| ML-DSA-87 verify, 32-byte message | 0.253 ms | 0.301 ms | 1.17x |
+| AES-256-GCM seal, 64-byte record | 85 ns | 75 ns | 0.93x |
+| X25519 keygen | 0.034 ms | 0.036 ms | 1.042x |
+| X25519 derive | 0.033 ms | 0.029 ms | 0.905x |
+| ML-KEM-512 keygen | 0.025 ms | 0.031 ms | 1.237x |
+| ML-KEM-512 encapsulate | 0.019 ms | 0.022 ms | 1.150x |
+| ML-KEM-512 decapsulate | 0.028 ms | 0.034 ms | 1.221x |
+| ML-KEM-768 keygen | 0.041 ms | 0.046 ms | 1.122x |
+| ML-KEM-768 encapsulate | 0.028 ms | 0.030 ms | 1.077x |
+| ML-KEM-768 decapsulate | 0.040 ms | 0.047 ms | 1.192x |
+| ML-KEM-1024 keygen | 0.062 ms | 0.069 ms | 1.118x |
+| ML-KEM-1024 encapsulate | 0.039 ms | 0.041 ms | 1.071x |
+| ML-KEM-1024 decapsulate | 0.053 ms | 0.063 ms | 1.184x |
+| Ed448 sign, 32-byte message | 0.150 ms | 0.190 ms | 1.26x |
+| Ed448 verify, 32-byte message | 0.196 ms | 0.187 ms | 0.93x |
+| ML-DSA-44 sign, 32-byte message | 0.408 ms | 0.534 ms | 1.31x |
+| ML-DSA-44 verify, 32-byte message | 0.091 ms | 0.122 ms | 1.34x |
+| ML-DSA-65 sign, 32-byte message | 0.672 ms | 0.923 ms | 1.41x |
+| ML-DSA-65 verify, 32-byte message | 0.147 ms | 0.182 ms | 1.24x |
+| ML-DSA-87 sign, 32-byte message | 0.875 ms | 0.959 ms | 1.09x |
+| ML-DSA-87 verify, 32-byte message | 0.229 ms | 0.297 ms | 1.29x |
 
-The 20 prime-field curves and 10 binary-field curves were refreshed with five complete focused
-runs after their respective field and point-arithmetic changes. The process was pinned to one
-logical processor at high priority. This compact table reports the median `certpp / OpenSSL`
-performance ratio; `examples/06_openssl_compare.cpp` prints both absolute latencies. Binary-curve
-ECDH is unavailable because `CEcdsa2` implements signatures only.
+The 20 prime-field curves and 10 binary-field curves were refreshed in the three complete
+post-refactor inventory runs described above. This compact table reports the median paired
+`certpp / OpenSSL` performance ratio; `examples/06_openssl_compare.cpp` prints both absolute
+latencies. Binary-curve ECDH is unavailable because `CEcdsa2` implements signatures only.
 
 | Curve | Keygen | ECDSA sign | ECDSA verify | ECDH derive |
 |---|---:|---:|---:|---:|
-| P-192 | 2.366x | 2.115x | 1.804x | 2.115x |
-| P-224 | 2.006x | 1.794x | 1.663x | 2.057x |
-| P-256 | 0.980x | 0.990x | 0.983x | 1.168x |
-| P-384 | 1.803x | 1.734x | 1.457x | 1.690x |
-| P-521 | 1.637x | 1.718x | 1.251x | 1.684x |
-| secp256k1 | 2.088x | 2.184x | 1.784x | 2.276x |
-| brainpoolP160r1 | 2.223x | 2.022x | 1.888x | 2.094x |
-| brainpoolP192r1 | 2.250x | 2.000x | 1.830x | 2.174x |
-| brainpoolP224r1 | 1.967x | 1.816x | 1.624x | 1.912x |
-| brainpoolP256r1 | 2.073x | 1.816x | 1.708x | 1.866x |
-| brainpoolP320r1 | 1.714x | 1.680x | 1.483x | 1.674x |
-| brainpoolP384r1 | 1.710x | 1.595x | 1.417x | 1.663x |
-| brainpoolP512r1 | 1.176x | 1.091x | 1.001x | 1.200x |
-| brainpoolP160t1 | 2.182x | 1.915x | 1.879x | 2.072x |
-| brainpoolP192t1 | 2.152x | 1.977x | 1.833x | 2.100x |
-| brainpoolP224t1 | 2.041x | 1.930x | 1.636x | 2.050x |
-| brainpoolP256t1 | 1.971x | 1.831x | 1.638x | 1.905x |
-| brainpoolP320t1 | 1.803x | 1.756x | 1.441x | 1.713x |
-| brainpoolP384t1 | 1.808x | 1.666x | 1.427x | 1.706x |
-| brainpoolP512t1 | 1.278x | 1.199x | 1.012x | 1.288x |
-| B-163 | 1.762x | 1.188x | 1.565x | unavailable |
-| K-163 | 1.689x | 1.121x | 1.487x | unavailable |
-| B-233 | 1.785x | 1.191x | 1.543x | unavailable |
-| K-233 | 1.760x | 1.165x | 1.491x | unavailable |
-| B-283 | 1.549x | 1.205x | 1.504x | unavailable |
-| K-283 | 1.476x | 1.130x | 1.418x | unavailable |
-| B-409 | 1.830x | 1.434x | 1.761x | unavailable |
-| K-409 | 1.760x | 1.371x | 1.691x | unavailable |
-| B-571 | 1.705x | 1.489x | 1.728x | unavailable |
-| K-571 | 1.596x | 1.404x | 1.648x | unavailable |
+| P-192 | 2.222x | 2.023x | 1.810x | 2.246x |
+| P-224 | 1.971x | 1.889x | 1.656x | 1.970x |
+| P-256 | 0.676x | 0.958x | 0.965x | 1.205x |
+| P-384 | 1.891x | 1.795x | 1.492x | 1.847x |
+| P-521 | 1.733x | 1.674x | 1.367x | 1.713x |
+| secp256k1 | 2.144x | 1.979x | 1.731x | 2.113x |
+| brainpoolP160r1 | 2.251x | 1.996x | 1.861x | 2.037x |
+| brainpoolP192r1 | 2.267x | 2.024x | 1.824x | 2.144x |
+| brainpoolP224r1 | 2.047x | 1.863x | 1.652x | 1.943x |
+| brainpoolP256r1 | 1.966x | 1.868x | 1.744x | 1.905x |
+| brainpoolP320r1 | 1.852x | 1.756x | 1.545x | 1.812x |
+| brainpoolP384r1 | 1.804x | 1.721x | 1.498x | 1.749x |
+| brainpoolP512r1 | 1.241x | 1.175x | 1.033x | 1.209x |
+| brainpoolP160t1 | 2.185x | 1.898x | 1.741x | 2.021x |
+| brainpoolP192t1 | 2.154x | 1.944x | 1.775x | 2.080x |
+| brainpoolP224t1 | 2.108x | 1.906x | 1.665x | 2.012x |
+| brainpoolP256t1 | 1.999x | 1.828x | 1.637x | 1.936x |
+| brainpoolP320t1 | 1.971x | 1.845x | 1.531x | 1.875x |
+| brainpoolP384t1 | 1.893x | 1.770x | 1.487x | 1.815x |
+| brainpoolP512t1 | 1.338x | 1.262x | 1.029x | 1.281x |
+| B-163 | 1.767x | 1.194x | 1.545x | unavailable |
+| K-163 | 1.698x | 1.158x | 1.515x | unavailable |
+| B-233 | 1.791x | 1.211x | 1.577x | unavailable |
+| K-233 | 1.766x | 1.174x | 1.521x | unavailable |
+| B-283 | 1.549x | 1.207x | 1.473x | unavailable |
+| K-283 | 1.473x | 1.157x | 1.397x | unavailable |
+| B-409 | 1.820x | 1.442x | 1.754x | unavailable |
+| K-409 | 1.731x | 1.369x | 1.685x | unavailable |
+| B-571 | 1.699x | 1.476x | 1.738x | unavailable |
+| K-571 | 1.617x | 1.403x | 1.637x | unavailable |
 
 ECDSA and GOST verification use one public-scalar `linearCombination()` instead of two
 private-scalar ladders followed by an affine addition. The binary-field path now combines

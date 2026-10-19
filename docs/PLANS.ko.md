@@ -41,5 +41,5 @@ Pull request 매트릭스는 필요한 범위로 제한합니다. 지원 운영�
 
 ## 상세 문서
 
-- [Constant-time 및 성능](roadmap/performance.ko.md)
+- [보안 및 성능](roadmap/performance.ko.md): 검토한 비밀 메모리 페이지 잠금 설계 포함
 - [계획에 없음](roadmap/not-planned.ko.md)

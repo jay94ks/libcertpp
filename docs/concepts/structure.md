@@ -61,7 +61,7 @@ include/
       policy.hpp                  # CAlgorithmPolicy/EAlgorithmPolicy: centralized defaults and explicit legacy-generation opt-in
       kems/                        # concrete IKem implementations, one file each (mirrors asyms/)
         mlkem.hpp                     # CMlKem/SMlKemParams/SMlKemPoly/CMlKemSampler: ML-KEM (FIPS 203, post-quantum) over raw spans, K-PKE plus the FO transform with implicit rejection; and MLKEM, the same three parameter sets as an IKem
-      rng.hpp                     # CRng: CSPRNG utility (OS API, std::random_device fallback)
+      rng.hpp                     # IRng interface and CRng OS-backed CSPRNG implementation
       eccurve.hpp                  # CEcCurve/SEcPoint: short-Weierstrass point arithmetic (affine coordinates); EEcKnownCurves + CEcCurve::knownCurves() name the built-in P-192/P-224/P-256/P-384/P-521/secp256k1/Brainpool (RFC 5639, 14 curves) and GOST R 34.10-2012 (9 parameter sets, 2 of them cofactor-4) domain parameters
       ec2curve.hpp                 # CEc2Curve/SEc2Point: binary-curve point arithmetic over CGf2m (affine coordinates); EEc2KnownCurves + CEc2Curve::knownCurves() name the 10 built-in B-163/K-163 .. B-571/K-571 domain parameters
       asym.hpp                   # IAsymmetric (algorithm descriptor/factory) + IAsymmetricContext (bound-key sign/verify + deriveSharedSecret key agreement + encrypter/decrypter factory) + IAsymmetricTransformer (encrypt/decrypt session)
@@ -142,7 +142,7 @@ src/
     hex.cpp                     # CHex::decode()
     json.cpp                    # JSON/BSON parsing and serialization, string escaping and BSON bounds checks
     base64.cpp                   # CBase64 streaming push()/finish() + the static one-shot encode()/decode()
-    bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::CRng
+    bignum.cpp                   # CBigNum: schoolbook add/sub/mul, Knuth-D divMod, modExp/modInverse/gcd, Miller-Rabin primality + prime generation via crypto::IRng
     montgomery.cpp                # CMontgomery: the -m^-1 mod 2^32 Newton iteration, R^2 mod m, and the CIOS Montgomery multiply over CBigNum's raw limbs
     secure.cpp                    # CSecure: the zeroization the optimizer is not allowed to delete, and the constant-time compare/select primitives -- volatile writes and mask arithmetic, with no branch on a secret anywhere in the file
     gf2m.cpp                      # CGf2m: XOR add, shift-and-XOR carry-less multiply + word-level polynomial reduction, binary extended-Euclid inverse; the 5 known fields' reduction polynomials, behind a construct-on-first-use accessor (see this module's doc comment for why)
@@ -195,8 +195,8 @@ src/
       mlkemring.hpp / .cpp          # MlKemRing: private, R_q = Z_q[X]/(X^256 + 1) with q = 3329; NTT/inverse NTT/base-case multiply, twiddles derived from ZETA rather than transcribed
       mlkemcodec.hpp / .cpp          # MlKemCodec: private, FIPS 203's ByteEncode/ByteDecode and Compress/Decompress, plus isCanonical12() -- ByteDecode_12 reduces mod q and so is not injective, which IS the encapsulation-key validity check
       mlkemsampler.cpp                # MlKemSampler: private, SampleNTT (the first consumer of SHAKE128::squeeze()) and the centered binomial sampler
-      mlkem.cpp                        # CMlKem (K-PKE + the FO transform with implicit rejection, over raw spans) and MLKEM (the same three sets as an IKem); the only ML-KEM layer that draws from CRng
-    rng.cpp                    # CRng::fill(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if unavailable
+      mlkem.cpp                        # CMlKem (K-PKE + the FO transform with implicit rejection, over raw spans) and MLKEM (the same three sets as an IKem); the wrapper draws from its context-owned IRng
+    rng.cpp                    # IRng helpers and CRng::fillTo(): BCryptGenRandom on Windows / getrandom(2) on Linux (falls back to /dev/urandom) / /dev/urandom elsewhere on POSIX, falling back to std::random_device if enabled
     transform.cpp               # empty stub -- ITransformer is a pure-virtual interface, nothing out-of-line
     sym.cpp                      # ISymmetric::builtIn() factory dispatch
     syms/
@@ -242,7 +242,7 @@ src/
       ed448.cpp                       # Ed448 implementation (edwards448 field/point arithmetic, SHAKE256-based EdDSA logic), plus its own private EdPublicKey/EdPrivateKey/EdContext classes
       x25519.cpp                       # X25519 implementation (Montgomery-ladder Curve25519 scalar multiplication over Fe25519, RFC 7748), plus the private X25519PublicKey/X25519PrivateKey/X25519Context classes
       gost3410.cpp                      # CGost3410 implementation, plus the private GostPublicKey/GostPrivateKey/GostContext classes
-      mldsa.cpp                          # CMlDsa implementation, plus the private MlDsaPublicKey/MlDsaPrivateKey/MlDsaContext classes; the only ML-DSA layer that draws from CRng
+      mldsa.cpp                          # CMlDsa implementation, plus the private MlDsaPublicKey/MlDsaPrivateKey/MlDsaContext classes; randomized wrapper signing draws from the context-owned IRng
       mldsaring.hpp / .cpp                # MlDsaRing: private, R_q = Z_q[X]/(X^256 + 1) with q = 8380417, complete 8-layer NTT
       mldsarounding.hpp / .cpp             # MlDsaRounding: private, FIPS 204 7.4's Power2Round/Decompose/MakeHint/UseHint
       mldsacodec.hpp / .cpp                 # MlDsaCodec: private, FIPS 204 7.1-7.2's bit packing and hint encoding

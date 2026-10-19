@@ -43,5 +43,6 @@ validation.
 
 ## Detailed pages
 
-- [Constant-time and performance](roadmap/performance.md)
+- [Security and performance](roadmap/performance.md), including the reviewed
+  design for page-locked secret memory
 - [Not planned](roadmap/not-planned.md)

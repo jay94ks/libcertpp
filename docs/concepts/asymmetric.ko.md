@@ -9,10 +9,19 @@
 - **`crypto/asym.hpp`**은 `IAsymmetric`, `IAsymmetricContext`,
   `IAsymmetricTransformer`를 정의합니다. `IAsymmetric`은 키 재료를 보유하지
   않습니다. `keySizes()`는 알고리즘이 무엇을 받아들이는지 기술하고,
-  `generateKeyPair(keySize, out)`/`createPublicKey()`/`createPrivateKey()`는
-  키를 만들거나 파싱하며, `createContext()`(`IStream::createMemory()`의 팩토리
-  패턴을 인스턴스 메서드로 둔 것)는 키가 없는 `IAsymmetricContext`를
-  반환합니다.
+  `generateKeyPair(rng, keySize, out)`은 키를 만들며,
+  `createPublicKey(out, bytes)`/`createPrivateKey(out, bytes)`는 키를
+  역직렬화하고, `createContext(out, rng)`는 키가 없는 `IAsymmetricContext`를
+  반환합니다. 이 `ERetCode`와 out 파라미터 형태가 주 API입니다. 실패 시 출력을
+  비우고 크기, 인코딩, 파라미터, 할당, RNG 실패를 구분합니다. 예전 포인터 반환
+  키/컨텍스트 팩토리는 호환 래퍼로 남으며 `ERET_OK`가 아니면 null을 반환합니다.
+  키의 `serialize(COctet& out)`은 이미 같은 오류 보고 형태를 사용합니다.
+
+  컨텍스트 생성은 컨텍스트가 소유할 `shared_ptr<IRng>` 또는 먼저 복제하는
+  `const IRng&`를 받습니다. 소유한 생성기는 컨텍스트 수명 동안 고정되고 확률적
+  서명과 RSA 암호화 padding에 사용됩니다. RNG가 없는 오버로드는 지역 `CRng`를
+  만들어 이 경로에 위임합니다. 키 생성도 `const IRng&` 경로가 주 경로이고,
+  호환 오버로드는 지역 `CRng`를 만듭니다.
 
   `generateKeyPair()`는 이전 버전이 쓰던 실패-시-빈-`SKeyPair` 관례가 아니라
   `ERetCode`로 결과를 보고하므로(반환값이 아니라 out 파라미터

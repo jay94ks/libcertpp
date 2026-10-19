@@ -7,6 +7,10 @@
 
 namespace certpp {
 
+    namespace crypto {
+        class IRng;
+    }
+
     // --> Forward declaration; defined after CBigNum below (a CBigNum member can't be nested
     // inside CBigNum itself, since CBigNum isn't a complete type yet at that point).
     struct SignedBig;
@@ -121,12 +125,14 @@ namespace certpp {
 
         /* Runs Miller--Rabin after the caller has already ruled out every SMALL_PRIMES divisor.
          * generatePrime() uses this to reuse one seed's sieve residues across nearby candidates. */
-        bool isProbablePrimeAfterSieve(size_t rounds) const;
+        bool isProbablePrimeAfterSieve(const crypto::IRng& rng, size_t rounds) const;
 
         /* Generates a prime with out == 1 (mod step), reusing small-prime residues while walking
          * one bounded progression. DSA owns the only current use: p == 1 (mod 2q). */
         static bool generatePrimeCongruentOne(
             size_t bits, const CBigNum& step, CBigNum& out);
+        static bool generatePrimeCongruentOne(
+            const crypto::IRng& rng, size_t bits, const CBigNum& step, CBigNum& out);
 
     public:
         /**
@@ -379,20 +385,27 @@ namespace certpp {
 
     public:
         /**
-         * Generates a uniformly random value in [0, 2^bits), via crypto::CRng.
+         * Generates a uniformly random value in [0, 2^bits) through a local crypto::CRng.
          * @param bits The number of bits of randomness to draw.
          * @param out Receives the random value.
-         * @return true on success; false if the underlying CRng::fill() call failed.
+         * @return true on success; false if the underlying generator failed.
          */
         static bool random(size_t bits, CBigNum& out);
 
+        /** Generates a uniformly random value in [0, 2^bits) through rng. */
+        static bool random(const crypto::IRng& rng, size_t bits, CBigNum& out);
+
         /**
-         * Generates a uniformly random value in [0, bound), via crypto::CRng.
+         * Generates a uniformly random value in [0, bound) through a local crypto::CRng.
          * @param bound The exclusive upper bound; must not be zero.
          * @param out Receives the random value.
-         * @return true on success; false if bound is zero or the underlying CRng::fill() call failed.
+         * @return true on success; false if bound is zero or the underlying generator failed.
          */
         static bool randomBelow(const CBigNum& bound, CBigNum& out);
+
+        /** Generates a uniformly random value in [0, bound) through rng. */
+        static bool randomBelow(
+            const crypto::IRng& rng, const CBigNum& bound, CBigNum& out);
 
         /**
          * Tests whether this value is probably prime, via Miller-Rabin (preceded by trial
@@ -403,15 +416,21 @@ namespace certpp {
          */
         bool isProbablePrime(size_t rounds = 20) const;
 
+        /** Runs Miller-Rabin with witnesses drawn through rng. */
+        bool isProbablePrime(const crypto::IRng& rng, size_t rounds = 20) const;
+
         /**
          * Generates a random probable prime of exactly bits bits. The top two bits and the
          * bottom bit are always set, so a product of two such primes always has exactly 2*bits
          * bits and is always odd.
          * @param bits The bit length to generate; must be at least 2.
          * @param out Receives the generated prime.
-         * @return true on success; false on failure (invalid bits, or a CRng::fill() failure).
+         * @return true on success; false on failure (invalid bits or generator failure).
          */
         static bool generatePrime(size_t bits, CBigNum& out);
+
+        /** Generates a random probable prime using rng for candidates and witnesses. */
+        static bool generatePrime(const crypto::IRng& rng, size_t bits, CBigNum& out);
     };
 
     /**

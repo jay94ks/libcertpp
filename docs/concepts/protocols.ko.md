@@ -235,8 +235,15 @@
   다음 워드 12–15로 나갑니다. 그것에 `block()`을 재사용하면 자기 자신에
   대해서는 왕복하고 다른 어떤 구현과도 일치하지 않는 부분키가 나오는데,
   그래서 기존 함수의 플래그가 아니라 별개 함수입니다.
-- **`crypto/rng.hpp` / `src/crypto/rng.cpp`**는 `CRng`, CSPRNG 유틸리티를
-  정의합니다. `fill(const SByteSpan&) -> ERetCode`는 제3자 라이브러리가
+- **`crypto/rng.hpp` / `src/crypto/rng.cpp`**는 난수 소스 인터페이스 `IRng`와
+  운영체제 기반 구현 `CRng`를 정의합니다. `IRng::fillTo()`와 재정의 가능한
+  `fillNonZeroTo()`는 `const`이므로 알고리즘이 `const IRng&`를 받을 수 있습니다.
+  상태가 있는 구현은 커서나 엔트로피 상태를 논리적으로 mutable한 내부 상태로
+  둘 수 있습니다. `clone(shared_ptr<IRng>&)`은 컨텍스트가 호출자 저장소의 참조를
+  보유하지 않고 독립적으로 소유한 생성기를 갖게 합니다. `shared_ptr<IRng>`로 만든
+  컨텍스트는 그 공유 인스턴스를 보유하고, `const IRng&` 오버로드는 복제합니다.
+
+  `CRng::fillTo(const SByteSpan&) -> ERetCode`는 제3자 라이브러리가
   아니라 운영체제의 CSPRNG로 직접 뒷받침됩니다 — Windows에서는
   `BCryptGenRandom`(Windows CNG. `bcrypt.lib`로 링크), Linux에서는
   `getrandom(2)` 시스템 콜(Linux 3.17+. `EINTR`/짧은 읽기를 넘어 반복하고,
@@ -246,9 +253,14 @@
   `std::random_device`가 모든 표준 라이브러리에서 암호학적으로 안전함이
   보장되지 않으므로, 기본으로 켜 둘 것이 아니라 OS 수준 CSPRNG가 진짜로 없는
   환경을 위한 임시 조치입니다)이 켜져 있을 때에만 `std::random_device`로
-  대체합니다. 꺼 두면 대체 경로가 완전히 컴파일에서 빠지고 `fill()`은 대신
-  `ERET_NOTSUP`을 반환합니다. `fillNonZero(const SByteSpan&)`은 `fill()` 위의
+  대체합니다. 꺼 두면 대체 경로가 완전히 컴파일에서 빠지고 `fillTo()`는 대신
+  `ERET_NOTSUP`을 반환합니다. `fillNonZeroTo(const SByteSpan&)`은 `fillTo()` 위의
   거부 샘플링으로 버퍼를 무작위 *0이 아닌* 바이트로 채우며, 0 바이트를
-  금지하는 padding 스킴(RSAES-PKCS1-v1_5)을 위한 것입니다. 어떤 `asyms/`
-  구현이든 존재하게 되면 키 생성(`IAsymmetric::generateKeyPair()`)과 암호화
-  padding이 필요로 합니다.
+  금지하는 padding 스킴(RSAES-PKCS1-v1_5)을 위한 것입니다. 예전 정적
+  `CRng::fill()`과 `CRng::fillNonZero()`는 지역 `CRng` 인스턴스를 만드는 호환
+  래퍼로 남아 있습니다.
+
+  키 생성, 대칭키/IV 생성, 확률적 서명, 암호화 padding, KEM 캡슐화, PFX salt,
+  OCSP nonce에는 모두 `IRng`를 받는 경로가 있습니다. RNG를 받지 않는 오버로드는
+  지역 `CRng`를 만들고, 컨텍스트는 생성 시 소유한 생성기를 봉인하며 이를 바꾸는
+  동작을 노출하지 않습니다.

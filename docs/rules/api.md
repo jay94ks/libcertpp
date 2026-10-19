@@ -134,7 +134,7 @@
   - Genuine reversals (`out[i] = in[N-1-i]`) or in-place swaps
     (`CBigNum::reverseBytesInPlace`) — `memcpy`/`memmove` are order-
     preserving only and can't express either.
-  - Conditional/filtered copies, e.g. `CRng::fillNonZero()`'s
+  - Conditional/filtered copies, e.g. `IRng::fillNonZeroTo()`'s
     reject-zero-bytes loop — not unconditional, so not a `memcpy`.
   - Per-round-indexed schedule data (AES/DES/3DES round-key arrays) when
     genuinely indexed by round rather than treated as a flat byte buffer;

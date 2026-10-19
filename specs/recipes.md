@@ -216,16 +216,25 @@ need random ones, and `CAesGcm` the same again.
 IAsymmetricPtr algo = IAsymmetric::builtIn(EASYM_P256);
 
 SKeyPair pair;
-algo->generateKeyPair(SKeySize(256), pair);
+CRng rng;
+if (algo->generateKeyPair(rng, SKeySize(256), pair) != ERET_OK) {
+    return;
+}
 
-IAsymmetricContextPtr ctx = algo->createContext();
+IAsymmetricContextPtr ctx;
+if (algo->createContext(ctx, rng) != ERET_OK) {
+    return;
+}
 ctx->keyPair(pair);
 
 COctet signature;
 ctx->sign(digest, signature);             // ECDSA signs a digest
 
 // Verification needs only the public half.
-IAsymmetricContextPtr verifier = algo->createContext();
+IAsymmetricContextPtr verifier;
+if (algo->createContext(verifier) != ERET_OK) {
+    return;
+}
 verifier->keyPair(pair.publicKey, nullptr);
 verifier->verify(digest.toSpan(), signature.toSpan());
 ```
@@ -236,6 +245,25 @@ For Ed25519, Ed448 and ML-DSA the `digest` parameter carries the **message**,
 not a digest — those schemes hash internally. `ctx->sizeOfDigest() == 0` is the
 signal, and `CCert::signsMessageDirectly()` is the predicate for the
 certificate-level equivalent.
+
+## Serialize and import a key
+
+```cpp
+COctet encoded;
+if (pair.privateKey->serialize(encoded) != ERET_OK) {
+    return;
+}
+
+IPrivateKeyPtr restored;
+ERetCode status = algo->createPrivateKey(restored, encoded);
+if (status != ERET_OK) {
+    return; // distinguish ERET_KEY_SIZE, ERET_KEY_FORMAT, ERET_KEY_PARAM, ...
+}
+```
+
+Use the `ERetCode` plus out-parameter import overload for untrusted input. The
+pointer-returning overload is retained for compatibility but collapses every
+failure reason to null. Public keys and KEM keys follow the same pattern.
 
 ## Agree a shared secret
 
@@ -353,9 +381,17 @@ gave up.
 ## Random bytes
 
 ```cpp
+CRng rng;
 uint8_t nonce[12];
-CRng::fill(SByteSpan(nonce, sizeof(nonce)));   // OS CSPRNG
+if (rng.fillTo(SByteSpan(nonce, sizeof(nonce))) != ERET_OK) {
+    return; // there is no safe fallback to rand()
+}
 ```
+
+Pass a `const IRng&` to key/IV generation or to `createContext(out, rng)` when
+the application supplies its own random source. Context creation clones an
+`IRng&`; the `shared_ptr<IRng>` overload instead shares ownership. In either
+case the selected generator cannot be replaced on the context afterward.
 
 ## Constant-time comparison and wiping
 

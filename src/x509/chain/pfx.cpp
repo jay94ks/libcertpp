@@ -1387,6 +1387,15 @@ namespace x509 {
     ERetCode CPfxFormat::save(
         const CCertCollection& in, const SReadOnlyByteSpan& password, CBuffer& out
     ) const {
+        crypto::CRng rng;
+        return save(rng, in, password, out);
+    }
+
+    /* Writes a collection using caller-provided randomness for all salts and IVs. */
+    ERetCode CPfxFormat::save(
+        const crypto::IRng& rng, const CCertCollection& in,
+        const SReadOnlyByteSpan& password, CBuffer& out
+    ) const {
         out.clear();
 
         if (in.empty()) {
@@ -1473,8 +1482,8 @@ namespace x509 {
 
             CBuffer encrypted;
             if (!spec.salt.resize(SALT_BYTES) || !spec.iv.resize(CBC_IV_BYTES)
-                || crypto::CRng::fill(spec.salt.toSpan()) != ERET_OK
-                || crypto::CRng::fill(spec.iv.toSpan()) != ERET_OK)
+                || rng.fillTo(spec.salt.toSpan()) != ERET_OK
+                || rng.fillTo(spec.iv.toSpan()) != ERET_OK)
             {
                 result = ERET_UNKNOWN;
             } else {
@@ -1523,8 +1532,8 @@ namespace x509 {
 
             CBuffer encrypted;
             if (!spec.salt.resize(SALT_BYTES) || !spec.iv.resize(CBC_IV_BYTES)
-                || crypto::CRng::fill(spec.salt.toSpan()) != ERET_OK
-                || crypto::CRng::fill(spec.iv.toSpan()) != ERET_OK)
+                || rng.fillTo(spec.salt.toSpan()) != ERET_OK
+                || rng.fillTo(spec.iv.toSpan()) != ERET_OK)
             {
                 return ERET_UNKNOWN;
             }
@@ -1596,7 +1605,7 @@ namespace x509 {
         // password, where everything above used the raw password bytes through PBES2.
         {
             CBuffer bmp;
-            if (crypto::CRng::fill(SByteSpan(macSalt, sizeof(macSalt))) == ERET_OK
+            if (rng.fillTo(SByteSpan(macSalt, sizeof(macSalt))) == ERET_OK
                 && toBmpPassword(password, bmp)
                 && p12Kdf(MAC_HASH, bmp.toSpan(), SReadOnlyByteSpan(macSalt, sizeof(macSalt)),
                           _iterations, SByteSpan(macKey, macBytes), 3))

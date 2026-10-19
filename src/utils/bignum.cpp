@@ -1075,6 +1075,11 @@ namespace certpp {
     }
 
     bool CBigNum::random(size_t bits, CBigNum& out) {
+        crypto::CRng rng;
+        return random(rng, bits, out);
+    }
+
+    bool CBigNum::random(const crypto::IRng& rng, size_t bits, CBigNum& out) {
         if (bits == 0) {
             out = CBigNum();
             return true;
@@ -1083,7 +1088,7 @@ namespace certpp {
         size_t bytes = (bits + 7) / 8;
         CBuffer buf(bytes);
 
-        if (crypto::CRng::fill(buf.toSpan()) != ERET_OK) {
+        if (rng.fillTo(buf.toSpan()) != ERET_OK) {
             return false;
         }
 
@@ -1098,6 +1103,13 @@ namespace certpp {
     }
 
     bool CBigNum::randomBelow(const CBigNum& bound, CBigNum& out) {
+        crypto::CRng rng;
+        return randomBelow(rng, bound, out);
+    }
+
+    bool CBigNum::randomBelow(
+        const crypto::IRng& rng, const CBigNum& bound, CBigNum& out
+    ) {
         if (bound.isZero()) {
             return false;
         }
@@ -1105,7 +1117,7 @@ namespace certpp {
         size_t bits = bound.bitLength();
         for (size_t attempt = 0; attempt < 1000; ++attempt) {
             CBigNum candidate;
-            if (!random(bits, candidate)) {
+            if (!random(rng, bits, candidate)) {
                 return false;
             }
 
@@ -1119,6 +1131,11 @@ namespace certpp {
     }
 
     bool CBigNum::isProbablePrime(size_t rounds) const {
+        crypto::CRng rng;
+        return isProbablePrime(rng, rounds);
+    }
+
+    bool CBigNum::isProbablePrime(const crypto::IRng& rng, size_t rounds) const {
         if (compare(CBigNum(uint64_t(2))) < 0) {
             return false;
         }
@@ -1158,10 +1175,10 @@ namespace certpp {
             first = last;
         }
 
-        return isProbablePrimeAfterSieve(rounds);
+        return isProbablePrimeAfterSieve(rng, rounds);
     }
 
-    bool CBigNum::isProbablePrimeAfterSieve(size_t rounds) const {
+    bool CBigNum::isProbablePrimeAfterSieve(const crypto::IRng& rng, size_t rounds) const {
         CBigNum nMinus1(*this);
         nMinus1.sub(CBigNum(uint64_t(1)));
 
@@ -1185,7 +1202,7 @@ namespace certpp {
 
         for (size_t i = 0; i < rounds; ++i) {
             CBigNum witness;
-            if (!randomBelow(nMinus3, witness)) {
+            if (!randomBelow(rng, nMinus3, witness)) {
                 return false;
             }
 
@@ -1219,6 +1236,11 @@ namespace certpp {
     }
 
     bool CBigNum::generatePrime(size_t bits, CBigNum& out) {
+        crypto::CRng rng;
+        return generatePrime(rng, bits, out);
+    }
+
+    bool CBigNum::generatePrime(const crypto::IRng& rng, size_t bits, CBigNum& out) {
         if (bits < 2) {
             return false;
         }
@@ -1227,7 +1249,7 @@ namespace certpp {
         size_t attempts = 0;
         while (attempts < MAX_ATTEMPTS) {
             CBigNum seed;
-            if (!random(bits, seed)) {
+            if (!random(rng, bits, seed)) {
                 return false;
             }
             seed.setBit(bits - 1);
@@ -1239,7 +1261,7 @@ namespace certpp {
             // composite and is intended for the cryptographic-size candidates that dominate keygen.
             if (bits <= 12) {
                 ++attempts;
-                if (seed.isProbablePrime()) {
+                if (seed.isProbablePrime(rng)) {
                     out = seed;
                     return true;
                 }
@@ -1299,7 +1321,7 @@ namespace certpp {
                 if (candidate.bitLength() != bits) {
                     break;
                 }
-                if (candidate.isProbablePrimeAfterSieve(20)) {
+                if (candidate.isProbablePrimeAfterSieve(rng, 20)) {
                     out = std::move(candidate);
                     return true;
                 }
@@ -1311,6 +1333,13 @@ namespace certpp {
 
     bool CBigNum::generatePrimeCongruentOne(
         size_t bits, const CBigNum& step, CBigNum& out
+    ) {
+        crypto::CRng rng;
+        return generatePrimeCongruentOne(rng, bits, step, out);
+    }
+
+    bool CBigNum::generatePrimeCongruentOne(
+        const crypto::IRng& rng, size_t bits, const CBigNum& step, CBigNum& out
     ) {
         if (bits < 2 || step.isZero() || !step.isEven()) {
             return false;
@@ -1324,7 +1353,7 @@ namespace certpp {
         size_t attempts = 0;
         while (attempts < MAX_ATTEMPTS) {
             CBigNum candidate;
-            if (!random(bits, candidate)) {
+            if (!random(rng, bits, candidate)) {
                 return false;
             }
             candidate.setBit(bits - 1);
@@ -1388,7 +1417,7 @@ namespace certpp {
                         }
                     }
                 }
-                if (passesSieve && candidate.isProbablePrimeAfterSieve(20)) {
+                if (passesSieve && candidate.isProbablePrimeAfterSieve(rng, 20)) {
                     out = std::move(candidate);
                     return true;
                 }

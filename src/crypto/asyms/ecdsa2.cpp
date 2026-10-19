@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/ecdsa2.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/asn1/der.hpp>
 #include <certpp/asn1/decoder.hpp>
 #include <certpp/io/buffer.hpp>
@@ -151,6 +152,9 @@ namespace crypto {
         };
 
         class Ec2Context : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         protected:
             void onReset() override {
                 auto priv = std::dynamic_pointer_cast<Ec2PrivateKey>(privateKey());
@@ -171,6 +175,7 @@ namespace crypto {
 
         public:
             ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out) override {
+                const IRng& rng = randomGenerator();
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -195,7 +200,7 @@ namespace crypto {
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
-                    if (!CBigNum::randomBelow(nMinus1, k)) {
+                    if (!CBigNum::randomBelow(rng, nMinus1, k)) {
                         return ERET_UNKNOWN;
                     }
                     k.add(CBigNum(uint64_t(1))); // k in [1, n-1]
@@ -332,7 +337,7 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode CEcdsa2::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode CEcdsa2::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         if (keySize != _curve.field->m) {
@@ -343,7 +348,7 @@ namespace crypto {
         nMinus1.sub(CBigNum(uint64_t(1)));
 
         CBigNum d;
-        if (!CBigNum::randomBelow(nMinus1, d)) {
+        if (!CBigNum::randomBelow(rng, nMinus1, d)) {
             return ERET_UNKNOWN;
         }
         d.add(CBigNum(uint64_t(1))); // d in [1, n-1]
@@ -419,52 +424,75 @@ namespace crypto {
         return ERET_OK;
     }
 
-    IPublicKeyPtr CEcdsa2::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CEcdsa2::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         SEc2Point q;
         if (!_curve.decodePoint(keyData, q) || q.infinity) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
-
-        return std::make_shared<Ec2PublicKey>(_curve, q, _which);
+        try {
+            out = std::make_shared<Ec2PublicKey>(_curve, q, _which);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IPrivateKeyPtr CEcdsa2::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CEcdsa2::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         TReadOnlySpan<uint8_t> content;
         if (!CDer::readOuterSequence(keyData, content)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum version;
         if (!CDer::readBigInteger(content, version) || version != CBigNum(uint64_t(0))) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum d;
         if (!CDer::readBigInteger(content, d)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         asn1::CTag tag;
         TReadOnlySpan<uint8_t> pubContent;
         if (!asn1::CDecoder::readNextElement(content, asn1::EAENC_DER, tag, pubContent)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         if (!tag.equals(asn1::CTag(asn1::EAUTAG_STRING_OCTET, false)) || !content.empty()) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         SEc2Point q;
         if (!_curve.decodePoint(pubContent, q)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
-
-        auto pub = std::make_shared<Ec2PublicKey>(_curve, q, _which);
-        return std::make_shared<Ec2PrivateKey>(_curve, d, pub, _which);
+        try {
+            auto pub = std::make_shared<Ec2PublicKey>(_curve, q, _which);
+            out = std::make_shared<Ec2PrivateKey>(_curve, d, pub, _which);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IAsymmetricContextPtr CEcdsa2::createContext() const {
-        return std::make_shared<Ec2Context>();
+    ERetCode CEcdsa2::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<Ec2Context>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

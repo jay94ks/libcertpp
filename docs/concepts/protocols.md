@@ -245,8 +245,16 @@
   `block()` for it would produce a subkey that round-trips against itself and
   matches no other implementation, which is why it is a separate function
   rather than a flag on the existing one.
-- **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define `CRng`, a CSPRNG utility.
-  `fill(const SByteSpan&) -> ERetCode` is backed directly by the operating
+- **`crypto/rng.hpp` / `src/crypto/rng.cpp`** define the `IRng` random-source
+  interface and its OS-backed `CRng` implementation. `IRng::fillTo()` and the
+  overridable `fillNonZeroTo()` are `const`, so algorithms can accept a
+  `const IRng&`; a stateful implementation may keep its cursor or entropy
+  state internally as logically mutable. `clone(shared_ptr<IRng>&)` gives a
+  context an independently owned generator without retaining a reference to
+  caller storage. A context created from a `shared_ptr<IRng>` retains that
+  shared instance, while the `const IRng&` overload clones it.
+
+  `CRng::fillTo(const SByteSpan&) -> ERetCode` is backed directly by the operating
   system's CSPRNG -- `BCryptGenRandom` (Windows CNG, linked via
   `bcrypt.lib`) on Windows, the `getrandom(2)` syscall (Linux 3.17+,
   looping past `EINTR`/short reads, with a `/dev/urandom` fallback for
@@ -258,8 +266,15 @@
   something to leave on by default, since `std::random_device` isn't
   guaranteed cryptographically secure on every standard library) is
   enabled; leaving it disabled compiles the fallback path out entirely and
-  `fill()` returns `ERET_NOTSUP` instead. `fillNonZero(const SByteSpan&)`
+  `fillTo()` returns `ERET_NOTSUP` instead. `fillNonZeroTo(const SByteSpan&)`
   fills a buffer with random *nonzero* bytes via rejection sampling over
-  `fill()`, for padding schemes that forbid zero bytes (RSAES-PKCS1-v1_5).
-  Needed by key generation (`IAsymmetric::generateKeyPair()`) and
-  encryption padding once any `asyms/` implementation exists.
+  `fillTo()`, for padding schemes that forbid zero bytes
+  (RSAES-PKCS1-v1_5). The older static `CRng::fill()` and
+  `CRng::fillNonZero()` helpers remain as compatibility wrappers around a
+  local `CRng` instance.
+
+  Key generation, symmetric key/IV generation, probabilistic signatures,
+  encryption padding, KEM encapsulation, PFX salts, and OCSP nonces all have
+  an `IRng`-accepting path. Overloads without an RNG construct a local
+  `CRng`; contexts seal their owned generator at construction and expose no
+  operation that replaces it.

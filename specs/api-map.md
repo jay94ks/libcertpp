@@ -57,9 +57,9 @@ Namespaces: `certpp::` for `io`/`utils`/top-level types, `certpp::asn1::`,
 
 | Task | Header | Entry point |
 | --- | --- | --- |
-| Any signature algorithm | `crypto/asym.hpp`, `crypto/keys.hpp` | `IAsymmetric::builtIn(EASYM_P256)`, then `createContext()` |
-| Generate a key pair | `crypto/asym.hpp` | `IAsymmetric::generateKeyPair(bits, out)` |
-| Import a public / private key | `crypto/asym.hpp` | `createPublicKey(span)`, `createPrivateKey(span)` |
+| Any signature algorithm | `crypto/asym.hpp`, `crypto/keys.hpp` | `IAsymmetric::builtIn(EASYM_P256)`, then `createContext(out, rng)` |
+| Generate a key pair | `crypto/asym.hpp` | `IAsymmetric::generateKeyPair(rng, bits, out)`; the no-RNG overload uses a local `CRng` |
+| Serialize / import a public or private key | `crypto/keys.hpp`, `crypto/asym.hpp` | `key->serialize(out)`, `createPublicKey(out, span)`, `createPrivateKey(out, span)`; pointer-returning parsers remain as compatibility overloads |
 | Sign / verify | `crypto/asym.hpp` | `IAsymmetricContext::sign()`, `verify()`, `signPss()`, `verifyPss()` |
 | ECDH / X25519 key agreement | `crypto/asym.hpp` | `IAsymmetricContext::deriveSharedSecret(peer, out)` |
 | Curve parameters | `crypto/eccurve.hpp`, `crypto/ec2curve.hpp` | `CEcCurve::knownCurves(ECURVE_P256, out)`; `CEc2Curve` for binary curves; `linearCombination()` is for public verification scalars only |
@@ -102,7 +102,7 @@ unless the caller deliberately manages an exactly sized output span.
 | Base64 | `utils/base64.hpp` | `CBase64::encode()`, `decode()` |
 | Hex | `utils/hex.hpp` | `CHex` |
 | Parse / build JSON values and BSON documents | `utils/json.hpp` | `CJson`, `CJsonPtr`, `parseJson()`, `parseBson()` |
-| Random bytes | `crypto/rng.hpp` | `CRng::fill(span)` |
+| Random bytes and injection | `crypto/rng.hpp` | `IRng::fillTo(span)`, `fillNonZeroTo(span)`, `clone(out)`; `CRng` is the OS-backed implementation |
 | Object identifiers | `oid.hpp` | `SRawOid`, `SKnownOid`, `COid`; parse/format arbitrary OIDs and compare against the named constants |
 
 ## Buffers and spans

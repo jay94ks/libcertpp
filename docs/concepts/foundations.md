@@ -144,7 +144,8 @@
   `sub`/`mul`/`divMod`/`mod`/`mulMod`/`modSub`/`modNeg`/`shl`/`shr` for basic
   and modular arithmetic, `modExp`/`modInverse`/`gcd` for RSA/DSA/EC-style
   modular arithmetic, and `isProbablePrime` (Miller-Rabin, preceded by
-  small-prime trial division)/`generatePrime` (via `crypto::CRng`) for
+  small-prime trial division)/`generatePrime` (via a caller-supplied
+  `crypto::IRng`, with a local `CRng` compatibility overload) for
   RSA/DSA key generation. `fromHex`/`fromLittleEndian`/`toLittleEndian`/
   `fromBigEndianTruncated` round out construction/serialization (the hex
   parsing itself lives in the standalone `CHex` utility, see below);

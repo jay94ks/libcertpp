@@ -1,4 +1,5 @@
 #include <certpp/crypto/asym.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/asyms/rsa.hpp>
 #include <certpp/crypto/asyms/dsa.hpp>
 #include <certpp/crypto/asyms/ecdsa.hpp>
@@ -11,6 +12,53 @@
 
 namespace certpp {
 namespace crypto {
+
+    IAsymmetricContext::IAsymmetricContext(const std::shared_ptr<IRng>& rng)
+        : _rng(rng), _sizeOfSign(0), _sizeOfDigest(0) { }
+
+    /* Returns the context-owned generator used by randomized operations. */
+    const IRng& IAsymmetricContext::randomGenerator() const {
+        return *_rng;
+    }
+
+    /* Generates a key pair through the default operating-system-backed generator. */
+    ERetCode IAsymmetric::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+        CRng rng;
+        return generateKeyPair(rng, keySize, out);
+    }
+
+    /* Clones a caller-owned generator before placing it in a long-lived context. */
+    ERetCode IAsymmetric::createContext(
+        IAsymmetricContextPtr& out, const IRng& rng
+    ) const {
+        out.reset();
+        std::shared_ptr<IRng> owned;
+        const ERetCode result = rng.clone(owned);
+        if (result != ERET_OK) {
+            return result;
+        }
+        return createContext(out, owned);
+    }
+
+    /* Default for algorithms that do not support signing. */
+    ERetCode IAsymmetricContext::sign(
+        const SReadOnlyByteSpan& digest, SByteSpan& out
+    ) {
+        (void)digest;
+        (void)out;
+        return ERET_NOTSUP;
+    }
+
+    /* Default for algorithms that do not support RSASSA-PSS signing. */
+    ERetCode IAsymmetricContext::signPss(
+        const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, SByteSpan& out
+    ) {
+        (void)digest;
+        (void)hashAlg;
+        (void)saltLen;
+        (void)out;
+        return ERET_NOTSUP;
+    }
 
     IAsymmetricPtr IAsymmetric::builtIn(EAsymmetrics which) {
         switch (which) {

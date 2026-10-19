@@ -2,6 +2,7 @@
 #define __INCLUDE_CERTPP_HPP__
 
 #include <certpp/common.hpp>
+#include <certpp/opaque_ptr.hpp>
 #include <certpp/version.hpp>
 #include <certpp/time.hpp>
 #include <certpp/string.hpp>

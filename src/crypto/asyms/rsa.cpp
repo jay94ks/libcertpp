@@ -160,6 +160,9 @@ namespace crypto {
         };
 
         class RsaContext : public IAsymmetricContext, public std::enable_shared_from_this<RsaContext> {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         protected:
             void onReset() override {
                 auto priv = std::dynamic_pointer_cast<RsaPrivateKey>(privateKey());
@@ -584,6 +587,7 @@ namespace crypto {
             ERetCode signPss(
                 const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, SByteSpan& out
             ) override {
+                const IRng& rng = randomGenerator();
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -613,7 +617,7 @@ namespace crypto {
 
                 CBuffer salt(saltLen);
                 if (saltLen > 0) {
-                    ERetCode rc = CRng::fill(salt.toSpan());
+                    ERetCode rc = rng.fillTo(salt.toSpan());
                     if (rc != ERET_OK) {
                         return rc;
                     }
@@ -708,7 +712,8 @@ namespace crypto {
                 emPtr[1] = 0x02;
 
                 size_t padLen = keyBytes - message.size - 3;
-                ERetCode padStatus = CRng::fillNonZero(SByteSpan(emPtr + 2, padLen));
+                ERetCode padStatus = randomGenerator().fillNonZeroTo(
+                    SByteSpan(emPtr + 2, padLen));
                 if (padStatus != ERET_OK) {
                     return padStatus;
                 }
@@ -950,7 +955,7 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode RSA::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode RSA::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         bool ok = false;
@@ -971,7 +976,8 @@ namespace crypto {
 
         for (int attempt = 0; attempt < 100; ++attempt) {
             CBigNum p, q;
-            if (!CBigNum::generatePrime(halfBits, p) || !CBigNum::generatePrime(halfBits, q)) {
+            if (!CBigNum::generatePrime(rng, halfBits, p)
+                || !CBigNum::generatePrime(rng, halfBits, q)) {
                 return ERET_UNKNOWN;
             }
 
@@ -1117,28 +1123,38 @@ namespace crypto {
         return ERET_OK;
     }
 
-    IPublicKeyPtr RSA::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode RSA::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         TReadOnlySpan<uint8_t> content;
         if (!asn1::CDer::readOuterSequence(keyData, content)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum n, e;
         if (!asn1::CDer::readBigInteger(content, n) || !asn1::CDer::readBigInteger(content, e)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         if (!content.empty() || n.isZero() || e.isZero()) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
-
-        return std::make_shared<RsaPublicKey>(n, e);
+        try {
+            out = std::make_shared<RsaPublicKey>(n, e);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IPrivateKeyPtr RSA::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode RSA::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         TReadOnlySpan<uint8_t> content;
         if (!asn1::CDer::readOuterSequence(keyData, content)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum version, n, e, d, p, q, dp, dq, qInv;
@@ -1153,15 +1169,28 @@ namespace crypto {
             && asn1::CDer::readBigInteger(content, qInv);
 
         if (!ok || !content.empty() || version != CBigNum(uint64_t(0))) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
-
-        auto pub = std::make_shared<RsaPublicKey>(n, e);
-        return std::make_shared<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+        try {
+            auto pub = std::make_shared<RsaPublicKey>(n, e);
+            out = std::make_shared<RsaPrivateKey>(n, e, d, p, q, dp, dq, qInv, pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IAsymmetricContextPtr RSA::createContext() const {
-        return std::make_shared<RsaContext>();
+    ERetCode RSA::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<RsaContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

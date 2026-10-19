@@ -24,5 +24,5 @@ TEST_CASE("SSocketAddress resolves numeric and hostname addresses") {
     CHECK(addresses.front().port() == 5353);
 
     SSocketAddress missing;
-    CHECK(SSocketAddress::resolve(missing, CString("libcertpp-no-such-host.invalid")) == ERET_NOTFOUND);
+    CHECK(SSocketAddress::resolve(missing, CString("libcertpp-no-such-host.invalid")) == ERET_NOENT);
 }

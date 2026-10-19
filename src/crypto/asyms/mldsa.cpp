@@ -158,6 +158,9 @@ namespace crypto {
         }
 
         class MlDsaContext : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         private:
             MlDsaParams _params;
             SKeySize _keySize;
@@ -189,9 +192,12 @@ namespace crypto {
             }
 
         public:
-            MlDsaContext() : _params(MlDsaParams::mlDsa44()), _keySize(0), _ready(false) { }
+            explicit MlDsaContext(const std::shared_ptr<IRng>& rng)
+                : IAsymmetricContext(rng), _params(MlDsaParams::mlDsa44()),
+                  _keySize(0), _ready(false) { }
 
             ERetCode sign(const SReadOnlyByteSpan& message, SByteSpan& out) override {
+                const IRng& rng = randomGenerator();
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -212,7 +218,7 @@ namespace crypto {
                 // reached through MlDsaScheme directly rather than exposed here -- a caller who
                 // does not specifically want it should not be able to select it by accident.
                 uint8_t rnd[MlDsaScheme::RND_BYTES];
-                if (CRng::fill(SByteSpan(rnd, sizeof(rnd))) != ERET_OK) {
+                if (rng.fillTo(SByteSpan(rnd, sizeof(rnd))) != ERET_OK) {
                     return ERET_UNKNOWN;
                 }
 
@@ -286,7 +292,7 @@ namespace crypto {
     }
 
     /* Generates a new ML-DSA key pair from 32 fresh CSPRNG bytes. */
-    ERetCode CMlDsa::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode CMlDsa::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         MlDsaParams params = MlDsaParams::mlDsa44();
@@ -299,7 +305,7 @@ namespace crypto {
         }
 
         uint8_t seed[MlDsaScheme::SEED_BYTES];
-        if (CRng::fill(SByteSpan(seed, sizeof(seed))) != ERET_OK) {
+        if (rng.fillTo(SByteSpan(seed, sizeof(seed))) != ERET_OK) {
             return ERET_UNKNOWN;
         }
 
@@ -396,43 +402,66 @@ namespace crypto {
     }
 
     /* Parses a pkEncode()-format public key. */
-    IPublicKeyPtr CMlDsa::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CMlDsa::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         MlDsaParams params = MlDsaParams::mlDsa44();
         SKeySize keySize = 0;
         if (!paramsOf(_which, params, keySize)) {
-            return nullptr;
+            return ERET_NOTSUP;
         }
 
         if (!MlDsaScheme::checkPublicKey(params, keyData)) {
-            return nullptr;
+            return keyData.size == params.publicKeyBytes() ? ERET_KEY_FORMAT : ERET_KEY_SIZE;
         }
-
-        return std::make_shared<MlDsaPublicKey>(_which, keySize, COctet(keyData));
+        try {
+            out = std::make_shared<MlDsaPublicKey>(_which, keySize, COctet(keyData));
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Parses an skEncode()-format private key, re-deriving its public half. */
-    IPrivateKeyPtr CMlDsa::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode CMlDsa::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         MlDsaParams params = MlDsaParams::mlDsa44();
         SKeySize keySize = 0;
         if (!paramsOf(_which, params, keySize)) {
-            return nullptr;
+            return ERET_NOTSUP;
         }
 
         if (!MlDsaScheme::checkPrivateKey(params, keyData)) {
-            return nullptr; // --> wrong length, or an s1/s2 coefficient outside [-eta, eta]
+            return keyData.size == params.privateKeyBytes() ? ERET_KEY_FORMAT : ERET_KEY_SIZE;
         }
 
         IPublicKeyPtr pub = derivePublicKey(_which, params, keySize, keyData);
         if (!pub) {
-            return nullptr;
+            return ERET_KEY_ERROR;
         }
-
-        return std::make_shared<MlDsaPrivateKey>(_which, keySize, COctet(keyData), pub);
+        try {
+            out = std::make_shared<MlDsaPrivateKey>(_which, keySize, COctet(keyData), pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
     /* Creates a key-less ML-DSA context. */
-    IAsymmetricContextPtr CMlDsa::createContext() const {
-        return std::make_shared<MlDsaContext>();
+    ERetCode CMlDsa::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<MlDsaContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

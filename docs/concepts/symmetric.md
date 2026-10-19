@@ -212,6 +212,13 @@
   `ESymmetrics` (`ESYM_AES`/`ESYM_ARIA`/`ESYM_DES`/`ESYM_3DES`/
   `ESYM_CHACHA20`) factory,
   mirroring `IAsymmetric::builtIn()`.
+
+  `generateKey(rng, out, size)` and `generateIV(rng, key, out)` are the
+  caller-supplied randomness paths. Their no-RNG overloads construct a local
+  `CRng` and delegate. Raw-key import and context construction use
+  `createKey(out, bytes)` and `createContext(out, key)` as their primary
+  `ERetCode` APIs; both reset the pointer on failure. The older pointer-returning
+  overloads delegate to them and return null on failure.
 - **`crypto/syms/aes.hpp`/`aria.hpp`/`des.hpp`/`des3.hpp` and their matching
   sources** define `AES` (FIPS-197, 128/192/256-bit keys), `ARIA` (RFC 5794,
   128/192/256-bit keys), `DES` (FIPS 46-3, legacy/interop only), and `TripleDES` (two- or

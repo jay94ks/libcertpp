@@ -431,9 +431,10 @@ namespace crypto {
      * docs/pqc/implementation.md's ML-KEM certificate-integration task.
      *
      * This is also the layer where randomness enters. CMlKem::generateKeyPair()/encapsulate()
-     * take their seeds and message as parameters so they can be driven from a test vector;
-     * IKemContext::encapsulate() has no such parameter, so this class draws from CRng and is the
-     * only part of the ML-KEM implementation that does.
+     * take their seeds and message as parameters so they can be driven from a test vector.
+     * MLKEM::generateKeyPair() accepts an IRng directly, while IKemContext::encapsulate() uses
+     * the IRng sealed into its context by createContext(); the compatibility overloads create a
+     * CRng. This wrapper is the only part of the ML-KEM implementation that draws randomness.
      */
     class CERTPP_API MLKEM : public IKem {
     private:
@@ -467,18 +468,21 @@ namespace crypto {
             return _params;
         }
 
-        ERetCode generateKeyPair(SKeySize keySize, SKemKeyPair& out) override;
+        using IKem::generateKeyPair;
+        using IKem::createContext;
+        using IKem::createPublicKey;
+        using IKem::createPrivateKey;
+        ERetCode generateKeyPair(const IRng& rng, SKeySize keySize, SKemKeyPair& out) override;
         ERetCode checkPrivateKey(const IKemPrivateKeyPtr& key) const override;
-        IKemPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const override;
-        IKemPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPublicKey(IKemPublicKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPrivateKey(IKemPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
 
         // --> Re-exposes IKem's COctet convenience overloads, which the SReadOnlyByteSpan
         // overrides above would otherwise hide: name lookup stops at the first scope holding the
         // name, so without these a caller holding a concrete MLKEM cannot pass a COctet at all,
         // while the same call through an IKemPtr compiles.
-        using IKem::createPublicKey;
-        using IKem::createPrivateKey;
-        IKemContextPtr createContext() const override;
+        ERetCode createContext(
+            IKemContextPtr& out, const std::shared_ptr<IRng>& rng) const override;
     };
 
 } // namespace crypto

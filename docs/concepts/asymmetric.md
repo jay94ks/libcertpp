@@ -8,10 +8,22 @@
 
 - **`crypto/asym.hpp`** defines `IAsymmetric`, `IAsymmetricContext`, and
   `IAsymmetricTransformer`. `IAsymmetric` holds no key material: `keySizes()`
-  describes what the algorithm accepts, `generateKeyPair(keySize, out)`/
-  `createPublicKey()`/`createPrivateKey()` produce/parse keys, and
-  `createContext()` (`IStream::createMemory()`'s factory pattern as an
-  instance method) returns a key-less `IAsymmetricContext`.
+  describes what the algorithm accepts, `generateKeyPair(rng, keySize, out)`
+  creates keys, `createPublicKey(out, bytes)`/`createPrivateKey(out, bytes)`
+  deserialize keys, and `createContext(out, rng)` returns a key-less
+  `IAsymmetricContext`. These `ERetCode` plus out-parameter forms are the
+  primary APIs: they reset the output on failure and distinguish size,
+  encoding, parameter, allocation, and RNG failures. The older pointer-returning
+  key and context factories remain as compatibility wrappers and return null
+  for any non-`ERET_OK` result. A key's `serialize(COctet& out)` already uses
+  the same error-reporting form.
+
+  Context construction accepts either a `shared_ptr<IRng>`, which the context
+  owns, or a `const IRng&`, which is cloned first. The owned generator is fixed
+  for the context's lifetime and is used by randomized signatures and RSA
+  encryption padding. The no-RNG overload constructs a local `CRng` and
+  delegates to this path. Key generation similarly prefers a `const IRng&`;
+  its compatibility overload creates a local `CRng`.
 
   `generateKeyPair()` reports its result via `ERetCode` (an out-parameter
   `SKeyPair& out`, not a return value) rather than the empty-`SKeyPair`-on-

@@ -39,7 +39,7 @@ namespace crypto {
          * @return true on success; false on failure (exhausted attempts or a CRng failure).
          */
         static bool generateDomainParams(
-            size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
+            const IRng& rng, size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
             CMontgomery& montgomery);
 
     public:
@@ -49,18 +49,21 @@ namespace crypto {
          */
         DSA();
 
-        ERetCode generateKeyPair(SKeySize keySize, SKeyPair& out) override;
+        using IAsymmetric::generateKeyPair;
+        using IAsymmetric::createContext;
+        using IAsymmetric::createPublicKey;
+        using IAsymmetric::createPrivateKey;
+        ERetCode generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) override;
         ERetCode checkPrivateKey(const IPrivateKeyPtr& key) const override;
-        IPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const override;
-        IPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPublicKey(IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
+        ERetCode createPrivateKey(IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
 
         // --> Re-exposes IAsymmetric's COctet convenience overloads, which the SReadOnlyByteSpan
         // overrides above would otherwise hide: name lookup stops at the first scope holding the
         // name, so without these a caller holding a concrete DSA cannot pass a COctet at all,
         // while the same call through an IAsymmetricPtr compiles.
-        using IAsymmetric::createPublicKey;
-        using IAsymmetric::createPrivateKey;
-        IAsymmetricContextPtr createContext() const override;
+        ERetCode createContext(
+            IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng) const override;
     };
 
 } // namespace crypto

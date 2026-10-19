@@ -1185,6 +1185,9 @@ namespace crypto {
     namespace {
 
         class EdContext : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         protected:
             void onReset() override {
                 if (privateKey() || publicKey()) {
@@ -1325,7 +1328,7 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode Ed25519::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode Ed25519::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         if (keySize != 256) {
@@ -1333,7 +1336,7 @@ namespace crypto {
         }
 
         uint8_t seed[32];
-        if (CRng::fill(SByteSpan(seed, 32)) != ERET_OK) {
+        if (rng.fillTo(SByteSpan(seed, 32)) != ERET_OK) {
             return ERET_UNKNOWN;
         }
 
@@ -1413,40 +1416,62 @@ namespace crypto {
         return ERET_OK;
     }
 
-    IPublicKeyPtr Ed25519::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode Ed25519::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
 
         EdPoint point;
         if (!Edwards25519::decodePoint(keyData, point)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         uint8_t encoded[32];
         std::memcpy(encoded, keyData.data, 32);
 
-        return std::make_shared<EdPublicKey>(point, encoded);
+        try {
+            out = std::make_shared<EdPublicKey>(point, encoded);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IPrivateKeyPtr Ed25519::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode Ed25519::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
 
         uint8_t seed[32];
         std::memcpy(seed, keyData.data, 32);
 
-        IPublicKeyPtr pub = publicKeyFromSeed(seed);
-        if (!pub) {
-            return nullptr;
+        try {
+            IPublicKeyPtr pub = publicKeyFromSeed(seed);
+            if (!pub) return ERET_KEY_ERROR;
+            out = std::make_shared<EdPrivateKey>(seed, pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
         }
-
-        return std::make_shared<EdPrivateKey>(seed, pub);
+        return ERET_OK;
     }
 
-    IAsymmetricContextPtr Ed25519::createContext() const {
-        return std::make_shared<EdContext>();
+    ERetCode Ed25519::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<EdContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

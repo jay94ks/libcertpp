@@ -21,10 +21,17 @@ namespace crypto {
          */
         DES();
 
-        ERetCode generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const override;
-        ISymmetricKeyPtr createKey(const SReadOnlyByteSpan& keyData) const override;
-        ERetCode generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const override;
-        ISymmetricContextPtr createContext(const ISymmetricKeyPtr& key) const override;
+        using ISymmetric::generateKey;
+        using ISymmetric::createKey;
+        ERetCode generateKey(
+            const IRng& rng, ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const override;
+        ERetCode createKey(ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData) const override;
+        using ISymmetric::generateIV;
+        ERetCode generateIV(
+            const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out) const override;
+        using ISymmetric::createContext;
+        ERetCode createContext(
+            ISymmetricContextPtr& out, const ISymmetricKeyPtr& key) const override;
     };
 
 } // namespace crypto

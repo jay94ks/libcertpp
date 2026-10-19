@@ -29,7 +29,7 @@
   `AlgorithmIdentifier` carries its hash/MGF/salt-length explicitly, so
   there's no ambiguity to resolve the way plain `sign()`/`verify()` have to.
   `createEncrypter()`/`createDecrypter()` implement RSAES-PKCS1-v1_5,
-  using `CRng::fillNonZero()` for its padding. The private `RsaPublicKey`/
+  using the context's sealed `IRng::fillNonZeroTo()` for its padding. The private `RsaPublicKey`/
   `RsaPrivateKey`/`RsaContext`/`RsaTransformer` classes back the public
   `IPublicKey`/`IPrivateKey`/`IAsymmetricContext`/`IAsymmetricTransformer`
   interfaces respectively, same pattern as `MemStream` backing `IStream`.

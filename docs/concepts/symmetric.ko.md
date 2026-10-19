@@ -195,6 +195,13 @@
   `ESymmetrics`(`ESYM_AES`/`ESYM_ARIA`/`ESYM_DES`/`ESYM_3DES`/
   `ESYM_CHACHA20`) 팩토리이고
   `IAsymmetric::builtIn()`을 반영합니다.
+
+  `generateKey(rng, out, size)`와 `generateIV(rng, key, out)`가 호출자 제공
+  난수를 쓰는 경로입니다. RNG가 없는 오버로드는 지역 `CRng`를 만들어
+  위임합니다. 원시 키 가져오기와 컨텍스트 생성은 `createKey(out, bytes)`와
+  `createContext(out, key)`라는 `ERetCode` 주 API를 사용하며 둘 다 실패 시 포인터를
+  비웁니다. 예전 포인터 반환 오버로드는 이들에 위임하고 실패 시 null을
+  반환합니다.
 - **`crypto/syms/aes.hpp`/`aria.hpp`/`des.hpp`/`des3.hpp`와 대응 소스**는
   `AES`(FIPS-197. 128/192/256비트 키), `ARIA`(RFC 5794. 128/192/256비트 키),
   `DES`(FIPS 46-3. 레거시/상호운용 전용), 그리고

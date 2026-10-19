@@ -38,7 +38,11 @@
   mirrors `IAsymmetric`'s shape as closely as that one difference allows:
   `builtIn(EKems)`, `keySizes()`, `generateKeyPair()`, `checkPrivateKey()`,
   `createPublicKey()`/`createPrivateKey()` (span and `COctet` overloads),
-  and `createContext()`. `IKemContext` follows `IAsymmetricContext`'s
+  and `createContext()`. The primary key parsers and context factory report
+  `ERetCode` through out-parameters; pointer-returning overloads remain as
+  compatibility wrappers. Key generation accepts `const IRng&`, and a KEM
+  context owns the `shared_ptr<IRng>` sealed into it at creation.
+  `IKemContext` follows `IAsymmetricContext`'s
   "acts on whichever bound key, not a parameter passed in" convention:
   `encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret)` operates on
   the bound *public* key (the peer's, bound via the two-key `keyPair(pub,
@@ -145,8 +149,9 @@
   randomness. `CMlKem::generateKeyPair()`/`encapsulate()` take their seeds
   and message as parameters so they can be driven from a test vector;
   `IKemContext::encapsulate()` has no such parameter, so `MLKEM` fills them
-  from `CRng` -- which also means there is no known-answer test to be had at
-  this layer, and `tests/crypto/kems/mlkem.cpp` covers what the wrapper adds
+  from the `IRng` owned by its context. The no-RNG context factory supplies a
+  local `CRng`. There is no fixed known-answer test for that default-random
+  wrapper path, and `tests/crypto/kems/mlkem.cpp` covers what the wrapper adds
   rather than the algorithm (asserting, among other things, that repeated
   `encapsulate()` calls against one key differ, since a shared secret that
   was a function of the key alone would be reused every session).
@@ -376,6 +381,9 @@
   test has to go through `MlDsaScheme` with rnd = 0 instead. That is not a test
   contrivance -- deterministic signing is the standard's own variant, and it is
   what ACVP's `deterministic: true` groups use.
+  The public context obtains this rnd from the `IRng` sealed into it at
+  construction; deterministic test-vector code continues to pass rnd directly
+  to the internal scheme.
 
   Validated against NIST's ACVP vectors for all three parameter sets:
   `tests/crypto/asyms/kat_mldsa.cpp` (keyGen and sigGen, deterministic and

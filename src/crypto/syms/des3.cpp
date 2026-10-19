@@ -126,7 +126,10 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode TripleDES::generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const {
+    ERetCode TripleDES::generateKey(
+        const IRng& rng, ISymmetricKeyPtr& out, const SKeySizeSpec& keySize
+    ) const {
+        out.reset();
         SKeySize bits = keySize.empty() ? 192 : keySize.minSize;
 
         bool valid = false;
@@ -142,36 +145,51 @@ namespace crypto {
 
         CBuffer raw(bits / 8);
 
-        ERetCode rc = CRng::fill(raw.toSpan());
+        ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
             return rc;
         }
 
-        out = createKey(raw.toSpan());
-        return out ? ERET_OK : ERET_KEY_SIZE;
+        return createKey(out, raw.toSpan());
     }
 
-    ISymmetricKeyPtr TripleDES::createKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode TripleDES::createKey(
+        ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 16 && keyData.size != 24) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        return std::make_shared<SymRawKey>(ESYM_3DES, COctet(keyData));
+        try {
+            out = std::make_shared<SymRawKey>(ESYM_3DES, COctet(keyData));
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    ERetCode TripleDES::generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const {
+    ERetCode TripleDES::generateIV(
+        const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out
+    ) const {
         if (!key || key->algorithm() != ESYM_3DES) {
             return ERET_KEY_FORMAT;
         }
 
         out.resize(DES3_BLOCK_BYTES);
-        return CRng::fill(out.toSpan());
+        return rng.fillTo(out.toSpan());
     }
 
-    ISymmetricContextPtr TripleDES::createContext(const ISymmetricKeyPtr& key) const {
-        auto ctx = std::make_shared<TripleDesContext>();
-        ctx->key(key, CBuffer());
-        return ctx;
+    ERetCode TripleDES::createContext(
+        ISymmetricContextPtr& out, const ISymmetricKeyPtr& key
+    ) const {
+        out.reset();
+        try {
+            out = std::make_shared<TripleDesContext>();
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        out->key(key, CBuffer());
+        return ERET_OK;
     }
 
 } // namespace crypto

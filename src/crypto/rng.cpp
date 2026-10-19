@@ -1,6 +1,7 @@
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
 #include <cstring>
+#include <new>
 
 #if defined(CERTPP_RNG_FALLBACK)
 #include <random>
@@ -21,6 +22,17 @@
 
 namespace certpp {
 namespace crypto {
+
+    /* Creates an independently owned generator with the same OS-backed behavior. */
+    ERetCode CRng::clone(std::shared_ptr<IRng>& out) const {
+        out.reset();
+        try {
+            out = std::make_shared<CRng>();
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
+    }
 
 #if defined(CERTPP_RNG_FALLBACK)
 
@@ -60,7 +72,7 @@ namespace crypto {
 #if defined(_WIN32)
 
     /* Fills out with random bytes via bcrypt.lib's BCryptGenRandom, called directly. */
-    ERetCode CRng::fill(const SByteSpan& out) {
+    ERetCode CRng::fillTo(const SByteSpan& out) const {
         if (out.empty()) {
             return ERET_OK;
         }
@@ -79,7 +91,7 @@ namespace crypto {
        (e.g. interrupted by a signal while blocked on an uninitialized entropy pool) just resumes
        for the remaining bytes; any outright failure (ENOSYS on an old kernel or a seccomp filter
        blocking the syscall, EPERM, ...) falls back to /dev/urandom for the bytes not yet filled. */
-    ERetCode CRng::fill(const SByteSpan& out) {
+    ERetCode CRng::fillTo(const SByteSpan& out) const {
         if (out.empty()) {
             return ERET_OK;
         }
@@ -114,7 +126,7 @@ namespace crypto {
 #else
 
     /* Fills out with random bytes read from /dev/urandom. */
-    ERetCode CRng::fill(const SByteSpan& out) {
+    ERetCode CRng::fillTo(const SByteSpan& out) const {
         if (out.empty()) {
             return ERET_OK;
         }
@@ -132,15 +144,20 @@ namespace crypto {
 
 #endif
 
-    ERetCode CRng::fillNonZero(const SByteSpan& out) {
+    /* Fills out with nonzero random bytes using this generator's fillTo() implementation. */
+    ERetCode IRng::fillNonZeroTo(const SByteSpan& out) const {
+        CBuffer chunk;
         size_t filled = 0;
 
         while (filled < out.size) {
             size_t need = out.size - filled;
 
-            CBuffer chunk(need);
+            // --> resize the buffer to accommodate the needed bytes.
+            if (chunk.size() < need && !chunk.resize(need)) {
+                return ERET_NOMEM;
+            }
 
-            ERetCode status = fill(chunk.toSpan());
+            ERetCode status = fillTo(chunk.toSpan());
             if (status != ERET_OK) {
                 return status;
             }

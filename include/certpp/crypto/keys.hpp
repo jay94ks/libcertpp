@@ -228,7 +228,9 @@ namespace crypto {
          * Serializes this key to its algorithm-defined byte encoding.
          *
          * @param out The buffer to receive the serialized key.
-         * @return ERET_OK on success; another ERetCode describing the failure otherwise.
+         * @return ERET_OK on success; ERET_KEY_PARAM or ERET_KEY_ERROR if the key cannot be
+         * represented consistently; ERET_NOMEM if output allocation failed; another ERetCode
+         * describing an encoding failure otherwise.
          */
         virtual ERetCode serialize(COctet& out) const = 0;
 

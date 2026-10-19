@@ -91,7 +91,10 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode DES::generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const {
+    ERetCode DES::generateKey(
+        const IRng& rng, ISymmetricKeyPtr& out, const SKeySizeSpec& keySize
+    ) const {
+        out.reset();
         SKeySize bits = keySize.empty() ? 64 : keySize.minSize;
         if (bits != 64) {
             return ERET_KEY_SIZE;
@@ -99,36 +102,49 @@ namespace crypto {
 
         CBuffer raw(DES_KEY_BYTES);
 
-        ERetCode rc = CRng::fill(raw.toSpan());
+        ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
             return rc;
         }
 
-        out = createKey(raw.toSpan());
-        return out ? ERET_OK : ERET_KEY_SIZE;
+        return createKey(out, raw.toSpan());
     }
 
-    ISymmetricKeyPtr DES::createKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode DES::createKey(
+        ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != DES_KEY_BYTES) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        return std::make_shared<SymRawKey>(ESYM_DES, COctet(keyData));
+        try {
+            out = std::make_shared<SymRawKey>(ESYM_DES, COctet(keyData));
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    ERetCode DES::generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const {
+    ERetCode DES::generateIV(const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out) const {
         if (!key || key->algorithm() != ESYM_DES) {
             return ERET_KEY_FORMAT;
         }
 
         out.resize(DES_BLOCK_BYTES);
-        return CRng::fill(out.toSpan());
+        return rng.fillTo(out.toSpan());
     }
 
-    ISymmetricContextPtr DES::createContext(const ISymmetricKeyPtr& key) const {
-        auto ctx = std::make_shared<DesContext>();
-        ctx->key(key, CBuffer());
-        return ctx;
+    ERetCode DES::createContext(
+        ISymmetricContextPtr& out, const ISymmetricKeyPtr& key
+    ) const {
+        out.reset();
+        try {
+            out = std::make_shared<DesContext>();
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        out->key(key, CBuffer());
+        return ERET_OK;
     }
 
 } // namespace crypto

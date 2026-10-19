@@ -1,4 +1,5 @@
 #include <certpp/crypto/asyms/dsa.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/utils/bignum.hpp>
 #include <certpp/utils/montgomery.hpp>
 #include <certpp/asn1/der.hpp>
@@ -31,10 +32,10 @@ namespace crypto {
      * for every supported (L, N) pair, the bounded progression remains exactly L bits except at
      * the upper edge, where generation simply draws another starting value. */
     bool DSA::generateDomainParams(
-        size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
+        const IRng& rng, size_t bitsL, size_t bitsN, CBigNum& p, CBigNum& q, CBigNum& g,
         CMontgomery& montgomery
     ) {
-        if (!CBigNum::generatePrime(bitsN, q)) {
+        if (!CBigNum::generatePrime(rng, bitsN, q)) {
             return false;
         }
 
@@ -44,7 +45,7 @@ namespace crypto {
         // Walking one bounded p == 1 (mod 2q) progression lets the big-number helper reuse
         // each candidate's small-prime residues as well as avoiding a fresh division by 2q.
         // It retains the same 20 Miller--Rabin rounds used by ordinary prime generation.
-        if (!CBigNum::generatePrimeCongruentOne(bitsL, twoQ, p)) {
+        if (!CBigNum::generatePrimeCongruentOne(rng, bitsL, twoQ, p)) {
             return false;
         }
 
@@ -335,6 +336,9 @@ namespace crypto {
         };
 
         class DsaContext : public IAsymmetricContext {
+        public:
+            using IAsymmetricContext::IAsymmetricContext;
+
         private:
             DsaFixedBaseTable _generatorTable;
             DsaFixedBaseTable _publicTable;
@@ -371,6 +375,7 @@ namespace crypto {
 
         public:
             ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out) override {
+                const IRng& rng = randomGenerator();
                 if (!privateKey()) {
                     return ERET_KEY_EMPTY;
                 }
@@ -395,7 +400,7 @@ namespace crypto {
                 CBigNum r, s;
                 for (int attempt = 0; attempt < 1000; ++attempt) {
                     CBigNum k;
-                    if (!CBigNum::randomBelow(qMinus1, k)) {
+                    if (!CBigNum::randomBelow(rng, qMinus1, k)) {
                         return ERET_UNKNOWN;
                     }
                     k.add(CBigNum(uint64_t(1))); // k in [1, q-1]
@@ -537,7 +542,7 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode DSA::generateKeyPair(SKeySize keySize, SKeyPair& out) {
+    ERetCode DSA::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
         size_t bitsN = subgroupBitsFor(keySize);
@@ -547,7 +552,7 @@ namespace crypto {
 
         CBigNum p, q, g;
         CMontgomery montgomery;
-        if (!generateDomainParams(keySize, bitsN, p, q, g, montgomery)) {
+        if (!generateDomainParams(rng, keySize, bitsN, p, q, g, montgomery)) {
             return ERET_UNKNOWN;
         }
 
@@ -555,7 +560,7 @@ namespace crypto {
         qMinus1.sub(CBigNum(uint64_t(1)));
 
         CBigNum x;
-        if (!CBigNum::randomBelow(qMinus1, x)) {
+        if (!CBigNum::randomBelow(rng, qMinus1, x)) {
             return ERET_UNKNOWN;
         }
         x.add(CBigNum(uint64_t(1))); // x in [1, q-1]
@@ -640,10 +645,13 @@ namespace crypto {
         return ERET_OK;
     }
 
-    IPublicKeyPtr DSA::createPublicKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode DSA::createPublicKey(
+        IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         TReadOnlySpan<uint8_t> content;
         if (!CDer::readOuterSequence(keyData, content)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum p, q, g, y;
@@ -655,16 +663,23 @@ namespace crypto {
         // --> y was the one of the four left unchecked; a zero public value is as unusable as a
         // zero modulus, and verify() would otherwise accept the key and fail obscurely later.
         if (!ok || !content.empty() || p.isZero() || q.isZero() || g.isZero() || y.isZero()) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
-
-        return std::make_shared<DsaPublicKey>(p, q, g, y);
+        try {
+            out = std::make_shared<DsaPublicKey>(p, q, g, y);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IPrivateKeyPtr DSA::createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode DSA::createPrivateKey(
+        IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         TReadOnlySpan<uint8_t> content;
         if (!CDer::readOuterSequence(keyData, content)) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         CBigNum version, p, q, g, y, x;
@@ -681,19 +696,32 @@ namespace crypto {
         // explicit call -- but a zero modulus or an out-of-range x isn't a weak key, it's one that
         // makes sign() divide by zero, so it has to be caught at the import boundary.
         if (!ok || !content.empty() || version != CBigNum(uint64_t(0))) {
-            return nullptr;
+            return ERET_KEY_FORMAT;
         }
 
         if (p.isZero() || q.isZero() || g.isZero() || x.isZero() || x >= q) {
-            return nullptr;
+            return ERET_KEY_PARAM;
         }
-
-        auto pub = std::make_shared<DsaPublicKey>(p, q, g, y);
-        return std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub);
+        try {
+            auto pub = std::make_shared<DsaPublicKey>(p, q, g, y);
+            out = std::make_shared<DsaPrivateKey>(p, q, g, y, x, pub);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    IAsymmetricContextPtr DSA::createContext() const {
-        return std::make_shared<DsaContext>();
+    ERetCode DSA::createContext(
+        IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng
+    ) const {
+        out.reset();
+        if (!rng) return ERET_BADREQ;
+        try {
+            out = std::make_shared<DsaContext>(rng);
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
 } // namespace crypto

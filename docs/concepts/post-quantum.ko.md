@@ -37,7 +37,10 @@
   한 `IAsymmetric`의 모양을 가깝게 반영합니다. `builtIn(EKems)`,
   `keySizes()`, `generateKeyPair()`, `checkPrivateKey()`,
   `createPublicKey()`/`createPrivateKey()`(span과 `COctet` 오버로드), 그리고
-  `createContext()`입니다. `IKemContext`는 `IAsymmetricContext`의 "인자로
+  `createContext()`입니다. 주 키 파서와 컨텍스트 팩토리는 out 파라미터로
+  `ERetCode`를 보고하며, 포인터 반환 오버로드는 호환 래퍼로 남습니다. 키 생성은
+  `const IRng&`를 받고, KEM 컨텍스트는 생성 시 봉인된 `shared_ptr<IRng>`를
+  소유합니다. `IKemContext`는 `IAsymmetricContext`의 "인자로
   넘긴 것이 아니라 바인딩된 키에 대해 작동한다"는 관례를 따릅니다.
   `encapsulate(SByteSpan& ciphertext, SByteSpan& sharedSecret)`는 바인딩된
   *공개* 키에 대해 작동하고(상대의 것. 두 키를 받는 `keyPair(pub, nullptr)`
@@ -141,9 +144,10 @@
   이것은 또한 ML-KEM 구현에서 난수를 끌어오는 유일한 계층입니다.
   `CMlKem::generateKeyPair()`/`encapsulate()`는 테스트 벡터에서 구동될 수
   있도록 시드와 메시지를 파라미터로 받습니다.
-  `IKemContext::encapsulate()`에는 그런 파라미터가 없으므로 `MLKEM`이
-  `CRng`에서 채우며 — 그 말은 이 계층에서는 쓸 수 있는 기지 응답 테스트가
-  없다는 뜻이기도 하고, `tests/crypto/kems/mlkem.cpp`는 알고리즘이 아니라
+  `IKemContext::encapsulate()`에는 그런 파라미터가 없으므로 `MLKEM`이 컨텍스트가
+  소유한 `IRng`에서 채웁니다. RNG가 없는 컨텍스트 팩토리는 지역 `CRng`를
+  제공합니다. 이 기본 난수 래퍼 경로에는 고정 기지 응답 테스트를 쓸 수 없고,
+  `tests/crypto/kems/mlkem.cpp`는 알고리즘이 아니라
   래퍼가 추가하는 것을 다룹니다(여러 가지 중에서, 한 키에 대한 반복
   `encapsulate()` 호출이 서로 다르다는 것을 단정합니다. 키만의 함수인 공유
   비밀이라면 세션마다 재사용될 것이기 때문입니다).
@@ -363,6 +367,8 @@
   rnd = 0으로 `MlDsaScheme`을 거쳐야 합니다. 그것은 테스트용 편법이
   아닙니다 — 결정론적 서명은 표준 자신의 변형이고, ACVP의
   `deterministic: true` 그룹이 쓰는 것입니다.
+  공개 컨텍스트는 생성 시 봉인된 `IRng`에서 이 rnd를 얻고, 결정론적 테스트 벡터
+  코드는 계속 내부 스킴에 rnd를 직접 전달합니다.
 
   세 파라미터 집합 전부에 대해 NIST의 ACVP 벡터로 검증했습니다.
   `tests/crypto/asyms/kat_mldsa.cpp`(keyGen과 sigGen. 결정론적과 hedged,

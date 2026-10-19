@@ -4,6 +4,7 @@
 #include <certpp/common.hpp>
 #include <certpp/crypto/keys.hpp>
 #include <certpp/crypto/hasher.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/crypto/transform.hpp>
 #include <certpp/io/span.hpp>
 #include <certpp/io/array.hpp>
@@ -84,7 +85,24 @@ namespace crypto {
          * checkPrivateKey()'s validation (the caller should simply call this again); another
          * ERetCode describing any other failure.
          */
-        virtual ERetCode generateKeyPair(SKeySize keySize, SKeyPair& out) = 0;
+        virtual ERetCode generateKeyPair(SKeySize keySize, SKeyPair& out);
+
+        /**
+         * Generates a new key pair using the provided random number generator, validating it via
+         * checkPrivateKey() before returning it.
+         * Unlike a direct checkPrivateKey() call, a validation failure here is reported as
+         * ERET_AGAIN specifically (never checkPrivateKey()'s own diagnostic code) -- generation
+         * is expected to be retried by simply calling this again, so the caller only needs a
+         * "try again" signal, not *why* the candidate was rejected.
+         * @param rng The random number generator to use for key generation.
+         * @param keySize The key size to generate the pair at; must be one of keySizes().
+         * @param out Receives the new key pair; left empty (see SKeyPair::empty()) on failure.
+         * @return ERET_OK on success; ERET_AGAIN if the freshly generated key failed
+         * checkPrivateKey()'s validation (the caller should simply call this again); another
+         * ERetCode describing any other failure.
+         */
+        virtual ERetCode generateKeyPair(
+            const IRng& rng, SKeySize keySize, SKeyPair& out) = 0;
 
         /**
          * Validates a private key's structure -- e.g., for an elliptic-curve algorithm, that its
@@ -110,10 +128,21 @@ namespace crypto {
 
         /**
          * Parses public key material into a usable public key.
+         * @param out Receives the parsed key and is reset on failure.
          * @param keyData The public key material, in an algorithm-defined encoding.
-         * @return The parsed public key, or null if keyData wasn't a valid encoding.
+         * @return ERET_OK on success; ERET_KEY_SIZE for an invalid encoded length;
+         * ERET_KEY_FORMAT for malformed or noncanonical input; ERET_KEY_PARAM or
+         * ERET_KEY_ERROR for invalid key values or inconsistent derived data; ERET_NOMEM if
+         * allocation failed; another algorithm-specific ERetCode otherwise.
          */
-        virtual IPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const = 0;
+        virtual ERetCode createPublicKey(
+            IPublicKeyPtr& out, const SReadOnlyByteSpan& keyData) const = 0;
+
+        /** Backward-compatible pointer-returning public-key parser. */
+        inline IPublicKeyPtr createPublicKey(const SReadOnlyByteSpan& keyData) const {
+            IPublicKeyPtr out;
+            return createPublicKey(out, keyData) == ERET_OK ? out : nullptr;
+        }
 
         /**
          * Parses public key material into a usable public key.
@@ -124,12 +153,28 @@ namespace crypto {
             return createPublicKey(keyData.toSpan());
         }
 
+        /** Error-reporting public-key parser for owning input. */
+        inline ERetCode createPublicKey(IPublicKeyPtr& out, const COctet& keyData) const {
+            return createPublicKey(out, keyData.toSpan());
+        }
+
         /**
          * Parses private key material into a usable private key.
+         * @param out Receives the parsed key and is reset on failure.
          * @param keyData The private key material, in an algorithm-defined encoding.
-         * @return The parsed private key, or null if keyData wasn't a valid encoding.
+         * @return ERET_OK on success; ERET_KEY_SIZE for an invalid encoded length;
+         * ERET_KEY_FORMAT for malformed or noncanonical input; ERET_KEY_PARAM or
+         * ERET_KEY_ERROR for invalid key values or inconsistent derived data; ERET_NOMEM if
+         * allocation failed; another algorithm-specific ERetCode otherwise.
          */
-        virtual IPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const = 0;
+        virtual ERetCode createPrivateKey(
+            IPrivateKeyPtr& out, const SReadOnlyByteSpan& keyData) const = 0;
+
+        /** Backward-compatible pointer-returning private-key parser. */
+        inline IPrivateKeyPtr createPrivateKey(const SReadOnlyByteSpan& keyData) const {
+            IPrivateKeyPtr out;
+            return createPrivateKey(out, keyData) == ERET_OK ? out : nullptr;
+        }
 
         /**
          * Parses private key material into a usable private key.
@@ -140,12 +185,59 @@ namespace crypto {
             return createPrivateKey(keyData.toSpan());
         }
 
+        /** Error-reporting private-key parser for owning input. */
+        inline ERetCode createPrivateKey(IPrivateKeyPtr& out, const COctet& keyData) const {
+            return createPrivateKey(out, keyData.toSpan());
+        }
+
         /**
          * Creates a context for this algorithm's operations. Holds no key material until
          * IAsymmetricContext::keyPair() is called on it.
-         * @return A new, key-less context.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @return ERET_OK on success; ERET_NOMEM if allocation failed; another code otherwise.
          */
-        virtual IAsymmetricContextPtr createContext() const = 0;
+        inline ERetCode createContext(IAsymmetricContextPtr& out) const {
+            CRng rng;
+            return createContext(out, rng);
+        }
+
+        /** Backward-compatible pointer-returning context factory. */
+        inline IAsymmetricContextPtr createContext() const {
+            IAsymmetricContextPtr out;
+            return createContext(out) == ERET_OK ? out : nullptr;
+        }
+
+        /**
+         * Creates a context that owns the supplied random generator for every randomized
+         * operation performed through that context.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @param rng The generator to retain. Must not be null.
+         * @return ERET_OK on success; ERET_BADREQ if rng is null; ERET_NOMEM if allocation
+         *         failed; another code otherwise.
+         */
+        virtual ERetCode createContext(
+            IAsymmetricContextPtr& out, const std::shared_ptr<IRng>& rng) const = 0;
+
+        /** Backward-compatible pointer-returning context factory with shared RNG ownership. */
+        inline IAsymmetricContextPtr createContext(const std::shared_ptr<IRng>& rng) const {
+            IAsymmetricContextPtr out;
+            return createContext(out, rng) == ERET_OK ? out : nullptr;
+        }
+
+        /**
+         * Creates a context from a clone of rng, so the context never retains a reference to
+         * caller-owned storage.
+         * @param out Receives the new key-less context and is reset on failure.
+         * @param rng The generator to clone and retain.
+         * @return ERET_OK on success; the clone or context creation error otherwise.
+         */
+        ERetCode createContext(IAsymmetricContextPtr& out, const IRng& rng) const;
+
+        /** Backward-compatible pointer-returning factory that clones rng. */
+        inline IAsymmetricContextPtr createContext(const IRng& rng) const {
+            IAsymmetricContextPtr out;
+            return createContext(out, rng) == ERET_OK ? out : nullptr;
+        }
     };
 
     // --> Forward declaration of the IAsymmetricTransformer interface.
@@ -194,15 +286,18 @@ namespace crypto {
     private:
         IPublicKeyPtr _publicKey;
         IPrivateKeyPtr _privateKey;
+        const std::shared_ptr<IRng> _rng;
 
         size_t _sizeOfSign;         // --> maximum size of a signature.
         size_t _sizeOfDigest;       // --> maximum size of a digest.
 
     public:
         /**
-         * Default constructor.
+         * Constructor. The generator is retained for the whole context lifetime and cannot be
+         * replaced after construction.
+         * @param rng The non-null generator this context owns.
          */
-        IAsymmetricContext() : _sizeOfSign(0), _sizeOfDigest(0) { }
+        explicit IAsymmetricContext(const std::shared_ptr<IRng>& rng);
 
         /**
          * Virtual destructor.
@@ -229,6 +324,9 @@ namespace crypto {
         inline const IPrivateKeyPtr& privateKey() const {
             return _privateKey;
         }
+
+        /** @return The generator owned by this context. */
+        const IRng& randomGenerator() const;
 
     public:
         /**
@@ -319,9 +417,7 @@ namespace crypto {
          * @param out The destination array to receive the signature.
          * @return ERET_OK on success; ERET_NOTSUP if unsupported; another ERetCode otherwise.
          */
-        virtual ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out) {
-            return ERET_NOTSUP;
-        }
+        virtual ERetCode sign(const SReadOnlyByteSpan& digest, SByteSpan& out);
 
         /**
          * Signs a message digest with the bound private key.
@@ -401,10 +497,7 @@ namespace crypto {
          * @return ERET_OK on success; ERET_NOTSUP if unsupported; another ERetCode otherwise.
          */
         virtual ERetCode signPss(
-            const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, SByteSpan& out
-        ) {
-            return ERET_NOTSUP;
-        }
+            const SReadOnlyByteSpan& digest, EHashers hashAlg, size_t saltLen, SByteSpan& out);
 
         /** Allocating RSASSA-PSS signing overload; see signPss() above. */
         inline ERetCode signPss(

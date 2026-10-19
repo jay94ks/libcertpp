@@ -2,6 +2,7 @@
 #define __INCLUDE_CERTPP_X509_OCSP_HPP__
 
 #include <certpp/common.hpp>
+#include <certpp/crypto/rng.hpp>
 #include <certpp/x509/cert.hpp>
 #include <certpp/x509/crl.hpp>
 
@@ -622,6 +623,14 @@ namespace x509 {
          * @return ERET_OK on success; another ERetCode if the underlying CSPRNG fails.
          */
         ERetCode generateNonce(size_t size = 16);
+
+        /**
+         * Generates the OCSP nonce with caller-provided randomness.
+         * @param rng The generator to use for this call.
+         * @param size The nonce length in bytes (RFC 8954 recommends 1-32; defaults to 16).
+         * @return ERET_OK on success; another ERetCode if rng fails.
+         */
+        ERetCode generateNonce(const crypto::IRng& rng, size_t size = 16);
 
         /**
          * Checks if a certificate ID for the specified certificate has already been added.

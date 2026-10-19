@@ -19,8 +19,9 @@ sequential reader/writer wrappers, and `CDer`'s arbitrary-precision-
 
 `crypto` has: an `IHasher` interface with from-scratch MD4/MD5/SHA-1/SHA-224/
 SHA-256/SHA-384/SHA-512/SHA3-256/SHA3-512/SHAKE128/SHAKE256/BLAKE2s/
-Streebog-256/Streebog-512 implementations; a CSPRNG utility
-(`CRng`); an `IAsymmetric` interface with nine concrete implementations
+Streebog-256/Streebog-512 implementations; a pluggable random-generator
+interface (`IRng`) with an OS-backed implementation (`CRng`); an
+`IAsymmetric` interface with nine concrete implementations
 (RSA -- PKCS#1 v1.5 and RSASSA-PSS sign/verify, PKCS#1 v1.5 encrypt/
 decrypt; DSA; `CEcdsa`, ECDSA over any of NIST P-192/P-224/P-256/P-384/
 P-521, secp256k1, or the 14 Brainpool curves (RFC 5639), plus ECDH key

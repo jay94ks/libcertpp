@@ -142,7 +142,8 @@
   `mulMod`/`modSub`/`modNeg`/`shl`/`shr`, RSA/DSA/EC 식 모듈러 연산을 위한
   `modExp`/`modInverse`/`gcd`, 그리고 RSA/DSA 키 생성을 위한
   `isProbablePrime`(Miller-Rabin. 앞에 작은 소수 시험 나눗셈이 있습니다)/
-  `generatePrime`(`crypto::CRng`를 통해)이 있습니다.
+  `generatePrime`(호출자가 제공한 `crypto::IRng`를 통하며, 호환 오버로드는 지역
+  `CRng`를 만듭니다)이 있습니다.
   `fromHex`/`fromLittleEndian`/`toLittleEndian`/`fromBigEndianTruncated`가
   생성/직렬화를 마무리하고(16진 파싱 자체는 독립된 `CHex` 유틸리티에 있습니다.
   위를 보십시오), `condSwap`은 스칼라 곱 ladder를 위해 이미 할당된 limb를 산술

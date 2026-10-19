@@ -106,7 +106,10 @@ namespace crypto {
         keySizes(specs);
     }
 
-    ERetCode AES::generateKey(ISymmetricKeyPtr& out, const SKeySizeSpec& keySize) const {
+    ERetCode AES::generateKey(
+        const IRng& rng, ISymmetricKeyPtr& out, const SKeySizeSpec& keySize
+    ) const {
+        out.reset();
         SKeySize bits = keySize.empty() ? 256 : keySize.minSize;
 
         bool valid = false;
@@ -122,36 +125,49 @@ namespace crypto {
 
         CBuffer raw(bits / 8);
 
-        ERetCode rc = CRng::fill(raw.toSpan());
+        ERetCode rc = rng.fillTo(raw.toSpan());
         if (rc != ERET_OK) {
             return rc;
         }
 
-        out = createKey(raw.toSpan());
-        return out ? ERET_OK : ERET_KEY_SIZE;
+        return createKey(out, raw.toSpan());
     }
 
-    ISymmetricKeyPtr AES::createKey(const SReadOnlyByteSpan& keyData) const {
+    ERetCode AES::createKey(
+        ISymmetricKeyPtr& out, const SReadOnlyByteSpan& keyData
+    ) const {
+        out.reset();
         if (keyData.size != 16 && keyData.size != 24 && keyData.size != 32) {
-            return nullptr;
+            return ERET_KEY_SIZE;
         }
-
-        return std::make_shared<SymRawKey>(ESYM_AES, COctet(keyData));
+        try {
+            out = std::make_shared<SymRawKey>(ESYM_AES, COctet(keyData));
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        return ERET_OK;
     }
 
-    ERetCode AES::generateIV(const ISymmetricKeyPtr& key, CBuffer& out) const {
+    ERetCode AES::generateIV(const IRng& rng, const ISymmetricKeyPtr& key, CBuffer& out) const {
         if (!key || key->algorithm() != ESYM_AES) {
             return ERET_KEY_FORMAT;
         }
 
         out.resize(AES_BLOCK_BYTES);
-        return CRng::fill(out.toSpan());
+        return rng.fillTo(out.toSpan());
     }
 
-    ISymmetricContextPtr AES::createContext(const ISymmetricKeyPtr& key) const {
-        auto ctx = std::make_shared<AesContext>();
-        ctx->key(key, CBuffer());
-        return ctx;
+    ERetCode AES::createContext(
+        ISymmetricContextPtr& out, const ISymmetricKeyPtr& key
+    ) const {
+        out.reset();
+        try {
+            out = std::make_shared<AesContext>();
+        } catch (const std::bad_alloc&) {
+            return ERET_NOMEM;
+        }
+        out->key(key, CBuffer());
+        return ERET_OK;
     }
 
 } // namespace crypto

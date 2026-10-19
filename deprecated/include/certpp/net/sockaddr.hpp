@@ -156,7 +156,7 @@ namespace net {
          * @param port The port number to set for the socket address (default is 0).
          * @param family The address family (default is EAF_INET).
          * @return An ERetCode indicating success or failure.
-         * @note Returns ERET_INVAL for an empty hostname or invalid family, and ERET_NOTFOUND when the hostname cannot be resolved.
+         * @note Returns ERET_INVAL for an empty hostname or invalid family, and ERET_NOENT when the hostname cannot be resolved.
          */
         static ERetCode loopback(SSocketAddress& out, uint16_t port = 0, EAddressFamily family = EAF_INET);
 
@@ -173,7 +173,7 @@ namespace net {
          * @param family The address family (default is EAF_INET).
          * @param port The port number to set for the socket address (default is 0).
          * @return An ERetCode indicating success or failure.
-         * @note Returns ERET_INVAL for an empty hostname, and ERET_NOTFOUND when no addresses can be resolved.
+         * @note Returns ERET_INVAL for an empty hostname, and ERET_NOENT when no addresses can be resolved.
          */
         static ERetCode resolve(SSocketAddress& out, const CString& hostname, uint16_t port = 0, EAddressFamily family = EAF_INET);
 
