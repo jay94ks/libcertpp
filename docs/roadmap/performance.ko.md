@@ -16,8 +16,10 @@
 없으면 `VirtualLock` 또는 `mlock`으로 보호한 표준 페이지로 폴백합니다.
 `CERTPP_DISABLE_LARGE_PAGE=ON`이면 처음부터 표준 페이지를 사용합니다. Linux에서는
 kernel이 제공할 때 `MADV_DONTDUMP`도 적용합니다.
-반환된 블록은 재사용 전에 지우고 마지막 블록을 반환할 때 페이지 전체를 지운 뒤 표준
-페이지 mapping은 필요에 따라 잠금을 풀고 mapping을 해제합니다. best-effort 일반 heap
+반환된 블록은 재사용 전에 지우고 마지막 블록을 반환할 때 mapping 전체를 지웁니다.
+풀은 영점화한 표준 페이지를 최대 하나만 잠긴 상태로 보관해 재사용하며, 나머지 표준
+페이지와 large-page mapping은 mapping을 해제하기 직전에 전체를 지우고 필요에 따라
+잠금을 풉니다. best-effort 일반 heap
 fallback은 없습니다. 잠금 실패는
 `ERET_NOMEM`이고 키 생성 또는 가져오기 경로가 그 실패를 전달합니다. 모든 비대칭 및 KEM
 개인키 객체 본체도 이제 이 allocator를 사용합니다.
@@ -67,12 +69,10 @@ page file 제외 보장과 자원 제한, 그리고 더 좁은 Windows Error Rep
 
 ## 성능 작업
 
-- **Windows Clang 전체 목록의 격차를 해소합니다.** OpenSSL 3.6.4를 상대로 한
-  2026-10-19 Release 갱신에서 RSA-2048 키 생성/서명/검증은
-  0.398/0.875/0.700배, P-256 키 생성은 0.676배, SHA-384는 0.88배였습니다.
-  각 행을 논리 프로세서 하나에 고정한 집중 실행으로 재현하고, 선택된 Windows kernel과
-  ABI code generation을 더 빠른 WSL 구성과 비교하여 직접 비교 가능한 모든 행을 다시
-  0.90배 이상으로 올립니다. 무작위 RSA 키 생성 결과는 반복 연산 결론과 분리합니다.
+- **Windows thread 의존성을 CMake에 반영합니다.** 현재 벤치마크 빌드는
+  `SecurePool`의 `std::mutex` 때문에 실행 파일과 공유 라이브러리 링크 단계에
+  `-lwinpthread`를 명시적으로 제공합니다. 다음 전체 목록 갱신 전에 이 의존성을
+  유지 보수하는 CMake 구성에 반영합니다.
 
 - **portable constant-time 소수 곡선 fallback을 완성합니다.** 네이티브 x86-64
   Clang/GCC 빌드는 이제 체 좌표를 고정 폭 Montgomery limb에 유지하고 private window

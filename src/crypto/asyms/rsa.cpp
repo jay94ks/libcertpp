@@ -73,6 +73,7 @@ namespace crypto {
         private:
             CBigNum _n, _e, _d, _p, _q, _dp, _dq, _qInv;
             CMontgomery _montgomeryN, _montgomeryP, _montgomeryQ;
+            CBigNum _qInvMont;
             MontgomeryParallel::Prepared _parallelPrepared;
             IPublicKeyPtr _publicKey;
 
@@ -84,6 +85,8 @@ namespace crypto {
                 : _n(std::move(n)), _e(std::move(e)), _d(std::move(d)), _p(std::move(p)),
                   _q(std::move(q)), _dp(std::move(dp)), _dq(std::move(dq)), _qInv(std::move(qInv)),
                   _montgomeryN(_n), _montgomeryP(_p), _montgomeryQ(_q),
+                  _qInvMont(_montgomeryP.isValid()
+                      ? _montgomeryP.toMont(_qInv) : CBigNum()),
                   _publicKey(std::move(publicKey))
             {
                 algorithm(EASYM_RSA);
@@ -91,6 +94,7 @@ namespace crypto {
             }
 
             ~RsaPrivateKey() override {
+                _qInvMont.secureClear();
                 CSecure::zero(SByteSpan(
                     reinterpret_cast<uint8_t*>(&_parallelPrepared), sizeof(_parallelPrepared)));
             }
@@ -154,6 +158,7 @@ namespace crypto {
             const CMontgomery& montgomeryN() const { return _montgomeryN; }
             const CMontgomery& montgomeryP() const { return _montgomeryP; }
             const CMontgomery& montgomeryQ() const { return _montgomeryQ; }
+            const CBigNum& qInvMont() const { return _qInvMont; }
             const MontgomeryParallel::Prepared& parallelPrepared() const {
                 return _parallelPrepared;
             }
@@ -480,7 +485,14 @@ namespace crypto {
 
                     CBigNum h(m1);
                     h.modSub(m2, p);
-                    h.mulMod(qInv, p);
+                    if (priv.montgomeryP().isValid()) {
+                        // qInv is cached in Montgomery form. A single Montgomery multiply with
+                        // ordinary h therefore returns h*qInv in the ordinary domain directly;
+                        // this avoids converting h into Montgomery form for every signature.
+                        priv.montgomeryP().mul(h, priv.qInvMont());
+                    } else {
+                        h.mulMod(qInv, p);
+                    }
 
                     CBigNum m(h);
                     m.mul(q);
@@ -1023,10 +1035,10 @@ namespace crypto {
                 return ERET_NOMEM;
             }
 
-            if (checkPrivateKey(priv) != ERET_OK) {
-                return ERET_AGAIN;
-            }
-
+            // The generation path has just established p/q primality and distinctness, built n,
+            // checked gcd(e, phi), and derived d plus every CRT parameter. checkPrivateKey() is
+            // still required for imported material; invoking it here would repeat forty
+            // Miller--Rabin rounds over the two freshly generated primes.
             out = SKeyPair(pub, priv);
             return ERET_OK;
         }

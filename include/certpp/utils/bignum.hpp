@@ -409,7 +409,7 @@ namespace certpp {
 
         /**
          * Tests whether this value is probably prime, via Miller-Rabin (preceded by trial
-         * division against the small primes below 1000).
+         * division against the small primes below 4096).
          * @param rounds The number of Miller-Rabin rounds to run.
          * @return true if this value is probably prime (false-positive probability at most
          * 4^-rounds); false if it's definitely composite.

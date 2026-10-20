@@ -18,27 +18,24 @@ namespace crypto {
 
         class EcPublicKey : public IPublicKey {
         private:
-            // A value, not a pointer/reference: the curve this key was created from may be a
-            // per-instance CEcCurve member of some IAsymmetric object (e.g. CEcdsa::_curve)
-            // rather than a program-lifetime static, so a key must own an independent copy to
-            // stay valid after that object is destroyed.
-            CEcCurve _curve;
+            std::shared_ptr<const CEcCurve> _curve;
             SEcPoint _q;
 
         public:
-            EcPublicKey(const CEcCurve& curve, SEcPoint q, EAsymmetrics which)
-                : _curve(curve), _q(std::move(q))
+            EcPublicKey(
+                std::shared_ptr<const CEcCurve> curve, SEcPoint q, EAsymmetrics which)
+                : _curve(std::move(curve)), _q(std::move(q))
             {
                 algorithm(which);
             }
 
             SKeySize keySize() const override {
-                return _curve.p.bitLength();
+                return _curve->p.bitLength();
             }
 
             ERetCode serialize(COctet& out) const override {
                 TArray<uint8_t> bytes;
-                if (!_curve.encodePoint(_q, bytes)) {
+                if (!_curve->encodePoint(_q, bytes)) {
                     return ERET_KEY_PARAM; // q's own coordinates don't fit the curve's field width
                 }
 
@@ -66,34 +63,29 @@ namespace crypto {
             }
 
             const SEcPoint& q() const { return _q; }
-            const CEcCurve& curve() const { return _curve; }
+            const CEcCurve& curve() const { return *_curve; }
         };
 
         class EcPrivateKey : public IPrivateKey {
         private:
-            CEcCurve _curve; // owned by value -- see EcPublicKey::_curve's comment
             CBigNum _d;
-            IPublicKeyPtr _publicKey;
+            std::shared_ptr<EcPublicKey> _publicKey;
 
         public:
-            EcPrivateKey(const CEcCurve& curve, CBigNum d, IPublicKeyPtr publicKey, EAsymmetrics which)
-                : _curve(curve), _d(std::move(d)), _publicKey(std::move(publicKey))
+            EcPrivateKey(
+                CBigNum d, std::shared_ptr<EcPublicKey> publicKey, EAsymmetrics which)
+                : _d(std::move(d)), _publicKey(std::move(publicKey))
             {
                 algorithm(which);
             }
 
             SKeySize keySize() const override {
-                return _curve.p.bitLength();
+                return _publicKey->curve().p.bitLength();
             }
 
             ERetCode serialize(COctet& out) const override {
-                auto pub = std::dynamic_pointer_cast<EcPublicKey>(_publicKey);
-                if (!pub) {
-                    return ERET_KEY_ERROR; // this key's own linked public key is missing/wrong type
-                }
-
                 TArray<uint8_t> pubBytes;
-                if (!_curve.encodePoint(pub->q(), pubBytes)) {
+                if (!_publicKey->curve().encodePoint(_publicKey->q(), pubBytes)) {
                     return ERET_KEY_PARAM; // pub's own coordinates don't fit the curve's field width
                 }
 
@@ -135,7 +127,7 @@ namespace crypto {
             }
 
             const CBigNum& d() const { return _d; }
-            const CEcCurve& curve() const { return _curve; }
+            const CEcCurve& curve() const { return _publicKey->curve(); }
         };
 
         class EcContext : public IAsymmetricContext {
@@ -554,21 +546,23 @@ namespace crypto {
     } // namespace
 
     CEcdsa::CEcdsa(EEcKnownCurves which) : _which(CEcCurve::identify(which)) {
-        CEcCurve::knownCurves(which, _curve);
+        CEcCurve curve;
+        CEcCurve::knownCurves(which, curve);
+        _curve = std::make_shared<CEcCurve>(std::move(curve));
 
         TArray<SKeySizeSpec> specs;
-        specs.add(SKeySizeSpec(_curve.p.bitLength()));
+        specs.add(SKeySizeSpec(_curve->p.bitLength()));
         keySizes(specs);
     }
 
     ERetCode CEcdsa::generateKeyPair(const IRng& rng, SKeySize keySize, SKeyPair& out) {
         out = SKeyPair();
 
-        if (keySize != _curve.p.bitLength()) {
+        if (keySize != _curve->p.bitLength()) {
             return ERET_KEY_SIZE;
         }
 
-        CBigNum nMinus1(_curve.n);
+        CBigNum nMinus1(_curve->n);
         nMinus1.sub(CBigNum(uint64_t(1)));
 
         CBigNum d;
@@ -577,13 +571,13 @@ namespace crypto {
         }
         d.add(CBigNum(uint64_t(1))); // d in [1, n-1]
 
-        SEcPoint q = _curve.scalarMulBase(d);
+        SEcPoint q = _curve->scalarMulBase(d);
         if (q.infinity) {
             return ERET_AGAIN; // same degenerate-candidate condition checkPrivateKey() checks
         }
 
         auto pub = std::make_shared<EcPublicKey>(_curve, q, _which);
-        auto priv = CSecure::make<EcPrivateKey>(_curve, d, pub, _which);
+        auto priv = CSecure::make<EcPrivateKey>(d, pub, _which);
         if (!priv) {
             return ERET_NOMEM;
         }
@@ -653,7 +647,7 @@ namespace crypto {
     ) const {
         out.reset();
         SEcPoint q;
-        if (!_curve.decodePoint(keyData, q) || q.infinity) {
+        if (!_curve->decodePoint(keyData, q) || q.infinity) {
             return ERET_KEY_FORMAT;
         }
         try {
@@ -694,12 +688,12 @@ namespace crypto {
         }
 
         SEcPoint q;
-        if (!_curve.decodePoint(pubContent, q)) {
+        if (!_curve->decodePoint(pubContent, q)) {
             return ERET_KEY_FORMAT;
         }
         try {
             auto pub = std::make_shared<EcPublicKey>(_curve, q, _which);
-            out = CSecure::make<EcPrivateKey>(_curve, d, pub, _which);
+            out = CSecure::make<EcPrivateKey>(d, pub, _which);
             if (!out) return ERET_NOMEM;
         } catch (const std::bad_alloc&) {
             return ERET_NOMEM;

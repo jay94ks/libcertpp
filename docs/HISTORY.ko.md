@@ -166,6 +166,13 @@ AVX-512 IFMA ZMM 블록 세 개에서 함께 처리하고, 고정 6비트 window
 비 IFMA fallback, 전체 CRT 재암호화 fault 검사는 유지됩니다. 이로써 마지막 직접 OpenSSL
 성능 격차를 닫았습니다. OpenSSL에서 사용할 수 없는 행은 문서화한 내부 또는 교차 툴체인
 기준값을 유지하고, 자동 CI와 플랫폼 매트릭스는 향후 로드맵 작업으로 남습니다.
+마지막 Windows 갱신은 Win64 ABI에서도 지속 16-limb ADX kernel을 활성화하고, 1024비트
+Miller--Rabin 지수승에 IFMA lane 두 개를 함께 사용하며, Montgomery 형식의 `qInv`를
+캐시하고, 방금 생성한 RSA·DSA 소수의 중복 검증을 제거했습니다. 한 코어에 고정한 집중
+실행 7회에서 이전 기준 미달 행의 비율은 RSA-2048 키 생성/서명/검증
+1.150/0.931/0.942배, DSA-2048 키 생성 1.387배, P-256 키 생성 0.986배,
+ML-KEM-768 키 생성 0.988배였습니다. 생성 시 Miller--Rabin 20회 정책, RSA CRT fault
+검사, 공개 벡터 테스트, portable fallback은 그대로 유지됩니다.
 이어 edwards448 전용 배가,
 공개 부분군 검사 window, 결합 `S*B - k*A` 검증을 적용해 Ed448 검증 중앙 지연시간을
 먼저 11.454에서 6.055 ms로 줄였습니다. 이어 고정 폭 Fe448 구현과 10열 comb 표로

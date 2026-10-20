@@ -41,6 +41,7 @@ namespace certpp {
     private:
         std::mutex _mutex;
         SecurePage* _pages;
+        SecurePage* _emptyPage;
         const size_t _pageSize;
         const size_t _largePageSize;
 
@@ -57,6 +58,7 @@ namespace certpp {
         bool tryAllocate(SecurePage* page, size_t size, size_t alignment, void** out);
         SecurePage* createPage(size_t size, size_t alignment);
         void unlinkPage(SecurePage* page);
+        void resetEmptyPage(SecurePage* page);
 
     public:
         SecurePool();

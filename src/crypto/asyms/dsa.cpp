@@ -574,10 +574,10 @@ namespace crypto {
             return ERET_NOMEM;
         }
 
-        if (checkPrivateKey(priv) != ERET_OK) {
-            return ERET_AGAIN;
-        }
-
+        // generateDomainParams() has just established p/q primality, q | (p - 1), and g's
+        // order; x was sampled in range and y was computed from it above. Re-running the import
+        // validator here would repeat forty Miller--Rabin rounds plus two exponentiations over
+        // values produced by these same checked operations.
         out = SKeyPair(pub, priv);
         return ERET_OK;
     }

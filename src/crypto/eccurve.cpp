@@ -289,6 +289,35 @@ namespace crypto {
             }
 
             Value inverse(const Value& value, const Value& one) const {
+                if (_p256) {
+                    // Fixed addition chain for p - 2, where
+                    // p = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF.
+                    // Building the all-one 2^k-1 blocks cuts the general four-bit method's
+                    // 48 multiplications to 13; the exponent is public and the schedule is fixed.
+                    auto squareRepeated = [this](Value current, size_t count) {
+                        for (size_t i = 0; i < count; ++i) {
+                            current = mulP256(current, current);
+                        }
+                        return current;
+                    };
+
+                    const Value x2 = mulP256(mulP256(value, value), value);
+                    const Value x4 = mulP256(squareRepeated(x2, 2), x2);
+                    const Value x8 = mulP256(squareRepeated(x4, 4), x4);
+                    const Value x16 = mulP256(squareRepeated(x8, 8), x8);
+                    const Value x32 = mulP256(squareRepeated(x16, 16), x16);
+                    const Value x24 = mulP256(squareRepeated(x16, 8), x8);
+                    const Value x28 = mulP256(squareRepeated(x24, 4), x4);
+                    const Value x30 = mulP256(squareRepeated(x28, 2), x2);
+                    const Value x32Minus3 = mulP256(squareRepeated(x30, 2), value);
+
+                    Value result = mulP256(squareRepeated(x32, 32), value);
+                    result = squareRepeated(result, 96);
+                    result = mulP256(squareRepeated(result, 32), x32);
+                    result = mulP256(squareRepeated(result, 32), x32);
+                    return mulP256(squareRepeated(result, 32), x32Minus3);
+                }
+
                 Value exponent;
                 std::memcpy(exponent.limbs, _modulus, _count * sizeof(uint64_t));
                 uint64_t borrow = 2;
@@ -363,6 +392,13 @@ namespace crypto {
             FastPrimeField::Value x;
             FastPrimeField::Value y;
             FastPrimeField::Value z;
+        };
+
+        struct FastEcPointXyzz {
+            FastPrimeField::Value x;
+            FastPrimeField::Value y;
+            FastPrimeField::Value zz;
+            FastPrimeField::Value zzz;
         };
 
         struct FastP256CombTable {
@@ -729,12 +765,17 @@ namespace crypto {
             return SEcPoint(std::move(x), std::move(y));
         }
 
-        bool isStandardP256(const CEcCurve& curve) {
+        const CEcCurve& standardP256() {
             static const CEcCurve standard = [] {
                 CEcCurve result;
                 CEcCurve::knownCurves(ECURVE_P256, result);
                 return result;
             }();
+            return standard;
+        }
+
+        bool isStandardP256(const CEcCurve& curve) {
+            const CEcCurve& standard = standardP256();
             return curve.p == standard.p && curve.a == standard.a
                 && curve.b == standard.b && curve.n == standard.n
                 && curve.g.equals(standard.g);
@@ -805,7 +846,9 @@ namespace crypto {
                         window * FastP256CombTable::WINDOW_BITS + bit)) << bit;
                 }
                 const size_t rawDigit = byte + carry;
-                carry = (rawDigit + 127) >> FastP256CombTable::WINDOW_BITS;
+                carry = (rawDigit
+                    + ((size_t(1) << (FastP256CombTable::WINDOW_BITS - 1)) - 1))
+                    >> FastP256CombTable::WINDOW_BITS;
                 const size_t negativeMask = size_t(0) - carry;
                 const size_t digit = (rawDigit & ~negativeMask)
                     | (((size_t(1) << FastP256CombTable::WINDOW_BITS) - rawDigit)
@@ -851,6 +894,173 @@ namespace crypto {
                 accumulator = sum;
             }
             return accumulator;
+        }
+
+        FastEcPointXyzz fastAddMixedXyzz(
+            const FastEcPointXyzz& left, const FastEcPoint& affineRight,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree
+        ) {
+            if (field.isZero(left.zz)) {
+                return FastEcPointXyzz{ affineRight.x, affineRight.y, one, one };
+            }
+
+            const auto u2 = field.mul(affineRight.x, left.zz);
+            const auto s2 = field.mul(affineRight.y, left.zzz);
+            const auto p = field.sub(u2, left.x);
+            const auto r = field.sub(s2, left.y);
+            if (field.isZero(p)) {
+                if (!field.isZero(r)) {
+                    return FastEcPointXyzz();
+                }
+
+                // The comb does not intentionally reach this case, but retain the complete group
+                // behavior for unusual scalars. Recover Z from Z^3/Z^2 only on this exceptional
+                // path, then rebuild the cached powers after the ordinary Jacobian doubling.
+                const auto zzInverse = field.inverse(left.zz, one);
+                const auto z = field.mul(left.zzz, zzInverse);
+                const FastEcPoint doubled = fastDouble(
+                    FastEcPoint{ left.x, left.y, z }, field, aMont, one, aMinusThree);
+                const auto zz = field.mul(doubled.z, doubled.z);
+                return FastEcPointXyzz{
+                    doubled.x, doubled.y, zz, field.mul(zz, doubled.z)
+                };
+            }
+
+            const auto pp = field.mul(p, p);
+            const auto ppp = field.mul(p, pp);
+            const auto q = field.mul(left.x, pp);
+            const auto x3 = field.sub(
+                field.sub(field.mul(r, r), ppp), field.dbl(q));
+            auto y3 = field.mul(r, field.sub(q, x3));
+            y3 = field.sub(y3, field.mul(left.y, ppp));
+            return FastEcPointXyzz{
+                x3, y3, field.mul(left.zz, pp), field.mul(left.zzz, ppp)
+            };
+        }
+
+        SEcPoint fastP256BaseXyzz(
+            const CBigNum& scalar, const FastP256CombTable& comb,
+            const FastPrimeField& field, const FastPrimeField::Value& aMont,
+            const FastPrimeField::Value& one, bool aMinusThree,
+            const CMontgomery& montgomery
+        ) {
+#if defined(CERTPP_P256_COMB_AVX512)
+            const bool useAvx512Selection = hasP256CombAvx512();
+#endif
+            uint8_t scalarBytes[32] = {};
+            if (!scalar.toLittleEndian(SByteSpan(scalarBytes, sizeof(scalarBytes)))) {
+                return SEcPoint();
+            }
+            FastEcPointXyzz accumulator;
+            size_t carry = 0;
+            for (size_t window = 0; window < FastP256CombTable::ROWS; ++window) {
+                const size_t byte = window < sizeof(scalarBytes) ? scalarBytes[window] : 0;
+                const size_t rawDigit = byte + carry;
+                carry = (rawDigit
+                    + ((size_t(1) << (FastP256CombTable::WINDOW_BITS - 1)) - 1))
+                    >> FastP256CombTable::WINDOW_BITS;
+                const size_t negativeMask = size_t(0) - carry;
+                const size_t digit = (rawDigit & ~negativeMask)
+                    | (((size_t(1) << FastP256CombTable::WINDOW_BITS) - rawDigit)
+                        & negativeMask);
+                const size_t nonZero =
+                    (digit | (size_t(0) - digit)) >> (sizeof(size_t) * 8 - 1);
+                const size_t tableDigit = digit | (nonZero ^ size_t(1));
+                FastEcPoint selected;
+#if defined(CERTPP_P256_COMB_AVX512)
+                if (useAvx512Selection) {
+                    FastP256CombTable::AffinePoint packed;
+                    selectP256CombAvx512(comb.points[window], tableDigit, packed);
+                    std::memcpy(selected.x.limbs, packed.x, sizeof(packed.x));
+                    std::memcpy(selected.y.limbs, packed.y, sizeof(packed.y));
+                } else
+#endif
+                {
+                    for (size_t limb = 0; limb < 4; ++limb) {
+                        selected.x.limbs[limb] = comb.points[window][1].x[limb];
+                        selected.y.limbs[limb] = comb.points[window][1].y[limb];
+                    }
+                    for (size_t i = 2; i < FastP256CombTable::ENTRIES; ++i) {
+                        const uint64_t mask = uint64_t(0) - uint64_t(i == tableDigit);
+                        for (size_t limb = 0; limb < 4; ++limb) {
+                            selected.x.limbs[limb] ^=
+                                (selected.x.limbs[limb]
+                                    ^ comb.points[window][i].x[limb]) & mask;
+                            selected.y.limbs[limb] ^=
+                                (selected.y.limbs[limb]
+                                    ^ comb.points[window][i].y[limb]) & mask;
+                        }
+                    }
+                }
+                selected.z = one;
+                const auto negatedY = field.sub(
+                    FastPrimeField::Value(), selected.y);
+                field.conditionalAssign(
+                    uint64_t(carry & nonZero), selected.y, negatedY);
+                const FastEcPointXyzz sum = fastAddMixedXyzz(
+                    accumulator, selected, field, aMont, one, aMinusThree);
+                field.conditionalAssign(
+                    uint64_t(nonZero), accumulator.x, sum.x);
+                field.conditionalAssign(
+                    uint64_t(nonZero), accumulator.y, sum.y);
+                field.conditionalAssign(
+                    uint64_t(nonZero), accumulator.zz, sum.zz);
+                field.conditionalAssign(
+                    uint64_t(nonZero), accumulator.zzz, sum.zzz);
+            }
+
+            if (field.isZero(accumulator.zz)) {
+                return SEcPoint();
+            }
+            const auto inverseProduct = field.inverse(
+                field.mul(accumulator.zz, accumulator.zzz), one);
+            const auto inverseZz = field.mul(inverseProduct, accumulator.zzz);
+            const auto inverseZzz = field.mul(inverseProduct, accumulator.zz);
+            CBigNum x = montgomery.fromMont(field.store(
+                field.mul(accumulator.x, inverseZz)));
+            CBigNum y = montgomery.fromMont(field.store(
+                field.mul(accumulator.y, inverseZzz)));
+            return SEcPoint(std::move(x), std::move(y));
+        }
+
+        SEcPoint fastStandardP256ScalarMulBase(const CBigNum& scalar) {
+            struct Prepared {
+                CMontgomery montgomery;
+                FastPrimeField field;
+                FastPrimeField::Value one;
+                FastPrimeField::Value a;
+                FastEcPoint base;
+                bool aMinusThree = false;
+                bool valid = false;
+
+                explicit Prepared(const CEcCurve& curve)
+                    : montgomery(curve.p), field(curve.p) {
+                    CBigNum pMinusThree(curve.p);
+                    pMinusThree.sub(CBigNum(uint64_t(3)));
+                    aMinusThree = curve.a == pMinusThree;
+                    valid = montgomery.isValid() && field.valid()
+                        && field.load(montgomery.one(), one)
+                        && field.load(montgomery.toMont(curve.a), a)
+                        && field.load(montgomery.toMont(curve.g.x), base.x)
+                        && field.load(montgomery.toMont(curve.g.y), base.y);
+                    base.z = one;
+                }
+            };
+
+            static const Prepared prepared(standardP256());
+            if (!prepared.valid) {
+                return SEcPoint();
+            }
+            const FastP256CombTable& comb = p256BaseComb(
+                prepared.base, prepared.field, prepared.a, prepared.one,
+                prepared.aMinusThree);
+            if (!comb.valid) {
+                return SEcPoint();
+            }
+            return fastP256BaseXyzz(
+                scalar, comb, prepared.field, prepared.a, prepared.one,
+                prepared.aMinusThree, prepared.montgomery);
         }
 
         void fastBatchNormalizeX(
@@ -2117,6 +2327,16 @@ namespace crypto {
             return result;
         }
 
+#if defined(__SIZEOF_INT128__) && (defined(__x86_64__) || defined(_M_X64))
+        const size_t p256ScalarBits = k.bitLength();
+        const size_t p256OrderBits = n.bitLength();
+        const size_t p256Iterations =
+            p256ScalarBits > p256OrderBits ? p256ScalarBits : p256OrderBits;
+        if (p256Iterations <= 256 && isStandardP256(*this)) {
+            return fastStandardP256ScalarMulBase(k);
+        }
+#endif
+
         const CMontgomery field(p);
         if (!field.isValid()) {
             return result;
@@ -2139,15 +2359,6 @@ namespace crypto {
             const size_t scalarBits = k.bitLength();
             const size_t orderBits = n.bitLength();
             const size_t iterations = scalarBits > orderBits ? scalarBits : orderBits;
-            if (iterations <= 256 && isStandardP256(*this)) {
-                const FastP256CombTable& comb = p256BaseComb(
-                    fastBase, fastField, fastA, fastOne, fastAMinusThree);
-                if (comb.valid) {
-                    const FastEcPoint product = fastP256BaseProjective(
-                        k, comb, fastField, fastA, fastOne, fastAMinusThree);
-                    return fastToAffine(product, fastField, fastOne, field);
-                }
-            }
             const FastEcPoint product = fastWindowMultiply(
                 fastBase, k, iterations, fastField, fastA, fastOne, fastAMinusThree);
             return fastToAffine(product, fastField, fastOne, field);

@@ -174,6 +174,13 @@ constants once. Eleven focused current-source runs measured RSA-2048 sign/verify
 runtime feature gate, non-IFMA fallbacks, and full CRT re-encryption fault check remain. This closed
 the last direct OpenSSL performance gap; unavailable OpenSSL rows retain documented internal or
 cross-toolchain baselines, while automatic CI and the platform matrix remain future roadmap work.
+The final Windows refresh also enabled the persistent 16-limb ADX kernel under the Win64 ABI,
+reused both IFMA lanes for 1024-bit Miller--Rabin exponentiation, cached `qInv` in Montgomery form,
+and removed redundant validation of freshly generated RSA and DSA primes. Seven focused pinned
+runs measured the former below-target rows at 1.150/0.931/0.942 for RSA-2048 keygen/sign/verify,
+1.387 for DSA-2048 keygen, 0.986 for P-256 keygen, and 0.988 for ML-KEM-768 keygen. The 20-round
+Miller--Rabin generation policy, RSA CRT fault check, published-vector tests, and portable
+fallbacks remain unchanged.
 Dedicated edwards448
 doubling, a public subgroup-check window, and a
 joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 11.454 to

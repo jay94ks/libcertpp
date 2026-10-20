@@ -160,10 +160,11 @@ namespace certpp {
 
         /**
          * Wipes and releases a block returned by alloc(). Its page remains protected while
-         * another live block shares it; the last release wipes the complete page, unlocks a
-         * standard-page mapping when needed, and returns it to the operating system. Passing
-         * nullptr is a successful no-op. With CERTPP_DISABLE_SECURE_MEM, this performs the
-         * matching ordinary aligned free without locking or wiping.
+         * another live block shares it. The pool may retain one completely wiped standard page
+         * in the locked state for later reuse; additional empty pages and empty large-page
+         * mappings are wiped, unlocked when needed, and returned to the operating system.
+         * Passing nullptr is a successful no-op. With CERTPP_DISABLE_SECURE_MEM, this performs
+         * the matching ordinary aligned free without locking or wiping.
          *
          * @param ptr Pointer to the memory block to deallocate.
          * @return ERET_OK on success; an appropriate error code otherwise.

@@ -254,8 +254,8 @@ namespace crypto {
         /**
          * Computes k*g with full-scan window tables selected through masked assignments, so secret
          * scalar bits do not become memory indexes. The standard P-256 parameters use a cached
-         * 37-row, seven-bit comb table; mutable or other curve parameters build a four-bit table
-         * per call.
+         * 33-row, signed radix-256 comb table; mutable or other curve parameters build a
+         * four-bit table per call.
          * @param k The scalar to multiply g by.
          * @return k*g.
          */

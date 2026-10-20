@@ -33,7 +33,7 @@ namespace crypto {
      */
     class CERTPP_API CEcdsa : public IAsymmetric {
     private:
-        CEcCurve _curve;
+        std::shared_ptr<const CEcCurve> _curve;
         EAsymmetrics _which; // --> The specific curve, for IKeyBase::algorithm() -- CEcCurve
                                    // itself carries only domain parameters, no identity.
 

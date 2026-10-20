@@ -4,6 +4,7 @@
 #include <certpp/utils/secure.hpp>
 #include <certpp/crypto/rng.hpp>
 #include <certpp/io/buffer.hpp>
+#include "montgomeryparallel.hpp"
 #include <array>
 #include <cstring>
 #include <utility>
@@ -1199,6 +1200,8 @@ namespace certpp {
         const CMontgomery mont(*this);
         const CBigNum oneMont = mont.one();
         const CBigNum nMinus1Mont = mont.toMont(nMinus1);
+        MontgomeryParallel::Prepared parallelPrepared;
+        MontgomeryParallel::prepare(mont, mont, parallelPrepared);
 
         for (size_t i = 0; i < rounds; ++i) {
             CBigNum witness;
@@ -1208,7 +1211,22 @@ namespace certpp {
 
             witness.add(CBigNum(uint64_t(2)));
 
-            CBigNum x = mont.modExp(witness, d);
+            CBigNum x;
+            if (parallelPrepared.valid) {
+                // On AVX-512 IFMA hosts, the paired radix-52 kernel advances two independent
+                // Montgomery lanes at once. Feeding the same primality exponentiation to both
+                // lanes makes one lane's result available at essentially the paired operation's
+                // cost, while retaining the ordinary path on CPUs without that instruction set.
+                CBigNum duplicate;
+                if (!MontgomeryParallel::modExp(
+                        mont, witness, d, x,
+                        mont, witness, d, duplicate, &parallelPrepared)) {
+                    return false;
+                }
+                duplicate.secureClear();
+            } else {
+                x = mont.modExp(witness, d);
+            }
             if (x == CBigNum(uint64_t(1)) || x == nMinus1) {
                 continue;
             }

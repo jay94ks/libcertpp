@@ -10,9 +10,11 @@
 #endif
 #endif
 
-#if defined(__clang__) && defined(__SIZEOF_INT128__) && defined(__ELF__) && \
-    defined(__x86_64__) && !defined(CERTPP_DISABLE_HWACCEL_SIMD)
-#define CERTPP_HAS_RAW_FIXED_ADX 1
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && \
+    (defined(__ELF__) || defined(_WIN32)) && defined(__x86_64__) && \
+    !defined(CERTPP_DISABLE_HWACCEL_SIMD)
+#define CERTPP_HAS_RAW32_ADX 1
+#define CERTPP_HAS_RAW16_ADX 1
 extern "C" void certppMontgomeryRaw16Adx(
     const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
     uint64_t n0inv, uint64_t* scratch);
@@ -37,6 +39,7 @@ extern "C" void certppMontgomeryRaw32Adx(
 
 /* Full-width RSA public-modulus multiplication. The two independent carry chains stay in CF and
  * OF across each 32-column product or reduction pass, matching the CRT kernel's schedule. */
+#if defined(__ELF__)
 __asm__(
     ".text\n"
     ".p2align 5\n"
@@ -155,6 +158,127 @@ __asm__(
     "retq\n"
     ".size certppMontgomeryRaw32Adx,.-certppMontgomeryRaw32Adx\n"
 );
+#else
+__asm__(
+    ".text\n"
+    ".p2align 5\n"
+    ".globl certppMontgomeryRaw32Adx\n"
+    "certppMontgomeryRaw32Adx:\n"
+    "pushq %rbx\n"
+    "pushq %rbp\n"
+    "pushq %rdi\n"
+    "pushq %rsi\n"
+    "pushq %r12\n"
+    "pushq %r13\n"
+    "pushq %r14\n"
+    "pushq %r15\n"
+    "movq %rcx,%r12\n"
+    "movq %rdx,%r13\n"
+    "movq %r8,%r14\n"
+    "movq %r9,%r15\n"
+    "movq 104(%rsp),%r9\n"
+    "xorl %ebx,%ebx\n"
+    ".p2align 5\n"
+    ".Lcertpp_mont32_adx_outer_win:\n"
+    "movq 0(%r13,%rbx,8),%r10\n"
+    "movq %r10,%rdx\n"
+    "xorl %ebp,%ebp\n"
+    "mulxq 0(%r12),%rax,%rcx\n"
+    "adoxq 0(%r9),%rax\n"
+    "movq %rax,0(%r9)\n"
+    CERTPP_MONT32_PRODUCT_COLUMN(8)
+    CERTPP_MONT32_PRODUCT_COLUMN(16)
+    CERTPP_MONT32_PRODUCT_COLUMN(24)
+    CERTPP_MONT32_PRODUCT_COLUMN(32)
+    CERTPP_MONT32_PRODUCT_COLUMN(40)
+    CERTPP_MONT32_PRODUCT_COLUMN(48)
+    CERTPP_MONT32_PRODUCT_COLUMN(56)
+    CERTPP_MONT32_PRODUCT_COLUMN(64)
+    CERTPP_MONT32_PRODUCT_COLUMN(72)
+    CERTPP_MONT32_PRODUCT_COLUMN(80)
+    CERTPP_MONT32_PRODUCT_COLUMN(88)
+    CERTPP_MONT32_PRODUCT_COLUMN(96)
+    CERTPP_MONT32_PRODUCT_COLUMN(104)
+    CERTPP_MONT32_PRODUCT_COLUMN(112)
+    CERTPP_MONT32_PRODUCT_COLUMN(120)
+    CERTPP_MONT32_PRODUCT_COLUMN(128)
+    CERTPP_MONT32_PRODUCT_COLUMN(136)
+    CERTPP_MONT32_PRODUCT_COLUMN(144)
+    CERTPP_MONT32_PRODUCT_COLUMN(152)
+    CERTPP_MONT32_PRODUCT_COLUMN(160)
+    CERTPP_MONT32_PRODUCT_COLUMN(168)
+    CERTPP_MONT32_PRODUCT_COLUMN(176)
+    CERTPP_MONT32_PRODUCT_COLUMN(184)
+    CERTPP_MONT32_PRODUCT_COLUMN(192)
+    CERTPP_MONT32_PRODUCT_COLUMN(200)
+    CERTPP_MONT32_PRODUCT_COLUMN(208)
+    CERTPP_MONT32_PRODUCT_COLUMN(216)
+    CERTPP_MONT32_PRODUCT_COLUMN(224)
+    CERTPP_MONT32_PRODUCT_COLUMN(232)
+    CERTPP_MONT32_PRODUCT_COLUMN(240)
+    CERTPP_MONT32_PRODUCT_COLUMN(248)
+    "adcxq %rbp,%rcx\n"
+    "adoxq 256(%r9),%rcx\n"
+    "movq %rcx,256(%r9)\n"
+    "movq 0(%r9),%r11\n"
+    "imulq %r15,%r11\n"
+    "movq %r11,%rdx\n"
+    "xorl %ebp,%ebp\n"
+    "mulxq 0(%r14),%rax,%rcx\n"
+    "movq 0(%r9),%rdi\n"
+    "adcxq %rax,%rdi\n"
+    "adoxq 8(%r9),%rcx\n"
+    CERTPP_MONT32_REDUCE_COLUMN(8, 16, 0)
+    CERTPP_MONT32_REDUCE_COLUMN(16, 24, 8)
+    CERTPP_MONT32_REDUCE_COLUMN(24, 32, 16)
+    CERTPP_MONT32_REDUCE_COLUMN(32, 40, 24)
+    CERTPP_MONT32_REDUCE_COLUMN(40, 48, 32)
+    CERTPP_MONT32_REDUCE_COLUMN(48, 56, 40)
+    CERTPP_MONT32_REDUCE_COLUMN(56, 64, 48)
+    CERTPP_MONT32_REDUCE_COLUMN(64, 72, 56)
+    CERTPP_MONT32_REDUCE_COLUMN(72, 80, 64)
+    CERTPP_MONT32_REDUCE_COLUMN(80, 88, 72)
+    CERTPP_MONT32_REDUCE_COLUMN(88, 96, 80)
+    CERTPP_MONT32_REDUCE_COLUMN(96, 104, 88)
+    CERTPP_MONT32_REDUCE_COLUMN(104, 112, 96)
+    CERTPP_MONT32_REDUCE_COLUMN(112, 120, 104)
+    CERTPP_MONT32_REDUCE_COLUMN(120, 128, 112)
+    CERTPP_MONT32_REDUCE_COLUMN(128, 136, 120)
+    CERTPP_MONT32_REDUCE_COLUMN(136, 144, 128)
+    CERTPP_MONT32_REDUCE_COLUMN(144, 152, 136)
+    CERTPP_MONT32_REDUCE_COLUMN(152, 160, 144)
+    CERTPP_MONT32_REDUCE_COLUMN(160, 168, 152)
+    CERTPP_MONT32_REDUCE_COLUMN(168, 176, 160)
+    CERTPP_MONT32_REDUCE_COLUMN(176, 184, 168)
+    CERTPP_MONT32_REDUCE_COLUMN(184, 192, 176)
+    CERTPP_MONT32_REDUCE_COLUMN(192, 200, 184)
+    CERTPP_MONT32_REDUCE_COLUMN(200, 208, 192)
+    CERTPP_MONT32_REDUCE_COLUMN(208, 216, 200)
+    CERTPP_MONT32_REDUCE_COLUMN(216, 224, 208)
+    CERTPP_MONT32_REDUCE_COLUMN(224, 232, 216)
+    CERTPP_MONT32_REDUCE_COLUMN(232, 240, 224)
+    CERTPP_MONT32_REDUCE_COLUMN(240, 248, 232)
+    CERTPP_MONT32_REDUCE_COLUMN(248, 256, 240)
+    "adcxq %rbp,%rcx\n"
+    "movq %rbp,%rsi\n"
+    "adoxq %rbp,%rsi\n"
+    "adcq $0,%rsi\n"
+    "movq %rcx,248(%r9)\n"
+    "movq %rsi,256(%r9)\n"
+    "incq %rbx\n"
+    "cmpq $32,%rbx\n"
+    "jne .Lcertpp_mont32_adx_outer_win\n"
+    "popq %r15\n"
+    "popq %r14\n"
+    "popq %r13\n"
+    "popq %r12\n"
+    "popq %rsi\n"
+    "popq %rdi\n"
+    "popq %rbp\n"
+    "popq %rbx\n"
+    "retq\n"
+);
+#endif
 
 #undef CERTPP_MONT32_REDUCE_COLUMN
 #undef CERTPP_MONT32_PRODUCT_COLUMN
@@ -356,7 +480,7 @@ namespace certpp {
                 a, a, modulus, count, n0inv, out, scratch);
         }
 
-#if defined(CERTPP_HAS_RAW_FIXED_ADX)
+#if defined(CERTPP_HAS_RAW32_ADX)
         template<size_t Count>
         void mulWideChainRawFixed(
             const uint64_t* a, const uint64_t* b, const uint64_t* modulus,
@@ -364,7 +488,13 @@ namespace certpp {
         ) {
             std::memset(scratch, 0, (Count + 2) * sizeof(uint64_t));
             if constexpr (Count == 16) {
+#if defined(CERTPP_HAS_RAW16_ADX)
                 certppMontgomeryRaw16Adx(a, b, modulus, n0inv, scratch);
+#else
+                mulWideChainBody<true, 16>(
+                    a, b, modulus, Count, n0inv, out, scratch);
+                return;
+#endif
             } else {
                 certppMontgomeryRaw32Adx(a, b, modulus, n0inv, scratch);
             }
@@ -438,11 +568,14 @@ namespace certpp {
                 }
             }
 #endif
-#if defined(CERTPP_HAS_RAW_FIXED_ADX)
+#if defined(CERTPP_HAS_RAW32_ADX)
             if (hasAdxBmi2Montgomery()) {
+#if defined(CERTPP_HAS_RAW16_ADX)
                 if (count == 16) {
                     multiply = mulWideChainRawFixed<16>;
-                } else if (count == 32) {
+                } else
+#endif
+                if (count == 32) {
                     multiply = mulWideChainRawFixed<32>;
                 }
             }
@@ -472,11 +605,15 @@ namespace certpp {
                     : squareWideChainTigerLakeFixed<32>;
             }
 #endif
-#if defined(CERTPP_HAS_RAW_FIXED_ADX)
+#if defined(CERTPP_HAS_RAW32_ADX)
             if (hasAdxBmi2Montgomery()) {
+#if defined(CERTPP_HAS_RAW16_ADX)
                 square = count == 16
-                    ? mulWideChainRawFixed<16>
-                    : mulWideChainRawFixed<32>;
+                    ? mulWideChainRawFixed<16> : square;
+#endif
+                if (count == 32) {
+                    square = mulWideChainRawFixed<32>;
+                }
             }
 #endif
 #endif

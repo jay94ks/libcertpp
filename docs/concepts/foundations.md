@@ -113,8 +113,11 @@
   and free, disabling page locking and wipe-on-release while preserving the
   public container types. `dealloc()` in the default build
   wipes a block before reuse, keeps its page protected while another block is
-  live, then wipes the complete page, unlocks a standard-page mapping when
-  needed, and releases the last block. The no-alignment overload provides at
+  live, then wipes the complete mapping when the last block is released. The
+  pool retains at most one wiped standard page in the locked state for reuse;
+  it wipes excess standard pages and large-page mappings immediately before
+  unlocking when needed and returning them to the operating system. The
+  no-alignment overload provides at
   least 16-byte alignment, and explicit power-of-two alignment lets callers place SIMD-friendly
   state directly in protected storage; `make<T>()` uses `alignof(T)` and runs
   the destructor through a `shared_ptr` deleter.

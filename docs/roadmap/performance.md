@@ -18,7 +18,9 @@ back to standard pages protected by `VirtualLock` or `mlock` when the large-
 page request lacks privilege or reserved pages. `CERTPP_DISABLE_LARGE_PAGE=ON`
 uses standard pages directly. Linux applies `MADV_DONTDUMP` where the kernel
 exposes it. A released block is wiped before reuse; the last release wipes the
-complete page, unlocks a standard-page mapping when needed, and unmaps it.
+complete mapping. The pool retains at most one wiped standard page in the
+locked state for reuse; excess standard pages and large-page mappings are wiped
+immediately before they are unlocked when needed and unmapped.
 There is no best-effort ordinary
 heap fallback. Lock failure is `ERET_NOMEM`, and key generation or import
 propagates that failure. All asymmetric and KEM private-key object shells now
@@ -77,13 +79,10 @@ including `RLIMIT_MEMLOCK` and the hibernation limitation, and
 
 ## Performance work
 
-- **Close the Windows Clang full-inventory gaps.** The 2026-10-19 Release
-  refresh against OpenSSL 3.6.4 measured RSA-2048 key generation/sign/verify
-  at 0.398x/0.875x/0.700x, P-256 key generation at 0.676x, and SHA-384 at
-  0.88x. Reproduce each row with focused pinned runs, compare the selected
-  Windows kernels and ABI code generation with the faster WSL configurations,
-  and bring every directly comparable row back to at least 0.90x. Keep
-  randomized RSA key generation separate from steady-operation conclusions.
+- **Encode the Windows thread dependency in CMake.** The benchmark build
+  currently supplies `-lwinpthread` explicitly to executable and shared-library
+  link steps because `SecurePool` uses `std::mutex`. Make that dependency part
+  of the maintained CMake configuration before the next full inventory refresh.
 
 - **Finish the portable constant-time prime-curve fallback.** Native x86-64
   Clang/GCC builds now keep field coordinates in fixed-width Montgomery limbs,

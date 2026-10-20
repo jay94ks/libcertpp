@@ -152,8 +152,9 @@ pages directly. Pass a nonzero power-of-two alignment when hardware or SIMD
 code needs one, release the exact returned address with `CSecure::dealloc()`,
 and handle `ERET_NOMEM` from page allocation or locking.
 Small live blocks can share one locked page. Releasing a block wipes it before
-reuse, and releasing the last block wipes the full page, unlocks a standard-
-page mapping when needed, and returns it to the operating system.
+reuse. Releasing the last block wipes the full mapping before the pool either
+retains one standard page in the locked state for reuse or unlocks and returns
+an excess standard page or a large-page mapping to the operating system.
 
 **`CERTPP_DISABLE_SECURE_MEM=ON` deliberately removes those guarantees.** It
 keeps the same public container types but makes `CSecure::alloc()` and

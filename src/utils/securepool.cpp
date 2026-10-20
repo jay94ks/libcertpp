@@ -40,7 +40,7 @@ namespace certpp {
     } // namespace
 
     SecurePool::SecurePool()
-        : _pages(nullptr), _pageSize(platformPageSize()),
+        : _pages(nullptr), _emptyPage(nullptr), _pageSize(platformPageSize()),
           _largePageSize(platformLargePageSize()) {}
 
     SecurePool::~SecurePool() {
@@ -290,6 +290,21 @@ namespace certpp {
         }
     }
 
+    void SecurePool::resetEmptyPage(SecurePage* page) {
+        SecurePage* next = page->next;
+        const size_t mappingSize = page->mappingSize;
+        const bool requiresUnlock = page->requiresUnlock;
+
+        CSecure::zero(SByteSpan(reinterpret_cast<uint8_t*>(page), mappingSize));
+        new (page) SecurePage{
+            SECURE_PAGE_MAGIC, next, nullptr, mappingSize, 0, requiresUnlock
+        };
+        auto* first = new (reinterpret_cast<uint8_t*>(page) + SECURE_PAGE_HEADER_SIZE)
+            SecureBlock{SECURE_BLOCK_MAGIC, page, nullptr,
+                        mappingSize - SECURE_PAGE_HEADER_SIZE, nullptr, true};
+        page->first = first;
+    }
+
     ERetCode SecurePool::allocate(void** out, size_t size, size_t alignment) {
         if (!out) {
             return ERET_INVAL;
@@ -305,6 +320,9 @@ namespace certpp {
         std::lock_guard<std::mutex> lock(_mutex);
         for (SecurePage* page = _pages; page; page = page->next) {
             if (tryAllocate(page, size, alignment, out)) {
+                if (page == _emptyPage) {
+                    _emptyPage = nullptr;
+                }
                 return ERET_OK;
             }
         }
@@ -367,6 +385,17 @@ namespace certpp {
         }
 
         if (page->liveBlocks != 0) {
+            return ERET_OK;
+        }
+
+        // Keep one ordinary page locked and zeroed so short-lived keys do not pay a
+        // VirtualLock/mlock plus unlock/unmap round trip on every operation. The cache is
+        // bounded to one standard page; large pages and excess empty pages are returned to the
+        // operating system immediately. resetEmptyPage() wipes the complete mapping before
+        // rebuilding only the allocator metadata needed for reuse.
+        if (page->mappingSize == _pageSize && _emptyPage == nullptr) {
+            resetEmptyPage(page);
+            _emptyPage = page;
             return ERET_OK;
         }
 
