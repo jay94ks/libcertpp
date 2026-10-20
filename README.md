@@ -156,6 +156,31 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
 Add `-DCMAKE_PREFIX_PATH=<prefix>` if the prefix is not already searched. Note
 that a *static* `certpp` must be consumed with a matching MSVC runtime.
 
+## Runtime version and secure-memory check
+
+> [!IMPORTANT]
+> `HEADER_VERSION` is compiled into the caller from the installed headers,
+> while `GetLibraryVersion()` reports the version and secure-memory mode of the
+> library binary that was actually linked. Applications that require an exact
+> header/library match or page-backed secret storage should check both once at
+> startup.
+
+```cpp
+const certpp::SVersion libraryVersion = certpp::GetLibraryVersion();
+
+const bool sameVersion = (libraryVersion == certpp::HEADER_VERSION);
+const bool secureMemoryEnabled = libraryVersion.isSecureMemory();
+```
+
+`SVersion` comparisons ignore the secure-memory marker stored in the high bit
+of `major`, so `sameVersion` checks the semantic `major.minor.patch` version
+only. `isSecureMemory()` must be checked separately on the value returned by
+`GetLibraryVersion()`. A `false` result means the linked library was built with
+`CERTPP_DISABLE_SECURE_MEM=ON`: secure container types remain API-compatible,
+but their storage uses ordinary aligned heap memory instead of locked,
+wipe-on-release pages. Do not use `HEADER_VERSION.isSecureMemory()` to inspect
+the linked library's build mode.
+
 ## Documentation
 
 [`docs/README.md`](docs/README.md) is the documentation map. It identifies the

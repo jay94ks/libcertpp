@@ -155,6 +155,30 @@ target_link_libraries(myapp PRIVATE certpp::certpp)
 추가하세요. *정적* `certpp`는 반드시 일치하는 MSVC 런타임과 함께 사용해야
 합니다.
 
+## 런타임 버전과 보안 메모리 검사
+
+> [!IMPORTANT]
+> `HEADER_VERSION`은 설치된 헤더에서 호출자 코드에 컴파일되는 버전이고,
+> `GetLibraryVersion()`은 실제로 링크된 라이브러리 바이너리의 버전과 보안 메모리
+> 모드를 반환합니다. 헤더와 라이브러리의 정확한 버전 일치 또는 page 기반 비밀
+> 저장소가 필요한 응용은 시작할 때 두 항목을 모두 검사해야 합니다.
+
+```cpp
+const certpp::SVersion libraryVersion = certpp::GetLibraryVersion();
+
+const bool sameVersion = (libraryVersion == certpp::HEADER_VERSION);
+const bool secureMemoryEnabled = libraryVersion.isSecureMemory();
+```
+
+`SVersion` 비교는 `major`의 최상위 비트에 저장된 보안 메모리 표시를 무시하므로,
+`sameVersion`은 의미상 `major.minor.patch` 버전만 검사합니다. 보안 메모리 상태는
+`GetLibraryVersion()`이 반환한 값에서 `isSecureMemory()`로 별도로 검사해야 합니다.
+결과가 `false`이면 링크된 라이브러리가 `CERTPP_DISABLE_SECURE_MEM=ON`으로
+빌드된 것입니다. 이때 secure container 타입의 API 호환성은 유지되지만 저장소는
+잠기고 해제 시 영점화되는 page 대신 일반 정렬 heap 메모리를 사용합니다. 링크된
+라이브러리의 빌드 모드를 확인할 때 `HEADER_VERSION.isSecureMemory()`를 사용하면 안
+됩니다.
+
 ## 문서
 
 [`docs/README.ko.md`](docs/README.ko.md)는 전체 문서 지도입니다. 목적에 맞는
