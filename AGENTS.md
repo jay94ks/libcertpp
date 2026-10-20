@@ -61,6 +61,11 @@ The source layout has several rules that are easy to miss:
 - Apply `CERTPP_API` only where an out-of-line public symbol must cross the
   shared-library boundary. Verify this against sibling declarations and the
   build reference.
+- Preserve public API source and ABI compatibility within the same major
+  version. Do not remove or incompatibly change public declarations, behavior,
+  class layout, virtual tables, or exported symbols without a major-version
+  increment; follow the detailed compatibility rules in
+  [`docs/rules/maintenance.md`](docs/rules/maintenance.md).
 - Keep changes narrow and complete. Update declarations, definitions, tests,
   examples, and caller documentation together when the contract changes.
 - Do not create a Git commit or push to a remote unless the user explicitly
