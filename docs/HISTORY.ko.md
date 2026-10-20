@@ -22,7 +22,22 @@ overload와 중앙 생성 정책, RFC 9215 GOST 인증서/CSR·RFC 9558 DNSSEC �
 경로가 Clang의 Windows ABI에서도 컴파일되게 했으며, GFNI 기능 감지를 바로잡고,
 Poly1305의 AVX-512 벡터 인자 ABI 경계를 없앴습니다. 검토 장비의 64 KiB record에서
 완전한 AVX-512 ChaCha20-Poly1305 경로는 1979.7 MiB/s, 두 AVX-512 단계를 모두
-끈 구성은 494.8 MiB/s였습니다. 이어 OpenSSL 3.6 비교 프로그램을 전체 해시/CBC
+끈 구성은 494.8 MiB/s였습니다. 테스트 프로세스는 이제 Windows 오류 대화상자 없이
+assertion과 충돌을 콘솔 진단으로 보냅니다. 자동 CI와 플랫폼 매트릭스는 의도적으로
+[로드맵](PLANS.ko.md)에 남겨 두었습니다.
+
+## 버전 1.2.0 — 성능과 보호된 키 재료
+
+버전 1.2.0은 1.1.0 이후 완료한 작업을 묶습니다. 난수 공급원은 이제 복제 가능한 명시적
+`IRng` 의존성이며 비대칭·대칭·KEM context 생성 시 주입되어 바뀌지 않습니다. 기존 호환
+overload는 지역 `CRng`를 생성합니다. 개인 키 재료는 잠긴 page pool 기반의 정렬된 보안
+container를 사용하고, 할당 영역과 반환 직전 page를 영점화합니다. 표준 page와 일반 메모리
+fallback은 빌드 옵션으로 선택할 수 있습니다. OpenSSL 3.6.4 비교는 구현된 알고리즘 목록을
+포괄하며, 직접 비교할 수 있는 모든 행이 문서화된 릴리스 측정에서 대응 OpenSSL 연산의
+90% 이상에 도달했습니다. 공개 벡터, 상호운용 검사, portable fallback, RSA CRT fault
+검사는 같은 결과를 유지합니다.
+
+OpenSSL 3.6 비교 프로그램을 전체 해시/CBC
 목록과 AEAD, X25519, ML-KEM, EdDSA, ML-DSA까지 확장했습니다. 순환 SHA-512
 스케줄과 회전된 라운드 인자는 중앙 처리량을 36% 높였고, 병렬 AES-CTR, VAES,
 4블록 GHASH는 짧은 레코드 경로를 보존하면서 64 KiB AES-256-GCM을 517에서
@@ -180,9 +195,7 @@ ML-KEM-768 키 생성 0.988배였습니다. 생성 시 Miller--Rabin 20회 정�
 1.48/0.99배에 도달했고, portable 16-limb fallback도 MSVC에서 같은 필드·RFC 테스트를
 통과했습니다. X25519
 키 생성의 중복 유도점 cofactor ladder도 제거해 중앙값을 0.270에서 0.139 ms로
-줄였습니다. 테스트 프로세스는 이제 Windows 오류 대화상자 없이 assertion과 충돌을
-콘솔 진단으로 보냅니다. 자동 CI와 플랫폼 매트릭스는 의도적으로
-[로드맵](PLANS.ko.md)에 남겨 두었습니다. 이어 4-lane SSE2 BLAKE2s 압축 경로가
+줄였습니다. 이어 4-lane SSE2 BLAKE2s 압축 경로가
 64 KiB 중앙 처리량을 406에서 512 MiB/s로, 동일 조건 OpenSSL 비율을 0.74에서
 0.96으로 높였습니다. SIMD 비활성 scalar 경로도 같은 RFC 및 keyed 참조 응답을
 유지했습니다. 이어 압축 kernel을 완전히 전개하고 입력마다 한 번만 dispatch하여 MD4를

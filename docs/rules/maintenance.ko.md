@@ -6,7 +6,7 @@
 
 ← [프로젝트 규칙](../RULES.ko.md)
 
-이 프로젝트는 Semantic Versioning을 따르며 현재 버전은 1.1.0입니다. patch 릴리스는
+이 프로젝트는 Semantic Versioning을 따르며 현재 버전은 1.2.0입니다. patch 릴리스는
 호환되는 수정, minor 릴리스는 소스와 ABI를 유지하는 공개 API 추가를 담을 수 있고,
 공개 ABI나 소스 호환성을 깨는 변경에는 major 릴리스가 필요합니다. 설치된 CMake
 패키지는 `SameMajorVersion`을 사용하고 라이브러리 `SOVERSION`은 major 버전입니다.

@@ -25,8 +25,25 @@ sixteen-block AVX-512F ChaCha20 path, made the existing accelerated paths
 compile under Clang's Windows ABI, corrected GFNI feature detection, and
 removed an AVX-512 vector-argument ABI boundary from Poly1305. On the review
 machine the complete AVX-512 ChaCha20-Poly1305 path measured 1979.7 MiB/s for
-64 KiB records versus 494.8 MiB/s with both AVX-512 tiers disabled. The
-OpenSSL 3.6 comparison program then expanded to the complete hash/CBC
+64 KiB records versus 494.8 MiB/s with both AVX-512 tiers disabled. Test
+processes now route assertions and crashes to console diagnostics without
+Windows error dialogs. Automated CI and the platform
+matrix intentionally remain in [the roadmap](PLANS.md).
+
+## Version 1.2.0 — performance and protected key material
+
+Version 1.2.0 packages the work completed after 1.1.0. Randomness is now an
+explicit, clonable `IRng` dependency sealed into asymmetric, symmetric, and
+KEM contexts at creation, while compatibility overloads construct `CRng`
+locally. Private material uses aligned secure containers backed by a locked
+page pool; allocations and returned pages are wiped, and build options expose
+standard-page and ordinary-memory fallbacks. The OpenSSL 3.6.4 comparison now
+covers the implemented algorithm inventory, and every directly comparable
+row reaches at least 90% of the matching OpenSSL operation in the documented
+release measurements. Published vectors, interoperability checks, portable
+fallbacks, and the RSA CRT fault check retain their results.
+
+The OpenSSL 3.6 comparison program expanded to the complete hash/CBC
 inventory plus AEAD, X25519, ML-KEM, EdDSA, and ML-DSA. A circular SHA-512
 schedule with rotated round arguments improved its median throughput by 36%,
 and parallel AES-CTR, VAES, and four-block GHASH raised 64 KiB AES-256-GCM from
@@ -187,9 +204,7 @@ joint `S*B - k*A` verifier first reduced median Ed448 verification latency from 
 6.055 ms. A fixed-width Fe448 implementation and 10-column comb tables then reduced signing and
 verification to 0.139/0.191 ms in a matched WSL comparison, reaching 1.48/0.99 of OpenSSL; the
 portable 16-limb fallback passed the same field and RFC tests under MSVC. Removing X25519 key generation's redundant
-derived-point cofactor ladder reduced its median from 0.270 to 0.139 ms. Test processes now
-route assertions and crashes to console diagnostics without Windows error dialogs. Automated CI
-and the platform matrix intentionally remain in [the roadmap](PLANS.md). A four-lane SSE2
+derived-point cofactor ladder reduced its median from 0.270 to 0.139 ms. A four-lane SSE2
 BLAKE2s compression path then raised its 64 KiB median from 406 to 512 MiB/s and its matched
 OpenSSL ratio from 0.74 to 0.96, while the SIMD-disabled scalar path retained the same RFC and
 keyed-reference answers. Fully expanded compression kernels and one dispatch per input then

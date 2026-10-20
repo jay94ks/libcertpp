@@ -6,7 +6,7 @@
 
 ← [Project rules](../RULES.md)
 
-The project follows Semantic Versioning. The current line is 1.1.0. Patch
+The project follows Semantic Versioning. The current line is 1.2.0. Patch
 releases contain compatible fixes, minor releases may add source and ABI
 compatible public API, and a major release is required for a public ABI or
 source compatibility break. The installed CMake package uses

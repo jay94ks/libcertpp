@@ -30,17 +30,8 @@ Pull request 매트릭스는 필요한 범위로 제한합니다. 지원 운영�
 로그가 남고, [`docs/BUILDING.ko.md`](BUILDING.ko.md)의 유지보수 빌드 명령이
 자동화와 일치하면 이 작업을 완료한 것으로 봅니다.
 
-## 완료된 신뢰성과 생태계 통합 계획
-
-신뢰성과 생태계 통합 계획은 완료되었습니다. 현재 동작은
-[아키텍처와 개념](CONCEPTS.ko.md), 호출자 계약은 [`specs/`](../specs),
-빌드와 보안 절차는 [빌드와 검증](BUILDING.ko.md) 및
-[`SECURITY.ko.md`](../SECURITY.ko.md)가 관리합니다. 폐지 확인과 완전한 RFC 5280
-인증서 정책 처리는 core 경로 검증에 포함된 것처럼 취급하지 않고 validator의
-명시적인 미지원 기능으로 남아 있습니다.
-
 ## 상세 문서
 
-- [보안 및 성능](roadmap/performance.ko.md): 페이지 잠금 비밀 메모리의 남은 보호
-  container 작업 포함
+- [보안 및 성능](roadmap/performance.ko.md): 보호 payload 이관, portable 타이밍
+  강화, 빌드 통합 작업 포함
 - [계획에 없음](roadmap/not-planned.ko.md)

@@ -5,7 +5,7 @@ if(POLICY CMP0091)
 endif()
 
 project(certpp
-    VERSION 1.1.0
+    VERSION 1.2.0
     DESCRIPTION "libcertpp - a C++17 certificate handling library"
     LANGUAGES CXX
 )

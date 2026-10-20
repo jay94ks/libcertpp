@@ -31,18 +31,8 @@ This work is complete when the matrix is documented, required jobs gate
 changes, sanitizer failures retain actionable logs, and the maintained build
 commands in [`docs/BUILDING.md`](BUILDING.md) match the automation.
 
-## Completed reliability and ecosystem integration program
-
-The reliability and ecosystem integration program is complete. Its current
-behavior now belongs in [Architecture and concepts](CONCEPTS.md), the caller
-contract in [`specs/`](../specs), and build/security operations in
-[Build and verification](BUILDING.md) and [`SECURITY.md`](../SECURITY.md).
-Revocation and full RFC 5280 certificate-policy processing remain explicit
-unavailable validator capabilities rather than implied parts of core path
-validation.
-
 ## Detailed pages
 
-- [Security and performance](roadmap/performance.md), including the remaining
-  protected-container work for page-locked secret memory
+- [Security and performance](roadmap/performance.md), including protected
+  payload migration, portable timing hardening, and build integration
 - [Not planned](roadmap/not-planned.md)
